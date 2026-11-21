@@ -13,7 +13,7 @@ public class Makar : ModuleRules
 			"Engine",
 			"InputCore",
 			"EnhancedInput",
-			"Water" // UBuoyancyComponent + ocean
+			"ProceduralMeshComponent" // ocean surface mesh
 		});
 	}
 }

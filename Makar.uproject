@@ -2,8 +2,13 @@
 	"FileVersion": 3,
 	"EngineAssociation": "5.6",
 	"Category": "",
-	"Description": "Jeu de pirates : navigation, ocean realiste, combats au canon.",
+	"Description": "Jeu de pirates : navigation, ocean FFT realiste, combats au canon.",
 	"Modules": [
+		{
+			"Name": "MakarShaders",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit"
+		},
 		{
 			"Name": "Makar",
 			"Type": "Runtime",
@@ -12,7 +17,15 @@
 	],
 	"Plugins": [
 		{
-			"Name": "Water",
+			"Name": "ProceduralMeshComponent",
+			"Enabled": true
+		},
+		{
+			"Name": "PythonScriptPlugin",
+			"Enabled": true
+		},
+		{
+			"Name": "EditorScriptingUtilities",
 			"Enabled": true
 		}
 	]

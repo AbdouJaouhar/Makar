@@ -8,7 +8,7 @@ class UBoxComponent;
 class UStaticMeshComponent;
 class USpringArmComponent;
 class UCameraComponent;
-class UBuoyancyComponent;
+class UOceanBuoyancyComponent;
 class UInputMappingContext;
 class UInputAction;
 class ACannonball;
@@ -16,7 +16,7 @@ struct FInputActionValue;
 
 /**
  * Physics-driven sailing ship.
- * Floats thanks to the Water plugin's buoyancy component (pontoons at the hull corners),
+ * Floats on the FFT ocean through pontoons along the hull (UOceanBuoyancyComponent),
  * is pushed forward by its sails and turned by its rudder, and fires broadsides.
  */
 UCLASS()
@@ -119,7 +119,7 @@ protected:
 	TObjectPtr<UCameraComponent> Camera;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Ship")
-	TObjectPtr<UBuoyancyComponent> Buoyancy;
+	TObjectPtr<UOceanBuoyancyComponent> Buoyancy;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Ship")
 	int32 SailLevel = 0;

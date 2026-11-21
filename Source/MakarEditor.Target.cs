@@ -7,6 +7,6 @@ public class MakarEditorTarget : TargetRules
 		Type = TargetType.Editor;
 		DefaultBuildSettings = BuildSettingsVersion.Latest;
 		IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
-		ExtraModuleNames.Add("Makar");
+		ExtraModuleNames.AddRange(new string[] { "Makar", "MakarShaders" });
 	}
 }

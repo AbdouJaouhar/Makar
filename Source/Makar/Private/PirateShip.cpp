@@ -1,7 +1,5 @@
 #include "PirateShip.h"
 
-#include "BuoyancyComponent.h"
-#include "BuoyancyTypes.h"
 #include "Camera/CameraComponent.h"
 #include "Cannonball.h"
 #include "Components/BoxComponent.h"
@@ -17,6 +15,7 @@
 #include "InputActionValue.h"
 #include "InputMappingContext.h"
 #include "InputModifiers.h"
+#include "Ocean/OceanBuoyancyComponent.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace
@@ -37,12 +36,11 @@ APirateShip::APirateShip()
 	Hull = CreateDefaultSubobject<UBoxComponent>(TEXT("Hull"));
 	Hull->InitBoxExtent(HullExtent);
 	Hull->SetCollisionProfileName(TEXT("PhysicsActor"));
-	Hull->SetGenerateOverlapEvents(true); // required for the buoyancy component to detect water bodies
 	Hull->SetSimulatePhysics(true);
 	Hull->SetLinearDamping(0.1f);
 	Hull->SetAngularDamping(1.f);
-	// Tuned against the default buoyancy coefficient: floats roughly half submerged on 4 pontoons.
-	Hull->BodyInstance.SetMassOverride(3000.f);
+	// 12 t: with the 8 pontoons below (33 m³ in total) the hull draws about 75 cm.
+	Hull->BodyInstance.SetMassOverride(12000.f);
 	Hull->BodyInstance.COMNudge = FVector(0.f, 0.f, -80.f); // low centre of mass keeps the ship upright
 	SetRootComponent(Hull);
 
@@ -81,16 +79,17 @@ APirateShip::APirateShip()
 	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
 	Camera->SetupAttachment(CameraBoom, USpringArmComponent::SocketName);
 
-	Buoyancy = CreateDefaultSubobject<UBuoyancyComponent>(TEXT("Buoyancy"));
-	const float PontoonRadius = 150.f;
-	const float PX = HullExtent.X - PontoonRadius;
-	const float PY = HullExtent.Y - 50.f;
-	for (const FVector& Location : { FVector(PX, PY, 0.f), FVector(PX, -PY, 0.f), FVector(-PX, PY, 0.f), FVector(-PX, -PY, 0.f) })
+	// Pontoons along both sides: the hull pitches and rolls with the waves under it.
+	Buoyancy = CreateDefaultSubobject<UOceanBuoyancyComponent>(TEXT("Buoyancy"));
+	for (const float X : { -450.f, -150.f, 150.f, 450.f })
 	{
-		FSphericalPontoon Pontoon;
-		Pontoon.RelativeLocation = Location;
-		Pontoon.Radius = PontoonRadius;
-		Buoyancy->BuoyancyData.Pontoons.Add(Pontoon);
+		for (const float Y : { -HullExtent.Y + 50.f, HullExtent.Y - 50.f })
+		{
+			FOceanPontoon Pontoon;
+			Pontoon.RelativeLocation = FVector(X, Y, 0.f);
+			Pontoon.Radius = 100.f;
+			Buoyancy->Pontoons.Add(Pontoon);
+		}
 	}
 
 	CannonballClass = ACannonball::StaticClass();
@@ -119,7 +118,7 @@ void APirateShip::Tick(float DeltaSeconds)
 	const float ForwardSpeed = FVector::DotProduct(Velocity, Forward);
 
 	// Sails and rudder only work with the hull in the water.
-	if (Buoyancy->IsInWaterBody() && !Forward.IsNearlyZero())
+	if (Buoyancy->IsInWater() && !Forward.IsNearlyZero())
 	{
 		const float LateralSpeed = FVector::DotProduct(Velocity, Right);
 		const float SailFraction = MaxSailLevel > 0 ? float(SailLevel) / float(MaxSailLevel) : 0.f;
@@ -225,8 +224,8 @@ void APirateShip::Sink()
 	SailLevel = 0;
 	RudderInput = 0.f;
 
-	// Without buoyancy, gravity takes the wreck down.
-	Buoyancy->SetComponentTickEnabled(false);
+	// The hull floods: not enough buoyancy left to hold its weight, so it goes down slowly.
+	Buoyancy->BuoyancyMultiplier = 0.25f;
 	Hull->SetLinearDamping(2.f);
 	Hull->SetAngularDamping(2.f);
 

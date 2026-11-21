@@ -7,6 +7,6 @@ public class MakarTarget : TargetRules
 		Type = TargetType.Game;
 		DefaultBuildSettings = BuildSettingsVersion.Latest;
 		IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
-		ExtraModuleNames.Add("Makar");
+		ExtraModuleNames.AddRange(new string[] { "Makar", "MakarShaders" });
 	}
 }

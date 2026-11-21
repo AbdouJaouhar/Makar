@@ -1,0 +1,89 @@
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Math/Float16Color.h"
+#include "OceanSettings.h"
+
+/** Result of one simulation step for one cascade. */
+struct FOceanCascadeFrame
+{
+	float PatchSize = 0.f;
+	int32 Resolution = 0;
+
+	/** Full-precision displacement (X, Y horizontal, Z height), metres. Used for CPU water queries. */
+	TArray<FVector3f> Displacement;
+
+	/** GPU data, one array per mip. RGBA = displacement X, Y, Z (m), foam. */
+	TArray<TArray<FFloat16Color>> DisplacementMips;
+
+	/** GPU data, one array per mip. RGBA = dHeight/dX, dHeight/dY, dDispX/dX, dDispY/dY. */
+	TArray<TArray<FFloat16Color>> DerivativeMips;
+};
+
+struct FOceanFrame
+{
+	bool bValid = false;
+	float Time = 0.f;
+	TArray<FOceanCascadeFrame> Cascades;
+};
+
+/**
+ * Tessendorf FFT ocean on the CPU.
+ * Three cascades of different tile sizes, each owning a disjoint band of wavelengths.
+ * Simulate() is safe to run on a worker thread (it only touches this object and the output frame).
+ */
+class MAKAR_API FOceanSimulation
+{
+public:
+	static constexpr int32 NumCascades = 3;
+
+	void Initialize(const FOceanSettings& InSettings);
+	void Simulate(float Time, float DeltaTime, FOceanFrame& Out);
+
+	int32 GetResolution() const { return N; }
+	int32 GetNumMips() const { return LogN + 1; }
+
+private:
+	struct FComplex
+	{
+		float Re = 0.f;
+		float Im = 0.f;
+	};
+
+	struct FCascade
+	{
+		float PatchSize = 0.f;
+		TArray<FComplex> H0;          // h0(k)
+		TArray<FComplex> H0MinusConj; // conj(h0(-k))
+		TArray<float> Omega;          // angular frequency of each k
+		TArray<FVector2f> K;          // wave vector, rad/m
+		TArray<float> Foam;           // persistent foam, decays over time
+	};
+
+	void InitializeCascade(FCascade& Cascade, float PatchSize, float KMin, float KMax, int32 Seed) const;
+	void SimulateCascade(FCascade& Cascade, float Time, float DeltaTime, FOceanCascadeFrame& Out);
+
+	void Dispersion(float K, float& OutOmega, float& OutDOmegaDK) const;
+	float JonswapSpectrum(float Omega) const;
+	float DirectionalSpreading(float Omega, float Theta) const;
+
+	void InverseFFT1D(FComplex* Data) const;
+	void InverseFFT2D(TArray<FComplex>* Grids, int32 NumGrids) const;
+	void BuildMips(const TArray<FVector4f>& Base, TArray<TArray<FFloat16Color>>& OutMips) const;
+
+	FOceanSettings Settings;
+	int32 N = 0;
+	int32 LogN = 0;
+	float Alpha = 0.f;     // JONSWAP energy scale
+	float PeakOmega = 0.f; // JONSWAP peak frequency
+
+	TArray<int32> BitReverse;
+	TArray<FComplex> Twiddles;
+
+	FCascade Cascades[NumCascades];
+
+	// Scratch buffers, reused every frame.
+	TArray<FComplex> Work[4];
+	TArray<FVector4f> DisplacementBase;
+	TArray<FVector4f> DerivativeBase;
+};
