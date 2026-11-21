@@ -70,6 +70,7 @@ void FOceanSimulation::Initialize(const FOceanSettings& InSettings)
 	}
 	DisplacementBase.SetNumUninitialized(N * N);
 	DerivativeBase.SetNumUninitialized(N * N);
+	MomentBase.SetNumUninitialized(N * N);
 }
 
 void FOceanSimulation::Dispersion(float K, float& OutOmega, float& OutDOmegaDK) const
@@ -252,12 +253,16 @@ void FOceanSimulation::SimulateCascade(FCascade& Cascade, float Time, float Delt
 
 			Out.Displacement[Index] = FVector3f(DispX, DispY, Height);
 			DisplacementBase[Index] = FVector4f(DispX, DispY, Height, Foam);
-			DerivativeBase[Index] = FVector4f(Work[2][Index].Re, Work[2][Index].Im, DDispXDX, DDispYDY);
+			const float SlopeX = Work[2][Index].Re;
+			const float SlopeY = Work[2][Index].Im;
+			DerivativeBase[Index] = FVector4f(SlopeX, SlopeY, DDispXDX, DDispYDY);
+			MomentBase[Index] = FVector4f(SlopeX * SlopeX, SlopeY * SlopeY, SlopeX * SlopeY, 0.f);
 		}
 	});
 
 	BuildMips(DisplacementBase, Out.DisplacementMips);
 	BuildMips(DerivativeBase, Out.DerivativeMips);
+	BuildMips(MomentBase, Out.MomentMips);
 }
 
 void FOceanSimulation::InverseFFT1D(FComplex* Data) const

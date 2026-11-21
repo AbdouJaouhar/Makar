@@ -111,6 +111,7 @@ def build():
 
     disp = [texture(material, f"Disp{i}", placeholder, -1600, 260 + i * 140) for i in range(3)]
     deriv = [texture(material, f"Deriv{i}", placeholder, -1600, 700 + i * 140) for i in range(3)]
+    moments = [texture(material, f"Moments{i}", placeholder, -1600, 1140 + i * 140) for i in range(3)]
 
     patch = [scalar(material, f"PatchSize{i}", v, -1300, 260 + i * 80) for i, v in enumerate((500.0, 85.0, 10.0))]
     resolution = scalar(material, "Resolution", 128.0, -1300, 520)
@@ -137,21 +138,28 @@ def build():
     }, vertex)
     MEL.connect_material_property(vertex, "", unreal.MaterialProperty.MP_WORLD_POSITION_OFFSET)
 
-    # --- Pixel: normal, foam, crest ---
+    # Micro-roughness of the water itself; the shader adds the roughness of waves too small to be resolved.
+    roughness_water = scalar(material, "Roughness", 0.04, -1300, 1080)
+
+    # --- Pixel: normal, foam, crest, filtered roughness ---
     pixel = custom(
         material, -900, 400, "Ocean Pixel",
         "return OceanPixel(WorldPos, Disp0, Disp0Sampler, Disp1, Disp1Sampler, Disp2, Disp2Sampler, "
         "Deriv0, Deriv0Sampler, Deriv1, Deriv1Sampler, Deriv2, Deriv2Sampler, "
-        "PatchSize0, PatchSize1, PatchSize2, CrestHeight, Foam, Crest);",
-        ["WorldPos", "Disp0", "Disp1", "Disp2", "Deriv0", "Deriv1", "Deriv2",
-         "PatchSize0", "PatchSize1", "PatchSize2", "CrestHeight"],
+        "Moments0, Moments0Sampler, Moments1, Moments1Sampler, Moments2, Moments2Sampler, "
+        "PatchSize0, PatchSize1, PatchSize2, CrestHeight, BaseRoughness, Foam, Crest, Roughness);",
+        ["WorldPos", "Disp0", "Disp1", "Disp2", "Deriv0", "Deriv1", "Deriv2", "Moments0", "Moments1", "Moments2",
+         "PatchSize0", "PatchSize1", "PatchSize2", "CrestHeight", "BaseRoughness"],
         unreal.CustomMaterialOutputType.CMOT_FLOAT3,
         extra_outputs=[("Foam", unreal.CustomMaterialOutputType.CMOT_FLOAT1),
-                       ("Crest", unreal.CustomMaterialOutputType.CMOT_FLOAT1)])
+                       ("Crest", unreal.CustomMaterialOutputType.CMOT_FLOAT1),
+                       ("Roughness", unreal.CustomMaterialOutputType.CMOT_FLOAT1)])
     connect_inputs({
         "WorldPos": world_pos, "Disp0": disp[0], "Disp1": disp[1], "Disp2": disp[2],
         "Deriv0": deriv[0], "Deriv1": deriv[1], "Deriv2": deriv[2],
+        "Moments0": moments[0], "Moments1": moments[1], "Moments2": moments[2],
         "PatchSize0": patch[0], "PatchSize1": patch[1], "PatchSize2": patch[2], "CrestHeight": crest_height,
+        "BaseRoughness": roughness_water,
     }, pixel)
     MEL.connect_material_property(pixel, "", unreal.MaterialProperty.MP_NORMAL)
 
@@ -165,10 +173,9 @@ def build():
     # Left unconnected it defaults to 1 and the water turns into an opaque black surface.
     MEL.connect_material_property(pixel, "Foam", unreal.MaterialProperty.MP_OPACITY)
 
-    roughness_water = scalar(material, "Roughness", 0.04, -500, 560)
     roughness_foam = scalar(material, "FoamRoughness", 0.7, -500, 640)
     roughness = node(material, unreal.MaterialExpressionLinearInterpolate, -200, 580)
-    connect(roughness_water, roughness, "A")
+    connect(pixel, roughness, "A", "Roughness")
     connect(roughness_foam, roughness, "B")
     connect(pixel, roughness, "Alpha", "Foam")
     MEL.connect_material_property(roughness, "", unreal.MaterialProperty.MP_ROUGHNESS)

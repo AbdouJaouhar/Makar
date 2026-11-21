@@ -14,6 +14,7 @@ namespace OceanParams
 {
 	const FName Displacement[] = { TEXT("Disp0"), TEXT("Disp1"), TEXT("Disp2") };
 	const FName Derivatives[] = { TEXT("Deriv0"), TEXT("Deriv1"), TEXT("Deriv2") };
+	const FName Moments[] = { TEXT("Moments0"), TEXT("Moments1"), TEXT("Moments2") };
 	const FName PatchSize[] = { TEXT("PatchSize0"), TEXT("PatchSize1"), TEXT("PatchSize2") };
 	const FName Resolution(TEXT("Resolution"));
 	const FName GridSpacing(TEXT("GridSpacing"));
@@ -183,10 +184,12 @@ void AOceanActor::InitializeSimulation()
 	{
 		DisplacementTextures.Reset();
 		DerivativeTextures.Reset();
+		MomentTextures.Reset();
 		for (int32 Index = 0; Index < FOceanSimulation::NumCascades; ++Index)
 		{
 			DisplacementTextures.Add(CreateOceanTexture(Size, NumMips));
 			DerivativeTextures.Add(CreateOceanTexture(Size, NumMips));
+			MomentTextures.Add(CreateOceanTexture(Size, NumMips));
 		}
 	}
 
@@ -218,6 +221,7 @@ void AOceanActor::UpdateMaterialParameters()
 		{
 			MaterialInstance->SetTextureParameterValue(OceanParams::Displacement[Index], DisplacementTextures[Index]);
 			MaterialInstance->SetTextureParameterValue(OceanParams::Derivatives[Index], DerivativeTextures[Index]);
+			MaterialInstance->SetTextureParameterValue(OceanParams::Moments[Index], MomentTextures[Index]);
 		}
 		MaterialInstance->SetScalarParameterValue(OceanParams::PatchSize[Index], Sizes[Index]);
 	}
@@ -380,6 +384,10 @@ void AOceanActor::UploadFrame(const FOceanFrame& Frame)
 	{
 		UploadMips(DisplacementTextures[Index], Frame.Cascades[Index].DisplacementMips);
 		UploadMips(DerivativeTextures[Index], Frame.Cascades[Index].DerivativeMips);
+		if (MomentTextures.IsValidIndex(Index))
+		{
+			UploadMips(MomentTextures[Index], Frame.Cascades[Index].MomentMips);
+		}
 	}
 	OceanMesh->SetVisibility(true);
 }

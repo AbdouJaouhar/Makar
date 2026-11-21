@@ -149,17 +149,36 @@ float3 OceanPixel(float3 WorldPos,
 	Texture2D Deriv0, SamplerState Deriv0Sampler,
 	Texture2D Deriv1, SamplerState Deriv1Sampler,
 	Texture2D Deriv2, SamplerState Deriv2Sampler,
-	float PatchSize0, float PatchSize1, float PatchSize2, float CrestHeight,
-	out float Foam, out float Crest)
+	Texture2D Moments0, SamplerState Moments0Sampler,
+	Texture2D Moments1, SamplerState Moments1Sampler,
+	Texture2D Moments2, SamplerState Moments2Sampler,
+	float PatchSize0, float PatchSize1, float PatchSize2, float CrestHeight, float BaseRoughness,
+	out float Foam, out float Crest, out float Roughness)
 {
 	const float2 PosM = WorldPos.xy * 0.01;
 	const float2 Uv0 = PosM / PatchSize0;
 	const float2 Uv1 = PosM / PatchSize1;
 	const float2 Uv2 = PosM / PatchSize2;
 
-	const float4 Deriv = Deriv0.Sample(Deriv0Sampler, Uv0)
-	                   + Deriv1.Sample(Deriv1Sampler, Uv1)
-	                   + Deriv2.Sample(Deriv2Sampler, Uv2);
+	const float4 D0 = Deriv0.Sample(Deriv0Sampler, Uv0);
+	const float4 D1 = Deriv1.Sample(Deriv1Sampler, Uv1);
+	const float4 D2 = Deriv2.Sample(Deriv2Sampler, Uv2);
+	const float4 Deriv = D0 + D1 + D2;
+
+	// LEAN mapping: filtered second moments minus the squared filtered slope is the slope variance of the
+	// waves averaged away inside this pixel. Cascades are independent, so their variances add up.
+	const float3 M0 = Moments0.Sample(Moments0Sampler, Uv0).xyz;
+	const float3 M1 = Moments1.Sample(Moments1Sampler, Uv1).xyz;
+	const float3 M2 = Moments2.Sample(Moments2Sampler, Uv2).xyz;
+	const float2 Variance = max(M0.xy - D0.xy * D0.xy, 0.0)
+	                      + max(M1.xy - D1.xy * D1.xy, 0.0)
+	                      + max(M2.xy - D2.xy * D2.xy, 0.0);
+
+	// Beckmann: alpha^2 = 2 * slope variance (isotropic average), added to the surface's own micro-roughness.
+	// Unreal's Roughness is sqrt(alpha). Distant water keeps its glitter instead of turning into a mirror.
+	const float BaseAlpha = BaseRoughness * BaseRoughness;
+	const float Alpha2 = BaseAlpha * BaseAlpha + (Variance.x + Variance.y);
+	Roughness = sqrt(sqrt(Alpha2));
 
 	// Slope of the displaced surface: height slope divided by the horizontal stretch.
 	const float2 Slope = Deriv.xy / max(1.0 + Deriv.zw, 0.2);

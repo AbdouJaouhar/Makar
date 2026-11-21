@@ -18,6 +18,13 @@ struct FOceanCascadeFrame
 
 	/** GPU data, one array per mip. RGBA = dHeight/dX, dHeight/dY, dDispX/dX, dDispY/dY. */
 	TArray<TArray<FFloat16Color>> DerivativeMips;
+
+	/**
+	 * GPU data, one array per mip. RGBA = slope second moments: sx^2, sy^2, sx*sy (slopes = dHeight/dX, dY).
+	 * Mip filtering averages them, so Moments - Derivatives^2 is the slope variance hidden inside a texel
+	 * (LEAN mapping): the shader turns it into roughness instead of letting distant waves flatten into a mirror.
+	 */
+	TArray<TArray<FFloat16Color>> MomentMips;
 };
 
 struct FOceanFrame
@@ -86,4 +93,5 @@ private:
 	TArray<FComplex> Work[4];
 	TArray<FVector4f> DisplacementBase;
 	TArray<FVector4f> DerivativeBase;
+	TArray<FVector4f> MomentBase;
 };

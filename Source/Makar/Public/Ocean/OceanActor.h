@@ -111,6 +111,10 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UTexture2D>> DerivativeTextures;
 
+	/** Slope second moments, see FOceanCascadeFrame::MomentMips. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UTexture2D>> MomentTextures;
+
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> MaterialInstance;
 
