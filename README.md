@@ -15,17 +15,13 @@ Tout est en C++. Aucun plugin payant n'est nécessaire.
    « Développement de jeux en C++ ».
    Pour une autre version d'UE 5 : clic droit sur `Makar.uproject` → *Switch Unreal Engine version*.
 2. Double-cliquer sur `Makar.uproject` et accepter la compilation des modules.
-3. **Générer le matériau de l'océan** (une seule fois) :
-   *Tools → Execute Python Script…* → choisir `Scripts/create_ocean_material.py`.
-   Cela crée `Content/Ocean/M_Ocean`.
-4. Créer le niveau :
-   - *File → New Level → Basic*, puis supprimer le sol `Floor`.
-   - *Place Actors → All Classes* → glisser un **Ocean Actor** à Z = 0. Son Z définit le niveau de la mer.
-     Les vagues bougent déjà dans l'éditeur.
-   - Placer le **Player Start** à 2–3 m au-dessus de l'eau.
-   - Glisser un ou plusieurs **Enemy Ship** sur l'eau, à quelques centaines de mètres.
-   - Enregistrer dans `Content/Maps/Ocean`, puis *Project Settings → Maps & Modes* →
-     définir cette carte comme *Editor Startup Map* et *Game Default Map*.
+3. Le matériau `Content/Ocean/M_Ocean` et la carte `Content/Maps/Ocean` sont versionnés.
+   La carte s'ouvre au démarrage de l'éditeur et du jeu : cliquer sur **Play**.
+4. Pour les régénérer (*Tools → Execute Python Script…*, ou en ligne de commande avec
+   `UnrealEditor-Cmd.exe Makar.uproject -run=pythonscript -script=<script>`) :
+   - `Scripts/create_ocean_material.py` → `M_Ocean` ;
+   - `Scripts/create_ocean_map.py` → la carte : ciel, soleil, nuages, brouillard, **Ocean Actor** à Z = 0
+     (son Z définit le niveau de la mer), **Player Start** et deux **Enemy Ship**.
 5. *Play*.
 
 ### Ambiance « mer du Nord »

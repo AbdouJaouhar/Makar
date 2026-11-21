@@ -6,7 +6,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
-#include "ProceduralMeshComponent.h"
+#include "Ocean/OceanMeshComponent.h"
 #include "Rendering/Texture2DResource.h"
 #include "TextureResource.h"
 
@@ -88,7 +88,8 @@ AOceanActor::AOceanActor()
 
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 
-	OceanMesh = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("OceanMesh"));
+	// UOceanMeshComponent does not save its geometry: the grid is rebuilt on load.
+	OceanMesh = CreateDefaultSubobject<UOceanMeshComponent>(TEXT("OceanMesh"));
 	OceanMesh->SetupAttachment(RootComponent);
 	OceanMesh->SetUsingAbsoluteLocation(true); // follows the camera, not the actor
 	OceanMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -112,6 +113,11 @@ void AOceanActor::BeginPlay()
 {
 	Super::BeginPlay();
 	bNeedsInitialization = true;
+	// The mesh is not saved, and OnConstruction does not run again in a cooked game.
+	if (!bMeshBuilt)
+	{
+		BuildMesh();
+	}
 }
 
 void AOceanActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
