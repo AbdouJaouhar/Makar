@@ -82,6 +82,65 @@ float OceanFoamCoverage(float2 PosM, float Amount)
 	return Coverage * lerp(0.55, 1.0, saturate(Amount));
 }
 
+// Animated cell borders: Worley F2 - F1 with feature points orbiting inside their cells.
+// Returns ~1 on the borders, 0 inside the cells.
+float OceanCausticLayer(float2 P, float Time)
+{
+	const float2 Cell = floor(P);
+	const float2 Local = P - Cell;
+	float F1 = 8.0;
+	float F2 = 8.0;
+	for (int Y = -1; Y <= 1; ++Y)
+	{
+		for (int X = -1; X <= 1; ++X)
+		{
+			const float2 Offset = float2(X, Y);
+			const float2 Random = OceanHash22(Cell + Offset);
+			const float2 Feature = 0.5 + 0.4 * sin(Time * (0.6 + 0.6 * Random) + 6.2831 * Random);
+			const float Distance = length(Offset + Feature - Local);
+			if (Distance < F1)
+			{
+				F2 = F1;
+				F1 = Distance;
+			}
+			else
+			{
+				F2 = min(F2, Distance);
+			}
+		}
+	}
+	return 1.0 - smoothstep(0.0, 0.12, F2 - F1);
+}
+
+// Light focused on the seabed by the waves: a moving network of bright lines.
+// Sea level is Z = 0. Deeper floors get wider, softer and dimmer caustics.
+float OceanCaustics(float3 WorldPos, float Time, float CellSizeM, float FadeDepthM)
+{
+	const float DepthM = max(-WorldPos.z * 0.01, 0.0);
+	const float Size = CellSizeM * (1.0 + DepthM * 0.08);
+	const float2 PosM = WorldPos.xy * 0.01;
+
+	// Cell borders are straight lines: a slow, smooth warp bends them into the curved filaments
+	// that a wavy surface actually focuses.
+	float2 P = PosM / Size;
+	P += 0.3 * sin(P.yx * float2(1.7, 1.3) + Time * float2(0.4, 0.33));
+	P += 0.15 * sin(P.yx * float2(3.1, 2.7) - Time * float2(0.55, 0.47));
+
+	// Two layers drifting in different directions; their product keeps only where lines cross or overlap,
+	// which gives the sharp, uneven brightness of real caustics.
+	const float A = OceanCausticLayer(P + float2(0.11, 0.05) * Time, Time);
+	const float B = OceanCausticLayer(P / 0.83 + float2(-0.07, 0.09) * Time + 17.3, Time * 1.1);
+	float Caustics = saturate(A * 0.6 + B * 0.6 + A * B * 0.8);
+	Caustics *= Caustics;
+
+	// Average out where the lines are thinner than a pixel; light is absorbed with depth,
+	// and nothing above the water line.
+	const float2 Footprint = fwidth(PosM / Size);
+	const float Blur = saturate(max(Footprint.x, Footprint.y) * 3.0 - 0.5);
+	Caustics = lerp(Caustics, 0.25, Blur);
+	return Caustics * exp(-DepthM / max(FadeDepthM, 0.1)) * saturate(DepthM / 0.5);
+}
+
 // World-space normal from all cascades, plus foam and a crest mask for fake subsurface scattering.
 float3 OceanPixel(float3 WorldPos,
 	Texture2D Disp0, SamplerState Disp0Sampler,

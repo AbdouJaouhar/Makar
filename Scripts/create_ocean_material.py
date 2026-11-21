@@ -17,10 +17,11 @@ MEL = unreal.MaterialEditingLibrary
 
 
 def get_or_create_material():
+    # Start from a fresh asset: delete_all_material_expressions keeps the Single Layer Water output node,
+    # and a second one makes the material fail to compile.
     if unreal.EditorAssetLibrary.does_asset_exist(ASSET_PATH):
-        material = unreal.EditorAssetLibrary.load_asset(ASSET_PATH)
-        MEL.delete_all_material_expressions(material)
-        return material
+        if not unreal.EditorAssetLibrary.delete_asset(ASSET_PATH):
+            raise RuntimeError(f"Could not delete {ASSET_PATH} to rebuild it")
     tools = unreal.AssetToolsHelpers.get_asset_tools()
     return tools.create_asset(ASSET_NAME, ASSET_DIR, unreal.Material, unreal.MaterialFactoryNew())
 
@@ -176,11 +177,13 @@ def build():
     specular = scalar(material, "Specular", 0.25, -200, 720)
     MEL.connect_material_property(specular, "", unreal.MaterialProperty.MP_SPECULAR)
 
-    # --- Water volume (per metre). Caribbean water is very clear: red is absorbed within a few metres,
+    # --- Water volume. Caribbean water is very clear: red is absorbed within a few metres,
     # blue-green travels far and is scattered back, so shallow water over sand reads turquoise
-    # and deep water reads saturated blue. ---
-    absorption = color(material, "Absorption", (0.45, 0.06, 0.03), -500, 800)
-    scattering = color(material, "Scattering", (0.004, 0.022, 0.028), -500, 920)
+    # and deep water reads saturated blue.
+    # Single Layer Water applies these coefficients per CENTIMETRE (checked in-engine: the per-metre
+    # values 0.45 / 0.06 / 0.03 made 6 m of water fully opaque). ---
+    absorption = color(material, "Absorption", (0.009, 0.0012, 0.0006), -500, 800)
+    scattering = color(material, "Scattering", (0.00008, 0.00044, 0.00056), -500, 920)
 
     # Thin wave crests let more light through: boost scattering there.
     crest_boost = scalar(material, "CrestScatterBoost", 2.0, -500, 1040)
