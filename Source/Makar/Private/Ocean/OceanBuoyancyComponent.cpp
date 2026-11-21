@@ -34,7 +34,7 @@ void UOceanBuoyancyComponent::TickComponent(float DeltaTime, ELevelTick TickType
 	{
 		const FVector Center = Transform.TransformPosition(Pontoon.RelativeLocation);
 		const float R = Pontoon.Radius * 0.01f; // m
-		const float FullVolume = 4.f / 3.f * PI * R * R * R;
+		const float FullVolume = 4.f / 3.f * UE_PI * R * R * R;
 		TotalVolume += FullVolume;
 
 		float WaterZ = 0.f;
@@ -50,7 +50,7 @@ void UOceanBuoyancyComponent::TickComponent(float DeltaTime, ELevelTick TickType
 			continue;
 		}
 
-		const float Volume = PI * Depth * Depth * (3.f * R - Depth) / 3.f; // m³
+		const float Volume = UE_PI * Depth * Depth * (3.f * R - Depth) / 3.f; // m³
 		const float Fraction = Volume / FullVolume;
 		TotalSubmerged += Volume;
 

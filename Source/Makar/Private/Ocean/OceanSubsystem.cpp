@@ -30,5 +30,5 @@ bool UOceanSubsystem::GetWaterHeightAt(const FVector& WorldLocation, float& OutW
 float UOceanSubsystem::GetDepthBelowSurface(const FVector& WorldLocation) const
 {
 	float WaterZ = 0.f;
-	return GetWaterHeightAt(WorldLocation, WaterZ) ? WaterZ - WorldLocation.Z : -BIG_NUMBER;
+	return GetWaterHeightAt(WorldLocation, WaterZ) ? WaterZ - WorldLocation.Z : -UE_BIG_NUMBER;
 }

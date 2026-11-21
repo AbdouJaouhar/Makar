@@ -42,7 +42,7 @@ public:
 	float GetWaterHeightAt(const FVector& WorldLocation) const;
 
 	UFUNCTION(BlueprintPure, Category = "Ocean")
-	float GetSeaLevel() const { return GetActorLocation().Z; }
+	float GetSeaLevel() const { return float(GetActorLocation().Z); }
 
 	/** Change the sea state at runtime (storm, calm...). */
 	UFUNCTION(BlueprintCallable, Category = "Ocean")

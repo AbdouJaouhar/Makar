@@ -64,14 +64,14 @@ namespace
 		for (int32 Mip = 0; Mip < Mips.Num(); ++Mip)
 		{
 			const int32 Size = int32(FMath::Sqrt(float(Mips[Mip].Num())));
-			const int64 Bytes = Mips[Mip].Num() * sizeof(FFloat16Color);
+			const int64 Bytes = int64(Mips[Mip].Num()) * int64(sizeof(FFloat16Color));
 
 			// The render thread reads the data later: give it its own copy.
 			uint8* Copy = static_cast<uint8*>(FMemory::Malloc(Bytes));
 			FMemory::Memcpy(Copy, Mips[Mip].GetData(), Bytes);
 			FUpdateTextureRegion2D* Region = new FUpdateTextureRegion2D(0, 0, 0, 0, Size, Size);
 
-			Texture->UpdateTextureRegions(Mip, 1, Region, Size * sizeof(FFloat16Color), sizeof(FFloat16Color), Copy,
+			Texture->UpdateTextureRegions(Mip, 1, Region, uint32(Size * sizeof(FFloat16Color)), uint32(sizeof(FFloat16Color)), Copy,
 				[](uint8* SrcData, const FUpdateTextureRegion2D* Regions)
 				{
 					FMemory::Free(SrcData);
@@ -226,7 +226,7 @@ void AOceanActor::BuildMesh()
 	const float OuterLength = FMath::Max(GridFarDistance - InnerHalfWidth, S0 * Outer);
 
 	// Growth factor g such that S0 * (g^Outer - 1) / (g - 1) == OuterLength.
-	auto OuterSpan = [&](double G) { return S0 * (FMath::Pow(G, double(Outer)) - 1.0) / (G - 1.0); };
+	auto OuterSpan = [&](double Growth) { return S0 * (FMath::Pow(Growth, double(Outer)) - 1.0) / (Growth - 1.0); };
 	double Low = 1.0 + 1e-6;
 	double High = 4.0;
 	for (int32 Iteration = 0; Iteration < 100; ++Iteration)
@@ -237,18 +237,21 @@ void AOceanActor::BuildMesh()
 	const double G = 0.5 * (Low + High);
 	GridGrowth = float(G - 1.0);
 
+	// Distance (m) from the edge of the inner area to the J-th outer vertex.
+	auto OuterOffset = [&](int32 J) { return float(OuterSpan(G) * (FMath::Pow(G, double(J)) - 1.0) / (FMath::Pow(G, double(Outer)) - 1.0)); };
+
 	TArray<float> Axis; // metres
 	for (int32 J = Outer; J >= 1; --J)
 	{
-		Axis.Add(-(InnerHalfWidth + float(OuterSpan(G) * (FMath::Pow(G, double(J)) - 1.0) / (FMath::Pow(G, double(Outer)) - 1.0))));
+		Axis.Add(-(InnerHalfWidth + OuterOffset(J)));
 	}
 	for (int32 I = -Inner; I <= Inner; ++I)
 	{
-		Axis.Add(I * S0);
+		Axis.Add(float(I) * S0);
 	}
 	for (int32 J = 1; J <= Outer; ++J)
 	{
-		Axis.Add(InnerHalfWidth + float(OuterSpan(G) * (FMath::Pow(G, double(J)) - 1.0) / (FMath::Pow(G, double(Outer)) - 1.0)));
+		Axis.Add(InnerHalfWidth + OuterOffset(J));
 	}
 
 	const int32 Count = Axis.Num();
@@ -265,7 +268,7 @@ void AOceanActor::BuildMesh()
 	{
 		for (int32 X = 0; X < Count; ++X)
 		{
-			Vertices.Add(FVector(Axis[X], Axis[Y], 0.0) * 100.0);
+			Vertices.Add(FVector(double(Axis[X]), double(Axis[Y]), 0.0) * 100.0);
 			Normals.Add(FVector::UpVector);
 			Tangents.Add(FProcMeshTangent(1.f, 0.f, 0.f));
 		}
@@ -405,7 +408,7 @@ float AOceanActor::GetWaterHeightAt(const FVector& WorldLocation) const
 	}
 
 	// The surface point above P comes from the grid point X0 with X0 + D(X0) = P (horizontal displacement).
-	const FVector2f Target(WorldLocation.X * 0.01f, WorldLocation.Y * 0.01f);
+	const FVector2f Target(float(WorldLocation.X * 0.01), float(WorldLocation.Y * 0.01));
 	FVector2f Source = Target;
 	for (int32 Iteration = 0; Iteration < 4; ++Iteration)
 	{

@@ -7,7 +7,7 @@
 
 namespace
 {
-	constexpr float Gravity = 9.81f;
+	constexpr float OceanGravity = 9.81f;
 
 	/** A cascade keeps wavelengths longer than its tile size divided by this; finer ones go to the next cascade. */
 	constexpr float CascadeBandSplit = 6.f;
@@ -17,7 +17,7 @@ namespace
 		// Box-Muller
 		const float U1 = FMath::Max(Random.GetFraction(), 1e-6f);
 		const float U2 = Random.GetFraction();
-		return FMath::Sqrt(-2.f * FMath::Loge(U1)) * FMath::Cos(2.f * PI * U2);
+		return FMath::Sqrt(-2.f * FMath::Loge(U1)) * FMath::Cos(2.f * UE_PI * U2);
 	}
 }
 
@@ -46,21 +46,21 @@ void FOceanSimulation::Initialize(const FOceanSettings& InSettings)
 	Twiddles.SetNumUninitialized(N / 2);
 	for (int32 Index = 0; Index < N / 2; ++Index)
 	{
-		const float Angle = 2.f * PI * float(Index) / float(N);
+		const float Angle = 2.f * UE_PI * float(Index) / float(N);
 		Twiddles[Index] = { FMath::Cos(Angle), FMath::Sin(Angle) };
 	}
 
 	// JONSWAP parameters from wind speed and fetch.
 	const float U = FMath::Max(Settings.WindSpeed, 0.1f);
 	const float F = FMath::Max(Settings.Fetch, 100.f);
-	Alpha = 0.076f * FMath::Pow(U * U / (F * Gravity), 0.22f);
-	PeakOmega = 22.f * FMath::Pow(Gravity * Gravity / (U * F), 1.f / 3.f);
+	Alpha = 0.076f * FMath::Pow(U * U / (F * OceanGravity), 0.22f);
+	PeakOmega = 22.f * FMath::Pow(OceanGravity * OceanGravity / (U * F), 1.f / 3.f);
 
 	const float Sizes[NumCascades] = { Settings.Cascade0Size, Settings.Cascade1Size, Settings.Cascade2Size };
 	for (int32 Index = 0; Index < NumCascades; ++Index)
 	{
-		const float KMin = Index == 0 ? 0.f : CascadeBandSplit * 2.f * PI / Sizes[Index];
-		const float KMax = Index + 1 < NumCascades ? CascadeBandSplit * 2.f * PI / Sizes[Index + 1] : TNumericLimits<float>::Max();
+		const float KMin = Index == 0 ? 0.f : CascadeBandSplit * 2.f * UE_PI / Sizes[Index];
+		const float KMax = Index + 1 < NumCascades ? CascadeBandSplit * 2.f * UE_PI / Sizes[Index + 1] : TNumericLimits<float>::Max();
 		InitializeCascade(Cascades[Index], FMath::Max(Sizes[Index], 0.1f), KMin, KMax, Settings.Seed + Index * 7919);
 	}
 
@@ -76,8 +76,8 @@ void FOceanSimulation::Dispersion(float K, float& OutOmega, float& OutDOmegaDK) 
 {
 	const float KH = FMath::Min(K * FMath::Max(Settings.Depth, 1.f), 20.f);
 	const float T = FMath::Tanh(KH);
-	OutOmega = FMath::Sqrt(Gravity * K * T);
-	OutDOmegaDK = OutOmega > 0.f ? Gravity * (T + KH * (1.f - T * T)) / (2.f * OutOmega) : 0.f;
+	OutOmega = FMath::Sqrt(OceanGravity * K * T);
+	OutDOmegaDK = OutOmega > 0.f ? OceanGravity * (T + KH * (1.f - T * T)) / (2.f * OutOmega) : 0.f;
 }
 
 float FOceanSimulation::JonswapSpectrum(float Omega) const
@@ -89,7 +89,7 @@ float FOceanSimulation::JonswapSpectrum(float Omega) const
 	const float Sigma = Omega <= PeakOmega ? 0.07f : 0.09f;
 	const float R = FMath::Exp(-FMath::Square(Omega - PeakOmega) / (2.f * Sigma * Sigma * PeakOmega * PeakOmega));
 	const float Ratio = PeakOmega / Omega;
-	return Alpha * Gravity * Gravity / FMath::Pow(Omega, 5.f)
+	return Alpha * OceanGravity * OceanGravity / FMath::Pow(Omega, 5.f)
 		* FMath::Exp(-1.25f * Ratio * Ratio * Ratio * Ratio)
 		* FMath::Pow(Settings.PeakEnhancement, R);
 }
@@ -103,10 +103,10 @@ float FOceanSimulation::DirectionalSpreading(float Omega, float Theta) const
 	S = FMath::Max(S, 1e-3);
 
 	// Normalisation so the spreading integrates to 1 over [-pi, pi]: 2^(2s-1)/pi * Gamma(s+1)^2 / Gamma(2s+1).
-	const double LogQ = (2.0 * S - 1.0) * std::log(2.0) - std::log(double(PI)) + 2.0 * std::lgamma(S + 1.0) - std::lgamma(2.0 * S + 1.0);
+	const double LogQ = (2.0 * S - 1.0) * std::log(2.0) - std::log(double(UE_PI)) + 2.0 * std::lgamma(S + 1.0) - std::lgamma(2.0 * S + 1.0);
 	const double D = std::exp(LogQ) * std::pow(std::abs(std::cos(0.5 * double(Theta))), 2.0 * S);
 
-	return FMath::Lerp(float(D), 1.f / (2.f * PI), FMath::Clamp(Settings.DirectionalSpread, 0.f, 1.f));
+	return FMath::Lerp(float(D), 1.f / (2.f * UE_PI), FMath::Clamp(Settings.DirectionalSpread, 0.f, 1.f));
 }
 
 void FOceanSimulation::InitializeCascade(FCascade& Cascade, float PatchSize, float KMin, float KMax, int32 Seed) const
@@ -120,7 +120,7 @@ void FOceanSimulation::InitializeCascade(FCascade& Cascade, float PatchSize, flo
 	Cascade.Foam.SetNumZeroed(Count);
 
 	FRandomStream Random(Seed);
-	const float DeltaK = 2.f * PI / PatchSize;
+	const float DeltaK = 2.f * UE_PI / PatchSize;
 	const float WindRadians = FMath::DegreesToRadians(Settings.WindDirection);
 
 	for (int32 Y = 0; Y < N; ++Y)
@@ -346,8 +346,8 @@ void FOceanSimulation::BuildMips(const TArray<FVector4f>& Base, TArray<TArray<FF
 				{
 					const int32 SX = X * 2;
 					const int32 SY = Y * 2;
-					Next[Y * NextSize + X] = 0.25f * (Current[SY * Size + SX] + Current[SY * Size + SX + 1]
-						+ Current[(SY + 1) * Size + SX] + Current[(SY + 1) * Size + SX + 1]);
+					Next[Y * NextSize + X] = (Current[SY * Size + SX] + Current[SY * Size + SX + 1]
+						+ Current[(SY + 1) * Size + SX] + Current[(SY + 1) * Size + SX + 1]) * 0.25f;
 				}
 			}
 			Swap(Current, Next);
