@@ -11,7 +11,7 @@ Tout est en C++. Aucun plugin payant n'est nécessaire.
 
 ## Mise en route
 
-1. Installer **Unreal Engine 5.6** (Epic Games Launcher) et **Visual Studio 2022** avec la charge de travail
+1. Installer **Unreal Engine 5.8** (Epic Games Launcher) et **Visual Studio 2022** avec la charge de travail
    « Développement de jeux en C++ ».
    Pour une autre version d'UE 5 : clic droit sur `Makar.uproject` → *Switch Unreal Engine version*.
 2. Double-cliquer sur `Makar.uproject` et accepter la compilation des modules.
