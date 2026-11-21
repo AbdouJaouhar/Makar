@@ -20,8 +20,11 @@ Tout est en C++. Aucun plugin payant n'est nécessaire.
 4. Pour les régénérer (*Tools → Execute Python Script…*, ou en ligne de commande avec
    `UnrealEditor-Cmd.exe Makar.uproject -run=pythonscript -script=<script>`) :
    - `Scripts/create_ocean_material.py` → `M_Ocean` ;
-   - `Scripts/create_ocean_map.py` → la carte : ciel, soleil, nuages, brouillard, **Ocean Actor** à Z = 0
-     (son Z définit le niveau de la mer), **Player Start** et deux **Enemy Ship**.
+   - `Scripts/create_ocean_map.py` → la carte « mer des Caraïbes » : soleil tropical, nuages, **Ocean Actor**
+     à Z = 0 (son Z définit le niveau de la mer) réglé sur les alizés, fond de sable `M_Seabed` en pente douce
+     (2 à 14 m) et caméra libre (ZQSD/flèches, E/A pour monter/descendre).
+   - L'eau utilise le modèle *Single Layer Water* : sa couleur vient de l'absorption et de la diffusion
+     (paramètres `Absorption`, `Scattering` de `M_Ocean`) et du fond vu à travers l'eau.
 5. *Play*.
 
 ### Ambiance « mer du Nord »

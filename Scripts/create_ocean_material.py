@@ -95,7 +95,10 @@ def connect_inputs(sources, target):
 def build():
     material = get_or_create_material()
     material.set_editor_property("tangent_space_normal", False)  # the ocean computes world-space normals
-    material.set_editor_property("two_sided", True)
+    # Single Layer Water: light is absorbed and scattered through the water volume down to the seabed,
+    # which is what gives clear tropical water its turquoise-to-deep-blue gradient.
+    material.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_SINGLE_LAYER_WATER)
+    material.set_editor_property("two_sided", False)
 
     placeholder = placeholder_texture()
 
@@ -151,14 +154,15 @@ def build():
     }, pixel)
     MEL.connect_material_property(pixel, "", unreal.MaterialProperty.MP_NORMAL)
 
-    # --- Shading: dark, mostly reflective water; foam is rough and white ---
-    water_color = color(material, "WaterColor", (0.004, 0.011, 0.014), -500, 300)
-    foam_color = color(material, "FoamColor", (0.75, 0.8, 0.8), -500, 420)
-    base = node(material, unreal.MaterialExpressionLinearInterpolate, -200, 340)
-    connect(water_color, base, "A")
-    connect(foam_color, base, "B")
-    connect(pixel, base, "Alpha", "Foam")
+    # --- Surface: the water itself is shaded by the volume below; base colour only carries the foam ---
+    foam_color = color(material, "FoamColor", (0.8, 0.85, 0.85), -500, 420)
+    base = node(material, unreal.MaterialExpressionMultiply, -200, 340)
+    connect(foam_color, base, "A")
+    connect(pixel, base, "B", "Foam")
     MEL.connect_material_property(base, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    # In Single Layer Water, Opacity is the opaque surface coverage (foam): 0 = see into the water volume.
+    # Left unconnected it defaults to 1 and the water turns into an opaque black surface.
+    MEL.connect_material_property(pixel, "Foam", unreal.MaterialProperty.MP_OPACITY)
 
     roughness_water = scalar(material, "Roughness", 0.04, -500, 560)
     roughness_foam = scalar(material, "FoamRoughness", 0.7, -500, 640)
@@ -172,16 +176,35 @@ def build():
     specular = scalar(material, "Specular", 0.25, -200, 720)
     MEL.connect_material_property(specular, "", unreal.MaterialProperty.MP_SPECULAR)
 
-    # Cheap subsurface scattering: light leaking through the thin top of the waves.
-    scatter_color = color(material, "ScatterColor", (0.0, 0.035, 0.03), -500, 800)
-    scatter_strength = scalar(material, "ScatterStrength", 0.5, -500, 920)
-    scatter_mask = node(material, unreal.MaterialExpressionMultiply, -300, 860)
-    connect(pixel, scatter_mask, "A", "Crest")
-    connect(scatter_strength, scatter_mask, "B")
-    emissive = node(material, unreal.MaterialExpressionMultiply, -200, 820)
-    connect(scatter_color, emissive, "A")
-    connect(scatter_mask, emissive, "B")
-    MEL.connect_material_property(emissive, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
+    # --- Water volume (per metre). Caribbean water is very clear: red is absorbed within a few metres,
+    # blue-green travels far and is scattered back, so shallow water over sand reads turquoise
+    # and deep water reads saturated blue. ---
+    absorption = color(material, "Absorption", (0.45, 0.06, 0.03), -500, 800)
+    scattering = color(material, "Scattering", (0.004, 0.022, 0.028), -500, 920)
+
+    # Thin wave crests let more light through: boost scattering there.
+    crest_boost = scalar(material, "CrestScatterBoost", 2.0, -500, 1040)
+    crest_scale = node(material, unreal.MaterialExpressionMultiply, -350, 1000)
+    connect(pixel, crest_scale, "A", "Crest")
+    connect(crest_boost, crest_scale, "B")
+    one = node(material, unreal.MaterialExpressionConstant, -350, 1100)
+    one.set_editor_property("r", 1.0)
+    crest_factor = node(material, unreal.MaterialExpressionAdd, -250, 1040)
+    connect(one, crest_factor, "A")
+    connect(crest_scale, crest_factor, "B")
+    scattering_final = node(material, unreal.MaterialExpressionMultiply, -150, 940)
+    connect(scattering, scattering_final, "A")
+    connect(crest_factor, scattering_final, "B")
+
+    phase_g = scalar(material, "PhaseG", 0.3, -500, 1160)
+
+    water_output = node(material, unreal.MaterialExpressionSingleLayerWaterMaterialOutput, 0, 900)
+    connect(scattering_final, water_output, "ScatteringCoefficients")
+    connect(absorption, water_output, "AbsorptionCoefficients")
+    connect(phase_g, water_output, "PhaseG")
+    # Explicit 1: what lies under the water (the seabed) is seen through it, only tinted by the volume.
+    behind = scalar(material, "ColorScaleBehindWater", 1.0, -500, 1240)
+    connect(behind, water_output, "ColorScaleBehindWater")
 
     MEL.recompile_material(material)
     unreal.EditorAssetLibrary.save_asset(ASSET_PATH)
