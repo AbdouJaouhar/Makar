@@ -38,8 +38,14 @@ namespace
 		Texture->Filter = TF_Trilinear;
 		Texture->CompressionSettings = TC_HDR;
 
-		// CreateTransient only allocates mip 0.
+		// CreateTransient only allocates mip 0, and leaves it uninitialised: garbage would show up as
+		// huge displacements and full foam until the first simulated frame is uploaded.
 		FTexturePlatformData* PlatformData = Texture->GetPlatformData();
+		{
+			FByteBulkData& Mip0 = PlatformData->Mips[0].BulkData;
+			FMemory::Memzero(Mip0.Lock(LOCK_READ_WRITE), Mip0.GetBulkDataSize());
+			Mip0.Unlock();
+		}
 		for (int32 Mip = 1; Mip < NumMips; ++Mip)
 		{
 			const int32 MipSize = FMath::Max(Size >> Mip, 1);
@@ -113,6 +119,8 @@ void AOceanActor::BeginPlay()
 {
 	Super::BeginPlay();
 	bNeedsInitialization = true;
+	// Hidden until the first simulated frame is uploaded: the material has no wave data before that.
+	OceanMesh->SetVisibility(false);
 	// The mesh is not saved, and OnConstruction does not run again in a cooked game.
 	if (!bMeshBuilt)
 	{
@@ -373,6 +381,7 @@ void AOceanActor::UploadFrame(const FOceanFrame& Frame)
 		UploadMips(DisplacementTextures[Index], Frame.Cascades[Index].DisplacementMips);
 		UploadMips(DerivativeTextures[Index], Frame.Cascades[Index].DerivativeMips);
 	}
+	OceanMesh->SetVisibility(true);
 }
 
 FVector3f AOceanActor::SampleDisplacement(const FVector2f& PositionMeters) const
