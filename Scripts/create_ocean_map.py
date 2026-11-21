@@ -71,8 +71,11 @@ def caribbean_sea_state(ocean):
     settings.set_editor_property("fetch", 300000.0)
     settings.set_editor_property("swell", 0.35)
     settings.set_editor_property("choppiness", 0.9)
-    settings.set_editor_property("foam_threshold", 0.5)
+    # Scattered whitecaps (a few % of the surface at Beaufort 4) leaving streaks that last a few seconds.
+    # The surface Jacobian stays close to 1 at this wind speed: 0.92 is sparse, 0.96 already covers half the sea.
+    settings.set_editor_property("foam_threshold", 0.93)
     settings.set_editor_property("foam_intensity", 1.5)
+    settings.set_editor_property("foam_decay", 0.25)
     settings.set_editor_property("resolution", 256)
     ocean.set_editor_property("settings", settings)
 

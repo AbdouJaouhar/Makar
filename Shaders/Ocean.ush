@@ -37,6 +37,51 @@ float3 OceanVertexOffset(float3 WorldPos, float3 CameraPos,
 	return D * Fade * 100.0;
 }
 
+float2 OceanHash22(float2 P)
+{
+	const float3 Q = frac(float3(P.xyx) * float3(0.1031, 0.1030, 0.0973));
+	const float3 R = Q + dot(Q, Q.yzx + 33.33);
+	return frac((R.xx + R.yz) * R.zy);
+}
+
+// Distance to the nearest of one random point per cell (Worley F1), ~0 at the points, ~0.7 at cell borders.
+float OceanCellular(float2 P)
+{
+	const float2 Cell = floor(P);
+	const float2 Local = P - Cell;
+	float Nearest = 8.0;
+	for (int Y = -1; Y <= 1; ++Y)
+	{
+		for (int X = -1; X <= 1; ++X)
+		{
+			const float2 Offset = float2(X, Y);
+			const float2 Delta = Offset + OceanHash22(Cell + Offset) - Local;
+			Nearest = min(Nearest, dot(Delta, Delta));
+		}
+	}
+	return sqrt(Nearest);
+}
+
+// Foam is a network of bubbles, not a flat white sheet: dense where it was just created,
+// a thin lace along bubble borders as it decays. Returns surface coverage in [0, 1].
+float OceanFoamCoverage(float2 PosM, float Amount)
+{
+	// Bubble cells of ~0.8 m and ~0.25 m, attached to the undisplaced surface so they drift with the waves.
+	// The large cells are warped by the small ones so the holes are not perfectly round.
+	const float Small = OceanCellular(PosM * 4.0);
+	const float Large = OceanCellular(PosM * 1.25 + Small * 0.6);
+	float Pattern = saturate((Large * 0.45 + Small * 0.55) / 0.7);
+
+	// Average the pattern out where a cell is smaller than a pixel, otherwise distant foam shimmers.
+	const float2 Footprint = fwidth(PosM) * 4.0;
+	Pattern = lerp(Pattern, 0.55, saturate(max(Footprint.x, Footprint.y) - 0.5));
+
+	// More foam fills more of the pattern: borders first, then whole cells.
+	const float Coverage = saturate((Amount * 1.3 - (1.0 - Pattern)) * 4.0);
+	// Old, thin foam lets the water show through; fresh whitecaps are opaque.
+	return Coverage * lerp(0.55, 1.0, saturate(Amount));
+}
+
 // World-space normal from all cascades, plus foam and a crest mask for fake subsurface scattering.
 float3 OceanPixel(float3 WorldPos,
 	Texture2D Disp0, SamplerState Disp0Sampler,
@@ -64,7 +109,9 @@ float3 OceanPixel(float3 WorldPos,
 	const float4 S1 = Disp1.Sample(Disp1Sampler, Uv1);
 	const float4 S2 = Disp2.Sample(Disp2Sampler, Uv2);
 
-	Foam = saturate(S0.w + S1.w + S2.w);
+	// Whitecaps break on the crests of the larger waves: the 10 m ripple cascade only adds a little,
+	// otherwise foam is sprinkled evenly over the whole sea.
+	Foam = OceanFoamCoverage(PosM, saturate(S0.w + S1.w * 0.8 + S2.w * 0.15));
 	Crest = saturate((S0.z + S1.z) / max(CrestHeight, 0.01));
 
 	return normalize(float3(-Slope, 1.0));
