@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Ocean/OceanErosion.h"
 #include "Ocean/OceanShoreData.h"
 #include "OceanBathymetry.generated.h"
 
@@ -17,6 +18,9 @@ struct FOceanTerrainSample
 	float Understory = 0.f; // bush mass above the ground (UnderstoryRelief of it in the terrain mesh, the rest shrubs)
 	float Rock = 0.f;       // 0..1, rocky shore
 	float Inland = 0.f;     // approximate distance from the coastline, positive on land
+	float Hills = 0.f;      // the massif above the beach before erosion, m (its uplift in the landscape evolution)
+	float Erosion = 0.f;    // what erosion changed here, m (+ deposited sediment, - carved gully)
+	float Flow = 0.f;       // runoff, 0 on ridges, ~1 in the main gullies
 };
 
 /**
@@ -123,6 +127,22 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0", ClampMax = "1"))
 	float UnderstoryRelief = 0.2f;
 
+	/** Carves the land with rain and gravity (OceanErosion) when the island is built. */
+	UPROPERTY(EditAnywhere, Category = "Island|Erosion")
+	bool bErode = true;
+
+	/** Raindrops simulated over the island (~1 per square metre of land gives a well-drained relief). */
+	UPROPERTY(EditAnywhere, Category = "Island|Erosion", meta = (EditCondition = "bErode", ClampMin = "0"))
+	int32 ErosionDroplets = 400000;
+
+	/** Scales how much each droplet carries: deeper gullies, larger fans. */
+	UPROPERTY(EditAnywhere, Category = "Island|Erosion", meta = (EditCondition = "bErode", ClampMin = "0"))
+	float ErosionStrength = 1.f;
+
+	/** Iterations of uplift and incision growing the massif's relief (more = closer to the steady state). */
+	UPROPERTY(EditAnywhere, Category = "Island|Erosion", meta = (EditCondition = "bErode", ClampMin = "0"))
+	int32 LandscapeIterations = 250;
+
 	/** Drop per metre offshore at the waterline (0.05 = 1:20, a gentle sandy beach). */
 	UPROPERTY(EditAnywhere, Category = "Sea floor", meta = (ClampMin = "0.001"))
 	float BeachSlope = 0.05f;
@@ -171,6 +191,24 @@ private:
 	void Build();
 	void BuildShoreTexture(const FOceanShoreData& Data);
 	void BuildFootprintTexture();
+
+	/** The island's shape before erosion, analytic (coastline, beach, hills, rocky points, sea floor). */
+	FOceanTerrainSample SampleShape(const FVector2f& PositionM) const;
+
+	/** Erodes the analytic shape over the island (OceanErosion) and keeps the change in Erosion. */
+	void BuildErosion();
+
+	/**
+	 * The massif grown by landscape evolution (OceanErosion::LandscapeEvolution, 2 m), scaled to the analytic massif's
+	 * height, and its drainage network (Flow). Replaces the analytic hills in SampleShape once built.
+	 */
+	FOceanHeightfield Relief;
+
+	/**
+	 * What the rain and the screes then changed (m, + deposited, - carved), at 1 m. SampleTerrain adds the change to
+	 * the shape, which keeps its fine detail (and the beaches, which barely erode, stay exactly analytic).
+	 */
+	FOceanHeightfield Erosion;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> ShoreTexture;

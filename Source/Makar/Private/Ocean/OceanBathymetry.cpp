@@ -271,6 +271,168 @@ float AOceanBathymetry::GetTerrainHeight(const FVector2f& PositionM) const
 
 FOceanTerrainSample AOceanBathymetry::SampleTerrain(const FVector2f& PositionM) const
 {
+	FOceanTerrainSample Out = SampleShape(PositionM);
+	if (Relief.Contains(PositionM))
+	{
+		Out.Flow = Relief.SampleFlow(PositionM);
+	}
+	if (Erosion.Contains(PositionM))
+	{
+		Out.Erosion = Erosion.Sample(PositionM);
+		Out.Ground += Out.Erosion;
+	}
+	return Out;
+}
+
+void AOceanBathymetry::BuildErosion()
+{
+	Erosion = FOceanHeightfield();
+	Relief = FOceanHeightfield();
+	if (!bErode)
+	{
+		return;
+	}
+	const double StartTime = FPlatformTime::Seconds();
+	const FVector2f Center(float(GetActorLocation().X * 0.01), float(GetActorLocation().Y * 0.01));
+	const float Extent = IslandRadius + CoastlineVariation + CoastlineDetail + 60.f;
+
+	// 1) The massif's relief, grown at 2 m by uplift against fluvial incision. The uplift follows the analytic massif,
+	// unevenly (its noise seeds the ridges and valleys); the beaches and the sea are the base level.
+	{
+		FOceanHeightfield Grown;
+		Grown.CellM = 2.f;
+		Grown.Width = Grown.Height = FMath::CeilToInt(2.f * Extent / Grown.CellM) + 1;
+		Grown.OriginM = Center - FVector2f(Extent);
+		const int32 GrownCount = Grown.Width * Grown.Height;
+		Grown.Heights.SetNumUninitialized(GrownCount);
+		TArray<float> Uplift, Target;
+		Uplift.SetNumUninitialized(GrownCount);
+		Target.SetNumUninitialized(GrownCount);
+		ParallelFor(Grown.Height, [&](int32 Y)
+		{
+			for (int32 X = 0; X < Grown.Width; ++X)
+			{
+				const int32 Index = Y * Grown.Width + X;
+				const FVector2f Position = Grown.OriginM + FVector2f(float(X), float(Y)) * Grown.CellM;
+				const FVector2f Seeded = Position + FVector2f(Seed * 37.1f, Seed * 11.3f);
+				const FOceanTerrainSample Shape = SampleShape(Position);
+				Target[Index] = Shape.Hills;
+				Uplift[Index] = Shape.Hills > 0.05f
+					? 0.05f * (Shape.Hills / HillHeight) * (0.75f + 0.5f * OceanGradientNoise(Seeded / 55.f + 11.3f)) : 0.f;
+				Grown.Heights[Index] = Uplift[Index] > 0.f ? 0.002f + 0.01f * OceanGradientNoise(Seeded / 6.f + 4.1f) : 0.f;
+			}
+		});
+		OceanErosion::LandscapeEvolution(Grown, Uplift, LandscapeIterations, 0.5f * ErosionStrength, 0.5f, 0.15f);
+		// The grown relief keeps its shape; the analytic massif gives its height.
+		float GrownTop = 0.f, TargetTop = 0.f;
+		for (int32 Index = 0; Index < GrownCount; ++Index)
+		{
+			GrownTop = FMath::Max(GrownTop, Grown.Heights[Index]);
+			TargetTop = FMath::Max(TargetTop, Target[Index]);
+		}
+		const float Scale = GrownTop > 0.f ? TargetTop / GrownTop : 0.f;
+		for (float& Height : Grown.Heights)
+		{
+			Height = FMath::Max(Height * Scale, 0.f);
+		}
+		Relief = MoveTemp(Grown);
+		UE_LOG(LogTemp, Display, TEXT("OceanBathymetry: relief grown over %d x %d cells of %.0f m in %.1f s, summit %.1f m"),
+			Relief.Width, Relief.Height, Relief.CellM, FPlatformTime::Seconds() - StartTime, TargetTop);
+	}
+	if (ErosionDroplets <= 0)
+	{
+		return;
+	}
+
+	// 2) A 1 m grid of the shape (with the grown relief), worn by rain and screes.
+	FOceanHeightfield Field;
+	Field.CellM = 1.f;
+	Field.Width = Field.Height = FMath::CeilToInt(2.f * Extent / Field.CellM) + 1;
+	Field.OriginM = Center - FVector2f(Extent);
+	const int32 Count = Field.Width * Field.Height;
+	Field.Heights.SetNumUninitialized(Count);
+	// Erodibility: the beach sand barely (the swash reshapes it, not the rain), soil fully, rock little.
+	// Angle of repose (tangent): dry sand ~33 degrees, soil ~37, limestone cliffs stay steep; nothing moves under water.
+	TArray<float> Erodibility, Talus;
+	Erodibility.SetNumUninitialized(Count);
+	Talus.SetNumUninitialized(Count);
+	ParallelFor(Field.Height, [&](int32 Y)
+	{
+		for (int32 X = 0; X < Field.Width; ++X)
+		{
+			const int32 Index = Y * Field.Width + X;
+			const FOceanTerrainSample Shape = SampleShape(Field.OriginM + FVector2f(float(X), float(Y)) * Field.CellM);
+			Field.Heights[Index] = Shape.Ground;
+			Erodibility[Index] = FMath::SmoothStep(BermHeight * 0.7f, BermHeight + 3.f, Shape.Ground) * (1.f - 0.85f * Shape.Rock);
+			Talus[Index] = Shape.Ground < -0.3f ? 100.f
+				: (Shape.Ground < BermHeight + 1.f ? 0.65f : FMath::Lerp(0.75f, 2.5f, Shape.Rock));
+		}
+	});
+	const TArray<float> Original = Field.Heights;
+
+	// Gullies from the droplets, then screes at the angle of repose (the drainage network is the relief's).
+	OceanErosion::FHydraulicSettings Settings;
+	Settings.Droplets = ErosionDroplets;
+	Settings.CapacityFactor *= ErosionStrength;
+	Settings.RainAbove = BermHeight;
+	OceanErosion::Hydraulic(Field, Settings, Erodibility, Seed);
+	OceanErosion::Thermal(Field, Talus, 30);
+	Field.Flow.Reset();
+
+	// Keep the change only.
+	float Deepest = 0.f, Highest = 0.f;
+	double Moved = 0.0;
+	for (int32 Index = 0; Index < Count; ++Index)
+	{
+		const float Change = Field.Heights[Index] - Original[Index];
+		Field.Heights[Index] = Change;
+		Deepest = FMath::Min(Deepest, Change);
+		Highest = FMath::Max(Highest, Change);
+		Moved += FMath::Abs(Change);
+	}
+	UE_LOG(LogTemp, Display, TEXT("OceanBathymetry: erosion of %d x %d m by %d droplets in %.1f s: carved up to %.2f m, deposited up to %.2f m, %.0f m3 moved"),
+		Field.Width, Field.Height, ErosionDroplets, FPlatformTime::Seconds() - StartTime, -Deepest, Highest, Moved * Field.CellM * Field.CellM);
+
+#if WITH_EDITOR
+	// Shaded relief before / after and the runoff, to look at the erosion: Saved/Erosion/*.bmp.
+	auto WriteRelief = [&](const TCHAR* Name, TFunctionRef<float(int32)> HeightAt, bool bFlow)
+	{
+		TArray<FColor> Pixels;
+		Pixels.SetNumUninitialized(Count);
+		const FVector3f Light = FVector3f(-1.f, -1.f, 1.2f).GetSafeNormal();
+		for (int32 Y = 0; Y < Field.Height; ++Y)
+		{
+			for (int32 X = 0; X < Field.Width; ++X)
+			{
+				const int32 Index = Y * Field.Width + X;
+				const float DX = HeightAt(Y * Field.Width + FMath::Min(X + 1, Field.Width - 1)) - HeightAt(Y * Field.Width + FMath::Max(X - 1, 0));
+				const float DY = HeightAt(FMath::Min(Y + 1, Field.Height - 1) * Field.Width + X) - HeightAt(FMath::Max(Y - 1, 0) * Field.Width + X);
+				const FVector3f Normal = FVector3f(-2.f * DX, -2.f * DY, 2.f * Field.CellM).GetSafeNormal(); // relief x2
+				const float Shade = FMath::Clamp(0.25f + 0.85f * FVector3f::DotProduct(Normal, Light), 0.f, 1.f);
+				const float H = HeightAt(Index);
+				FLinearColor Color = H < 0.f ? FLinearColor(0.2f, 0.45f, 0.6f)
+					: (H < BermHeight + 0.5f ? FLinearColor(0.9f, 0.85f, 0.7f) : FMath::Lerp(FLinearColor(0.45f, 0.6f, 0.3f), FLinearColor(0.6f, 0.5f, 0.4f), FMath::Clamp(H / 30.f, 0.f, 1.f)));
+				Color *= Shade;
+				if (bFlow)
+				{
+					const float Flow = Relief.SampleFlow(Field.OriginM + FVector2f(float(X), float(Y)) * Field.CellM);
+					Color = FMath::Lerp(Color, FLinearColor(0.1f, 0.3f, 0.9f), FMath::SmoothStep(0.45f, 0.8f, Flow));
+				}
+				Pixels[(Field.Height - 1 - Y) * Field.Width + X] = Color.ToFColor(true);
+			}
+		}
+		const FString Path = FPaths::ProjectSavedDir() / TEXT("Erosion") / Name;
+		FFileHelper::CreateBitmap(*Path, Field.Width, Field.Height, Pixels.GetData());
+	};
+	WriteRelief(TEXT("relief_avant.bmp"), [&](int32 Index) { return Original[Index]; }, false);
+	WriteRelief(TEXT("relief_apres.bmp"), [&](int32 Index) { return Original[Index] + Field.Heights[Index]; }, false);
+	WriteRelief(TEXT("ruissellement.bmp"), [&](int32 Index) { return Original[Index] + Field.Heights[Index]; }, true);
+#endif
+	Erosion = MoveTemp(Field);
+}
+
+FOceanTerrainSample AOceanBathymetry::SampleShape(const FVector2f& PositionM) const
+{
 	FOceanTerrainSample Out;
 	const FVector2f Center(float(GetActorLocation().X * 0.01), float(GetActorLocation().Y * 0.01));
 	const FVector2f Delta = PositionM - Center;
@@ -296,14 +458,26 @@ FOceanTerrainSample AOceanBathymetry::SampleTerrain(const FVector2f& PositionM) 
 		// Beach: rises with LandSlope at the waterline and levels off on the berm.
 		const float Berm = FMath::Max(BermHeight, 0.1f);
 		const float Beach = Berm * (1.f - FMath::Exp(-Inland * LandSlope / Berm));
-		// Wooded hills behind beaches of varying width.
+		// Wooded hills behind beaches of varying width: one massif rising from the back of the beaches to the island's
+		// centre, steeper low down and rounded at the top, uneven only at the scale of a few hundred metres. The
+		// erosion (BuildErosion) carves it into ridges and valleys; mid-scale noise here would only leave pits and
+		// bumps that no water could have shaped.
+		// The massif is laid out from the smooth coastline (harmonics only): the fractal detail of the coast would
+		// otherwise roughen the whole land with bumps a few metres wide.
 		const float BeachWidth = 15.f + 35.f * OceanGradientNoise(Seeded / 90.f + 5.3f);
-		const float HillMask = FMath::SmoothStep(BeachWidth, BeachWidth + 70.f, Inland);
-		const float Hills = HillMask * (HillHeight * (0.45f + 0.55f * OceanGradientNoise(Seeded / 110.f + 1.7f))
-			+ 7.f * (OceanGradientNoise(Seeded / 35.f + 9.2f) - 0.5f) + 3.f * (OceanGradientNoise(Seeded / 14.f + 4.4f) - 0.5f));
-		// Rocky points: the ground rises steeply right from the water (~45 degrees, shaded as rock by slope).
+		const float SmoothInland = IslandRadius + CoastlineVariation * Coast - Delta.Size();
+		const float Rise = FMath::Max(SmoothInland - BeachWidth, 0.f);
+		const float Massif = (1.f - FMath::Exp(-Rise / 90.f)) * FMath::SmoothStep(0.f, 25.f, Rise);
+		const float MassifHeight = Massif * (HillHeight * (0.6f + 0.55f * OceanGradientNoise(Seeded / 160.f + 1.7f))
+			+ 2.5f * (OceanGradientNoise(Seeded / 45.f + 9.2f) - 0.5f));
+		// Once built, the relief grown from it by landscape evolution (BuildErosion) takes its place.
+		const float Hills = Relief.Contains(PositionM) ? Relief.Sample(PositionM) : MassifHeight;
+		Out.Hills = MassifHeight;
+		// Rocky points: the ground rises steeply right from the water (~45 degrees, shaded as rock by slope) to a
+		// low headland that joins the massif: the cliff fades out where the hills are already higher. Added over the
+		// whole land, the rock mask raised 4 m terraces along its contours far inland.
 		const float Rock = Rockiness * FMath::SmoothStep(0.45f, 0.7f, OceanGradientNoise(Seeded / 70.f + 3.1f));
-		const float Cliff = Rock * 8.f * FMath::SmoothStep(0.f, 8.f, Inland);
+		const float Cliff = Rock * 8.f * FMath::SmoothStep(0.f, 8.f, Inland) * (1.f - FMath::SmoothStep(2.f, 8.f, Hills));
 		const float Ground = Beach + Hills + Cliff;
 		// Understory: 1.5-3 m of lumpy bush mass behind the beach, under the trees of AOceanIslandFlora, which covers
 		// it with shrubs (only UnderstoryRelief of it is terrain).
@@ -329,6 +503,8 @@ FOceanTerrainSample AOceanBathymetry::SampleTerrain(const FVector2f& PositionM) 
 
 void AOceanBathymetry::Build()
 {
+	// First the eroded relief: everything below (shore data, terrain mesh, flora) samples it through SampleTerrain.
+	BuildErosion();
 	const int32 N = FMath::RoundUpToPowerOfTwo(FMath::Clamp(GridResolution, 64, 1024));
 	const float Texel = GridSize / N;
 	const FVector2f Center(float(GetActorLocation().X * 0.01), float(GetActorLocation().Y * 0.01));
@@ -422,8 +598,9 @@ void AOceanBathymetry::Build()
 		}
 	});
 	// Along the coast the 2.5 m triangles show: the swash sheet and the waterline cut them along long straight
-	// edges. Chunks of the grid that hold the coast (ground between -CoastBand and +CoastBand) are rebuilt
-	// Subdivision times finer (section 1); the rest of the grid keeps one vertex per texel (section 0).
+	// edges; on land they would smooth away the gullies of the erosion. Chunks of the grid that hold the coast or
+	// land (ground above -CoastBand) are rebuilt Subdivision times finer (section 1); the sea floor keeps one vertex
+	// per texel (section 0).
 	constexpr int32 ChunkCells = 16;
 	constexpr int32 Subdivision = 5;
 	constexpr float CoastBand = 3.f;
@@ -439,7 +616,7 @@ void AOceanBathymetry::Build()
 			{
 				for (int32 X = CX * ChunkCells; X <= FMath::Min((CX + 1) * ChunkCells, N - 1); ++X)
 				{
-					if (FMath::Abs(Heights[Y * N + X]) < CoastBand)
+					if (Heights[Y * N + X] > -CoastBand)
 					{
 						bCoast = true;
 						break;

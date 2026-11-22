@@ -1,4 +1,4 @@
-﻿"""
+"""
 Builds /Game/Maps/Ocean: a Caribbean sea showcase (a sandy island, clear water over a white sand shelf,
 a reef drop-off, tropical sun, trade-wind sea state) explored with a free-flying camera.
 
@@ -8,6 +8,7 @@ Running it again rebuilds the level from scratch.
 """
 
 import math
+import os
 
 import unreal
 
@@ -74,6 +75,45 @@ def sun_direction():
     return (-math.cos(pitch) * math.cos(yaw), -math.cos(pitch) * math.sin(yaw), -math.sin(pitch))
 
 
+GROUND_DIRECTORY = "/Game/Ocean/Ground"
+# Tints over the rendered tiles (linear means: limestone 0.017 grey, soil 0.11/0.032/0.014, litter 0.4/0.21/0.09)
+# towards pale grey coral limestone (~0.4), brown-red island soil (~0.2/0.1/0.055) and tan dry leaves (~0.24/0.16/0.09).
+GROUND_ROCK_TINT = (24.0, 24.0, 20.5)
+GROUND_SOIL_TINT = (1.8, 3.1, 3.9)
+GROUND_LITTER_TINT = (0.6, 0.78, 0.95)
+GROUND_GRASS_TINT = (2.0, 1.1, 0.55)  # grass 0.057/0.138/0.089, bluish -> dry-season yellow-green ~0.11/0.15/0.05
+
+
+def import_ground_textures():
+    """Imports the ground tiles fetched into Saved/Infinigen/ground (Scripts/infinigen/fetch_exports.ps1) as
+    /Game/Ocean/Ground/T_Ground_<Kind>_<BaseColor|Normal>. Returns {(kind, suffix): texture} for those present."""
+    source = os.path.join(unreal.Paths.project_saved_dir(), "Infinigen", "ground")
+    textures = {}
+    for kind in ("limestone", "soil", "litter", "grass"):
+        for suffix, file_suffix in (("BaseColor", "basecolor"), ("Normal", "normal")):
+            path = os.path.join(source, f"{kind}_{file_suffix}.png")
+            if not os.path.isfile(path):
+                unreal.log_warning(f"No ground tile {path}: the terrain uses a flat placeholder")
+                continue
+            name = f"T_Ground_{kind.capitalize()}_{suffix}"
+            task = unreal.AssetImportTask()
+            task.set_editor_property("filename", path)
+            task.set_editor_property("destination_path", GROUND_DIRECTORY)
+            task.set_editor_property("destination_name", name)
+            task.set_editor_property("automated", True)
+            task.set_editor_property("replace_existing", True)
+            task.set_editor_property("save", False)
+            unreal.AssetToolsHelpers.get_asset_tools().import_asset_tasks([task])
+            texture = unreal.EditorAssetLibrary.load_asset(f"{GROUND_DIRECTORY}/{name}")
+            if suffix == "Normal":
+                # Normals in the tile's frame, decoded by the shader (OceanGroundPlane): no green flip here.
+                texture.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_NORMALMAP)
+                texture.set_editor_property("srgb", False)
+            unreal.EditorAssetLibrary.save_asset(f"{GROUND_DIRECTORY}/{name}")
+            textures[(kind, suffix)] = texture
+    return textures
+
+
 def seabed_material():
     """Bright, slightly warm coral sand: it is what turns the clear water turquoise."""
     if unreal.EditorAssetLibrary.does_asset_exist(SEABED_MATERIAL_PATH):
@@ -116,12 +156,17 @@ def seabed_material():
     surface.set_editor_property("description", "Terrain Surface")
     surface.set_editor_property(
         "code", "return OceanTerrainSurface(WorldPos, VertexNormal, Time, SwellHeight, SandColor, ToSun, ToCamera, Footprints, FootprintsSampler, FootprintTileSize, "
-        "ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, SwellPeriod, SwellMaxDepth, Roughness, Normal, Glint);")
+        "ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, SwellPeriod, SwellMaxDepth, "
+        "RockAlbedo, RockAlbedoSampler, RockNormal, RockNormalSampler, SoilAlbedo, SoilAlbedoSampler, SoilNormal, SoilNormalSampler, "
+        "LitterAlbedo, LitterAlbedoSampler, LitterNormal, LitterNormalSampler, GrassAlbedo, GrassAlbedoSampler, GrassNormal, GrassNormalSampler, "
+        "RockTint, SoilTint, LitterTint, GrassTint, Roughness, Normal, Glint);")
     surface.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
     surface.set_editor_property("include_file_paths", ["/Makar/Ocean.ush"])
     surface_inputs = []
     for name in ("WorldPos", "VertexNormal", "Time", "SwellHeight", "SandColor", "ToSun", "ToCamera", "Footprints", "FootprintTileSize",
-                 "ShoreMap", "ShoreMapOrigin", "ShoreMapSize", "SwellPeriod", "SwellMaxDepth"):
+                 "ShoreMap", "ShoreMapOrigin", "ShoreMapSize", "SwellPeriod", "SwellMaxDepth",
+                 "RockAlbedo", "RockNormal", "SoilAlbedo", "SoilNormal", "LitterAlbedo", "LitterNormal", "GrassAlbedo", "GrassNormal",
+                 "RockTint", "SoilTint", "LitterTint", "GrassTint"):
         custom_input = unreal.CustomInput()
         custom_input.set_editor_property("input_name", name)
         surface_inputs.append(custom_input)
@@ -163,6 +208,24 @@ def seabed_material():
     connect(scalar("ShoreMapSize", 0.0, -1300, 1200), surface, "ShoreMapSize")
     connect(scalar("ShoreSwellPeriod", SHORE_SWELL_PERIOD_S, -1300, 1280), surface, "SwellPeriod")
     connect(scalar("ShoreSwellMaxDepth", SHORE_SWELL_MAX_DEPTH_M, -1300, 1360), surface, "SwellMaxDepth")
+    # Ground textures rendered from Infinigen's terrain materials (Scripts/infinigen/render_ground_tiles.py), and the
+    # tints that bring them to Caribbean colours: pale grey limestone, brown-red soil, tan dry leaves.
+    ground = import_ground_textures()
+    for index, (kind, prefix) in enumerate((("limestone", "Rock"), ("soil", "Soil"), ("litter", "Litter"), ("grass", "Grass"))):
+        for row, (suffix, input_suffix) in enumerate((("BaseColor", "Albedo"), ("Normal", "Normal"))):
+            texture = expression(unreal.MaterialExpressionTextureObjectParameter, -1600, 1500 + 200 * (2 * index + row))
+            texture.set_editor_property("parameter_name", f"Ground{prefix}{input_suffix}")
+            texture.set_editor_property("texture", ground.get((kind, suffix)) or unreal.load_asset(
+                "/Engine/EngineResources/Black.Black" if suffix == "BaseColor" else "/Engine/EngineMaterials/FlatNormal.FlatNormal"))
+            if suffix == "Normal":
+                texture.set_editor_property("sampler_type", unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL)
+            connect(texture, surface, f"{prefix}{input_suffix}")
+    for index, (prefix, tint) in enumerate((("Rock", GROUND_ROCK_TINT), ("Soil", GROUND_SOIL_TINT), ("Litter", GROUND_LITTER_TINT),
+                                            ("Grass", GROUND_GRASS_TINT))):
+        node = expression(unreal.MaterialExpressionVectorParameter, -1600, 3200 + 100 * index)
+        node.set_editor_property("parameter_name", f"Ground{prefix}Tint")
+        node.set_editor_property("default_value", unreal.LinearColor(*tint, 1.0))
+        connect(node, surface, f"{prefix}Tint")
     MEL.connect_material_property(surface, "", unreal.MaterialProperty.MP_BASE_COLOR)
     MEL.connect_material_property(surface, "Roughness", unreal.MaterialProperty.MP_ROUGHNESS)
     MEL.connect_material_property(surface, "Normal", unreal.MaterialProperty.MP_NORMAL)

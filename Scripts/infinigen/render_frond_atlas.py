@@ -148,11 +148,12 @@ def main(scene_path, out_dir, resolution, rank, source_name="Plane.001"):
     print(f"render_frond_atlas: frond {length:.2f} x {width:.2f} m, image span {span:.2f} m -> {out_dir}")
 
 
-def render_top_view(out_dir, prefix, resolution, low, high):
-    """Renders the scene from above, orthographic over the square covering low-high (XY), with Cycles passes:
-    diffuse colour + alpha -> <prefix>_basecolor.png, normal remapped from [-1, 1] to [0, 1] -> <prefix>_normal.png
-    (world space = card tangent space: the card is the XY plane, image up = +Y). Returns the span and centre."""
-    span = float(max(high[0] - low[0], high[1] - low[1])) * 1.02
+def render_top_view(out_dir, prefix, resolution, low, high, margin=1.02, height=False):
+    """Renders the scene from above, orthographic over the square covering low-high (XY) times margin, with Cycles
+    passes: diffuse colour + alpha -> <prefix>_basecolor.png, normal remapped from [-1, 1] to [0, 1] ->
+    <prefix>_normal.png (world space = card tangent space: the card is the XY plane, image up = +Y), and with height,
+    the depth normalised and inverted -> <prefix>_height.png (16 bits). Returns the span and centre."""
+    span = float(max(high[0] - low[0], high[1] - low[1])) * margin
     mid = (np.asarray(low) + np.asarray(high)) * 0.5
 
     # Orthographic camera above, looking down -Z; the image covers span x span.
@@ -209,13 +210,29 @@ def render_top_view(out_dir, prefix, resolution, low, high):
     output.file_slots.new(f"{prefix}_normal")
     tree.links.new(set_alpha.outputs[0], output.inputs[0])
     tree.links.new(normal_alpha.outputs[0], output.inputs[1])
+    names = [f"{prefix}_basecolor", f"{prefix}_normal"]
+    if height:
+        # Height: camera depth, normalised over the image and inverted (white = high), 16 bits.
+        layer.use_pass_z = True
+        normalize = tree.nodes.new("CompositorNodeNormalize")
+        tree.links.new(layers.outputs["Depth"], normalize.inputs[0])
+        invert = tree.nodes.new("CompositorNodeInvert")
+        tree.links.new(normalize.outputs[0], invert.inputs["Color"])
+        output.file_slots.new(f"{prefix}_height")  # returns the input socket; the slot is the last one
+        slot = output.file_slots[len(output.file_slots) - 1]
+        slot.use_node_format = False
+        slot.format.file_format = "PNG"
+        slot.format.color_mode = "BW"
+        slot.format.color_depth = "16"
+        tree.links.new(invert.outputs[0], output.inputs[2])
+        names.append(f"{prefix}_height")
     composite = tree.nodes.new("CompositorNodeComposite")
     tree.links.new(set_alpha.outputs[0], composite.inputs[0])
 
     os.makedirs(out_dir, exist_ok=True)
     bpy.ops.render.render(write_still=False)
     # File Output appends the frame number: rename to stable names.
-    for name in (f"{prefix}_basecolor", f"{prefix}_normal"):
+    for name in names:
         for file in os.listdir(out_dir):
             if file.startswith(name) and file != name + ".png":
                 os.replace(os.path.join(out_dir, file), os.path.join(out_dir, name + ".png"))

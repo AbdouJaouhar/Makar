@@ -27,6 +27,14 @@ if (Test-Path "$frond\frond_basecolor.png") {
     "frond"
 }
 
+# Ground tiles for the terrain material (Scripts/infinigen/render_ground_tiles.py).
+$ground = "\\wsl.localhost\$Distro\root\makar\ground_tiles"
+if (Test-Path "$ground\*_basecolor.png") {
+    New-Item -ItemType Directory -Force (Join-Path $target "ground") | Out-Null
+    Copy-Item -Force "$ground\*.png" (Join-Path $target "ground")
+    "ground"
+}
+
 # Leaf clusters for the leaf cards of the broadleaf trees and sea grapes (Scripts/infinigen/render_leaf_cluster.py).
 $leaves = "\\wsl.localhost\$Distro\root\makar\leaf_atlas"
 if (Test-Path "$leaves\*_basecolor.png") {
