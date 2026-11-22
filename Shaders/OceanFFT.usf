@@ -1,0 +1,167 @@
+// Tessendorf FFT ocean cascade on the GPU: the same maths as FOceanSimulation::SimulateCascade (OceanSimulation.cpp),
+// run by OceanGpuSimulateCascade (Source/MakarShaders). Virtual path: /Makar/OceanFFT.usf
+//
+//  1. SpectrumCS  evolves h0(k) to time t and builds the 8 fields in frequency space, packed two real fields per
+//                 complex number and two complex numbers per float4 (Fields0 = disp X+iY, height+i dDispX/dY;
+//                 Fields1 = slope X+iY, dDispX/dX+i dDispY/dY).
+//  2. FftCS       inverse FFT of every row, then every column, one line per thread group in groupshared memory.
+//  3. AssembleCS  writes the displacement (with persistent foam), derivative and slope-moment textures.
+
+#include "/Engine/Public/Platform.ush"
+
+static const float OceanGravity = 9.81;
+static const float OceanPi = 3.14159265358979;
+
+uint Resolution;
+uint LogResolution;
+
+float2 ComplexMul(float2 A, float2 B)
+{
+	return float2(A.x * B.x - A.y * B.y, A.x * B.y + A.y * B.x);
+}
+
+// Two real fields A and B share one complex FFT: transform A + iB, read A from Re and B from Im.
+float2 Pack(float2 A, float2 B)
+{
+	return float2(A.x - B.y, A.y + B.x);
+}
+
+// --- 1. Spectrum ---------------------------------------------------------------------------------------------
+
+Texture2D<float4> Spectrum; // h0(k).re, .im, conj(h0(-k)).re, .im
+RWTexture2D<float4> OutFields0;
+RWTexture2D<float4> OutFields1;
+float Time;
+float PatchSize;
+float Depth;
+
+[numthreads(8, 8, 1)]
+void SpectrumCS(uint2 Id : SV_DispatchThreadID)
+{
+	if (any(Id >= Resolution))
+	{
+		return;
+	}
+	const int N = int(Resolution);
+	const int NX = int(Id.x) < N / 2 ? int(Id.x) : int(Id.x) - N;
+	const int NY = int(Id.y) < N / 2 ? int(Id.y) : int(Id.y) - N;
+	const float DeltaK = 2.0 * OceanPi / PatchSize;
+	const float2 K = float2(NX, NY) * DeltaK;
+	const float KLen = length(K);
+	const float InvK = KLen > 1e-6 ? 1.0 / KLen : 0.0;
+
+	// Dispersion with finite depth, as FOceanSimulation::Dispersion.
+	const float KH = min(KLen * max(Depth, 1.0), 20.0);
+	const float Omega = sqrt(OceanGravity * KLen * tanh(KH));
+
+	const float4 H0 = Spectrum[Id];
+	float S, C;
+	sincos(Omega * Time, S, C);
+	// h(k,t) = h0(k) e^{-i w t} + conj(h0(-k)) e^{i w t}
+	const float2 H = float2(
+		H0.x * C + H0.y * S + H0.z * C - H0.w * S,
+		H0.y * C - H0.x * S + H0.w * C + H0.z * S);
+	const float2 IH = float2(-H.y, H.x);
+
+	const float2 DispX = IH * (K.x * InvK);
+	const float2 DispY = IH * (K.y * InvK);
+	const float2 SlopeX = IH * K.x;
+	const float2 SlopeY = IH * K.y;
+	const float2 DDispXDX = H * (-K.x * K.x * InvK);
+	const float2 DDispYDY = H * (-K.y * K.y * InvK);
+	const float2 DDispXDY = H * (-K.x * K.y * InvK);
+
+	OutFields0[Id] = float4(Pack(DispX, DispY), Pack(H, DDispXDY));
+	OutFields1[Id] = float4(Pack(SlopeX, SlopeY), Pack(DDispXDX, DDispYDY));
+}
+
+// --- 2. Inverse FFT, one line per group ----------------------------------------------------------------------
+
+#define FFT_THREADS 256
+#define FFT_MAX_SIZE 1024
+
+RWTexture2D<float4> Fields;
+uint Columns; // 0: transform rows, 1: transform columns
+
+groupshared float4 Line[FFT_MAX_SIZE];
+
+[numthreads(FFT_THREADS, 1, 1)]
+void FftCS(uint3 Group : SV_GroupID, uint Thread : SV_GroupIndex)
+{
+	const uint N = Resolution;
+	const uint LineIndex = Group.x;
+
+	// Load in bit-reversed order.
+	for (uint I = Thread; I < N; I += FFT_THREADS)
+	{
+		const uint2 Texel = Columns != 0 ? uint2(LineIndex, I) : uint2(I, LineIndex);
+		Line[reversebits(I) >> (32 - LogResolution)] = Fields[Texel];
+	}
+	GroupMemoryBarrierWithGroupSync();
+
+	// Radix-2 butterflies; inverse transform: positive exponent, no 1/N (as the CPU version).
+	for (uint Stage = 1; Stage <= LogResolution; ++Stage)
+	{
+		const uint Half = 1u << (Stage - 1);
+		for (uint J = Thread; J < N / 2; J += FFT_THREADS)
+		{
+			const uint Offset = J & (Half - 1);
+			const uint I0 = (J >> (Stage - 1)) * (Half * 2) + Offset;
+			const uint I1 = I0 + Half;
+			float S, C;
+			sincos(2.0 * OceanPi * float(Offset) / float(Half * 2), S, C);
+			const float2 W = float2(C, S);
+			const float4 A = Line[I0];
+			const float4 B = Line[I1];
+			const float4 T = float4(ComplexMul(W, B.xy), ComplexMul(W, B.zw));
+			Line[I0] = A + T;
+			Line[I1] = A - T;
+		}
+		GroupMemoryBarrierWithGroupSync();
+	}
+
+	for (uint Out = Thread; Out < N; Out += FFT_THREADS)
+	{
+		const uint2 Texel = Columns != 0 ? uint2(LineIndex, Out) : uint2(Out, LineIndex);
+		Fields[Texel] = Line[Out];
+	}
+}
+
+// --- 3. Assemble ---------------------------------------------------------------------------------------------
+
+Texture2D<float4> Fields0;
+Texture2D<float4> Fields1;
+RWTexture2D<float4> OutDisplacement; // disp X, Y, height, foam (persistent: read back, decayed, renewed)
+RWTexture2D<float4> OutDerivatives;  // slope X, Y, dDispX/dX, dDispY/dY
+RWTexture2D<float4> OutMoments;      // slope X^2, Y^2, X*Y
+float Choppiness;
+float FoamThreshold;
+float FoamIntensity;
+float FoamFade;
+
+[numthreads(8, 8, 1)]
+void AssembleCS(uint2 Id : SV_DispatchThreadID)
+{
+	if (any(Id >= Resolution))
+	{
+		return;
+	}
+	const float4 F0 = Fields0[Id];
+	const float4 F1 = Fields1[Id];
+	const float DispX = F0.x * Choppiness;
+	const float DispY = F0.y * Choppiness;
+	const float Height = F0.z;
+	const float DDispXDY = F0.w * Choppiness;
+	const float SlopeX = F1.x;
+	const float SlopeY = F1.y;
+	const float DDispXDX = F1.z * Choppiness;
+	const float DDispYDY = F1.w * Choppiness;
+
+	const float Jacobian = (1.0 + DDispXDX) * (1.0 + DDispYDY) - DDispXDY * DDispXDY;
+	const float NewFoam = saturate((FoamThreshold - Jacobian) * FoamIntensity);
+	const float Foam = max(NewFoam, OutDisplacement[Id].w * FoamFade);
+
+	OutDisplacement[Id] = float4(DispX, DispY, Height, Foam);
+	OutDerivatives[Id] = float4(SlopeX, SlopeY, DDispXDX, DDispYDY);
+	OutMoments[Id] = float4(SlopeX * SlopeX, SlopeY * SlopeY, SlopeX * SlopeY, 0.0);
+}

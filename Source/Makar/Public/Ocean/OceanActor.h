@@ -98,6 +98,11 @@ private:
 	void BuildMesh();
 	void UpdateMaterialParameters();
 	void UploadFrame(const FOceanFrame& Frame);
+
+	/** The finest cascade on the GPU (FOceanSettings::GpuDetailResolution): its spectrum and output textures. */
+	void CreateGpuCascade();
+	/** Queues one step of the GPU cascade at the time of the frame being shown. */
+	void StepGpuCascade(float Time);
 	void FollowCamera();
 	void WaitForSimulation();
 	FVector3f SampleDisplacement(const FVector2f& PositionMeters) const;
@@ -134,6 +139,17 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> MaterialInstance;
+
+	/** Initial spectrum of the GPU cascade, RGBA32F (see OceanGpuSimulateCascade). */
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> GpuSpectrumTexture;
+
+	/** Written by the GPU cascade every frame: displacement, derivatives, slope moments (with mips). */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<class UTextureRenderTarget2D>> GpuTargets;
+
+	int32 GpuCascade = INDEX_NONE;
+	float GpuLastTime = -1.f;
 
 	float SimulationTime = 0.f;
 

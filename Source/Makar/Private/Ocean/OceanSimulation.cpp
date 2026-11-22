@@ -1,4 +1,4 @@
-#include "Ocean/OceanSimulation.h"
+﻿#include "Ocean/OceanSimulation.h"
 
 #include "Async/ParallelFor.h"
 #include "Math/RandomStream.h"
@@ -61,7 +61,12 @@ void FOceanSimulation::Initialize(const FOceanSettings& InSettings)
 	{
 		const float KMin = Index == 0 ? 0.f : CascadeBandSplit * 2.f * UE_PI / Sizes[Index];
 		const float KMax = Index + 1 < NumCascades ? CascadeBandSplit * 2.f * UE_PI / Sizes[Index + 1] : TNumericLimits<float>::Max();
-		InitializeCascade(Cascades[Index], FMath::Max(Sizes[Index], 0.1f), KMin, KMax, Settings.Seed + Index * 7919);
+		// The finest cascade keeps every wavelength down to its Nyquist limit: only it gains from a finer grid,
+		// and it only shades the surface, so it can run on the GPU at a higher resolution.
+		const bool bOnGpu = Index == NumCascades - 1 && Settings.GpuDetailResolution > 0;
+		const int32 Resolution = bOnGpu ? int32(FMath::RoundUpToPowerOfTwo(uint32(FMath::Clamp(Settings.GpuDetailResolution, 16, 1024)))) : N;
+		InitializeCascade(Cascades[Index], Resolution, FMath::Max(Sizes[Index], 0.1f), KMin, KMax, Settings.Seed + Index * 7919);
+		Cascades[Index].bOnGpu = bOnGpu;
 	}
 
 	for (TArray<FComplex>& Grid : Work)
@@ -110,9 +115,10 @@ float FOceanSimulation::DirectionalSpreading(float Omega, float Theta) const
 	return FMath::Lerp(float(D), 1.f / (2.f * UE_PI), FMath::Clamp(Settings.DirectionalSpread, 0.f, 1.f));
 }
 
-void FOceanSimulation::InitializeCascade(FCascade& Cascade, float PatchSize, float KMin, float KMax, int32 Seed) const
+void FOceanSimulation::InitializeCascade(FCascade& Cascade, int32 Resolution, float PatchSize, float KMin, float KMax, int32 Seed) const
 {
-	const int32 Count = N * N;
+	const int32 Count = Resolution * Resolution;
+	Cascade.Resolution = Resolution;
 	Cascade.PatchSize = PatchSize;
 	Cascade.H0.SetNumZeroed(Count);
 	Cascade.H0MinusConj.SetNumZeroed(Count);
@@ -124,13 +130,13 @@ void FOceanSimulation::InitializeCascade(FCascade& Cascade, float PatchSize, flo
 	const float DeltaK = 2.f * UE_PI / PatchSize;
 	const float WindRadians = FMath::DegreesToRadians(Settings.WindDirection);
 
-	for (int32 Y = 0; Y < N; ++Y)
+	for (int32 Y = 0; Y < Resolution; ++Y)
 	{
-		for (int32 X = 0; X < N; ++X)
+		for (int32 X = 0; X < Resolution; ++X)
 		{
-			const int32 Index = Y * N + X;
-			const int32 NX = X < N / 2 ? X : X - N;
-			const int32 NY = Y < N / 2 ? Y : Y - N;
+			const int32 Index = Y * Resolution + X;
+			const int32 NX = X < Resolution / 2 ? X : X - Resolution;
+			const int32 NY = Y < Resolution / 2 ? Y : Y - Resolution;
 			const FVector2f KVec(NX * DeltaK, NY * DeltaK);
 			const float K = KVec.Size();
 
@@ -160,13 +166,33 @@ void FOceanSimulation::InitializeCascade(FCascade& Cascade, float PatchSize, flo
 		}
 	}
 
-	for (int32 Y = 0; Y < N; ++Y)
+	for (int32 Y = 0; Y < Resolution; ++Y)
 	{
-		for (int32 X = 0; X < N; ++X)
+		for (int32 X = 0; X < Resolution; ++X)
 		{
-			const FComplex& Minus = Cascade.H0[((N - Y) % N) * N + (N - X) % N];
-			Cascade.H0MinusConj[Y * N + X] = { Minus.Re, -Minus.Im };
+			const FComplex& Minus = Cascade.H0[((Resolution - Y) % Resolution) * Resolution + (Resolution - X) % Resolution];
+			Cascade.H0MinusConj[Y * Resolution + X] = { Minus.Re, -Minus.Im };
 		}
+	}
+
+	// The height variance, averaged over time, is the sum of |h0(k)|^2 + |h0(-k)|^2 (unnormalised inverse FFT).
+	double Variance = 0.0;
+	for (int32 Index = 0; Index < Count; ++Index)
+	{
+		const FComplex& A = Cascade.H0[Index];
+		const FComplex& B = Cascade.H0MinusConj[Index];
+		Variance += double(A.Re) * A.Re + double(A.Im) * A.Im + double(B.Re) * B.Re + double(B.Im) * B.Im;
+	}
+	Cascade.SpectrumSignificantHeight = 4.f * float(FMath::Sqrt(Variance));
+}
+
+void FOceanSimulation::GetSpectrum(int32 Index, TArray<FLinearColor>& Out) const
+{
+	const FCascade& Cascade = Cascades[Index];
+	Out.SetNumUninitialized(Cascade.H0.Num());
+	for (int32 Texel = 0; Texel < Cascade.H0.Num(); ++Texel)
+	{
+		Out[Texel] = FLinearColor(Cascade.H0[Texel].Re, Cascade.H0[Texel].Im, Cascade.H0MinusConj[Texel].Re, Cascade.H0MinusConj[Texel].Im);
 	}
 }
 
@@ -176,7 +202,21 @@ void FOceanSimulation::Simulate(float Time, float DeltaTime, FOceanFrame& Out)
 	Out.Cascades.SetNum(NumCascades);
 	for (int32 Index = 0; Index < NumCascades; ++Index)
 	{
-		SimulateCascade(Cascades[Index], Time, DeltaTime, Out.Cascades[Index]);
+		FOceanCascadeFrame& Cascade = Out.Cascades[Index];
+		if (Cascades[Index].bOnGpu)
+		{
+			// Simulated by OceanGpuSimulateCascade: no CPU data, only what the shaders need to know about it.
+			Cascade.PatchSize = Cascades[Index].PatchSize;
+			Cascade.Resolution = Cascades[Index].Resolution;
+			Cascade.SignificantHeight = Cascades[Index].SpectrumSignificantHeight;
+			Cascade.Displacement.Reset();
+			Cascade.JacobianTerms.Reset();
+			Cascade.DisplacementMips.Reset();
+			Cascade.DerivativeMips.Reset();
+			Cascade.MomentMips.Reset();
+			continue;
+		}
+		SimulateCascade(Cascades[Index], Time, DeltaTime, Cascade);
 	}
 	Out.bValid = true;
 }

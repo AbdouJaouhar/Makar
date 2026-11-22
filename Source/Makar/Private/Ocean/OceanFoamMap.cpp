@@ -53,6 +53,10 @@ namespace
 		const int32 NumCascades = FMath::Min(Frame.Cascades.Num(), FOceanSimulation::NumCascades);
 		for (int32 Index = 0; Index < NumCascades; ++Index)
 		{
+			if (CascadeWeights[Index] <= 0.f)
+			{
+				continue; // also the GPU cascade, which has no CPU data
+			}
 			const FOceanCascadeFrame& Cascade = Frame.Cascades[Index];
 			const float Attenuation = OceanDepthAttenuation(Depth, Cascade.SignificantHeight);
 			Terms += SampleJacobianTerms(Cascade, PositionM) * (CascadeWeights[Index] * Attenuation);
@@ -67,9 +71,10 @@ void FOceanFoamMap::Simulate(FOceanFrame& Frame, const FOceanSettings& Settings,
 	{
 		return;
 	}
-	for (const FOceanCascadeFrame& Cascade : Frame.Cascades)
+	for (int32 Index = 0; Index < FMath::Min(Frame.Cascades.Num(), FOceanSimulation::NumCascades); ++Index)
 	{
-		if (Cascade.JacobianTerms.Num() != Cascade.Resolution * Cascade.Resolution || Cascade.Resolution <= 0)
+		const FOceanCascadeFrame& Cascade = Frame.Cascades[Index];
+		if (CascadeWeights[Index] > 0.f && (Cascade.JacobianTerms.Num() != Cascade.Resolution * Cascade.Resolution || Cascade.Resolution <= 0))
 		{
 			return;
 		}

@@ -1,12 +1,14 @@
-using UnrealBuildTool;
+﻿using UnrealBuildTool;
 
-// Tiny module loaded early (PostConfigInit) so the material compiler can find Shaders/*.ush
-// under the virtual path "/Makar".
+// Module loaded early (PostConfigInit), so that the material compiler finds Shaders/*.ush under the virtual path
+// "/Makar", and so that its global compute shaders (the GPU ocean cascade, Shaders/OceanFFT.usf) are registered
+// before the global shader map is compiled.
 public class MakarShaders : ModuleRules
 {
 	public MakarShaders(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-		PrivateDependencyModuleNames.AddRange(new string[] { "Core", "RenderCore" });
+		PublicDependencyModuleNames.AddRange(new string[] { "Core" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "RenderCore", "RHI" });
 	}
 }

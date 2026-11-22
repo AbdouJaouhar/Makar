@@ -1,4 +1,4 @@
-#include "Ocean/OceanActor.h"
+﻿#include "Ocean/OceanActor.h"
 
 #include "Camera/PlayerCameraManager.h"
 #include "Engine/Texture2D.h"
@@ -10,9 +10,12 @@
 #if WITH_EDITOR
 #include "LevelEditorViewport.h"
 #endif
+#include "Engine/TextureRenderTarget2D.h"
 #include "Ocean/OceanBathymetry.h"
 #include "Ocean/OceanMeshComponent.h"
 #include "Rendering/Texture2DResource.h"
+#include "OceanGpuSimulation.h"
+#include "RenderingThread.h"
 #include "TextureResource.h"
 
 namespace OceanParams
@@ -218,6 +221,7 @@ void AOceanActor::InitializeSimulation()
 	{
 		FoamMapTexture = CreateOceanTexture(FOceanFoamMap::Size, FOceanFoamMap::NumMips);
 	}
+	CreateGpuCascade();
 	// New sea state: start the foam from scratch (the worker is idle, see WaitForSimulation above).
 	FoamMap = MakeUnique<FOceanFoamMap>();
 
@@ -279,7 +283,13 @@ void AOceanActor::UpdateMaterialParameters()
 	const bool bHasTextures = DisplacementTextures.Num() == FOceanSimulation::NumCascades;
 	for (int32 Index = 0; Index < FOceanSimulation::NumCascades; ++Index)
 	{
-		if (bHasTextures)
+		if (Index == GpuCascade && GpuTargets.Num() == 3)
+		{
+			MaterialInstance->SetTextureParameterValue(OceanParams::Displacement[Index], GpuTargets[0]);
+			MaterialInstance->SetTextureParameterValue(OceanParams::Derivatives[Index], GpuTargets[1]);
+			MaterialInstance->SetTextureParameterValue(OceanParams::Moments[Index], GpuTargets[2]);
+		}
+		else if (bHasTextures)
 		{
 			MaterialInstance->SetTextureParameterValue(OceanParams::Displacement[Index], DisplacementTextures[Index]);
 			MaterialInstance->SetTextureParameterValue(OceanParams::Derivatives[Index], DerivativeTextures[Index]);
@@ -292,7 +302,11 @@ void AOceanActor::UpdateMaterialParameters()
 	{
 		for (int32 Index = 1; Index < FOceanSimulation::NumCascades; ++Index)
 		{
-			if (bHasTextures)
+			if (Index == GpuCascade && GpuTargets.Num() == 3)
+			{
+				Floor->SetTextureParameterValue(OceanParams::Derivatives[Index], GpuTargets[1]);
+			}
+			else if (bHasTextures)
 			{
 				Floor->SetTextureParameterValue(OceanParams::Derivatives[Index], DerivativeTextures[Index]);
 			}
@@ -445,6 +459,7 @@ void AOceanActor::Tick(float DeltaSeconds)
 		Swap(FrontFrame, BackFrame);
 		const double UploadStart = FPlatformTime::Seconds();
 		UploadFrame(*FrontFrame);
+		StepGpuCascade(FrontFrame->Time); // the finest cascade, in step with the CPU ones
 
 		// Cost report every 5 s: worker time (waves + foam, off the game thread) and upload (game thread).
 		CostWorkerMs += FrontFrame->WorkerMs;
@@ -487,6 +502,97 @@ void AOceanActor::Tick(float DeltaSeconds)
 	}
 
 	FollowCamera();
+}
+
+void AOceanActor::CreateGpuCascade()
+{
+	GpuCascade = INDEX_NONE;
+	for (int32 Index = 0; Index < FOceanSimulation::NumCascades; ++Index)
+	{
+		if (Simulation->IsCascadeOnGpu(Index))
+		{
+			GpuCascade = Index;
+		}
+	}
+	if (GpuCascade == INDEX_NONE)
+	{
+		GpuSpectrumTexture = nullptr;
+		GpuTargets.Reset();
+		return;
+	}
+
+	const int32 Size = Simulation->GetCascadeResolution(GpuCascade);
+	TArray<FLinearColor> Spectrum;
+	Simulation->GetSpectrum(GpuCascade, Spectrum);
+	UTexture2D* SpectrumTexture = UTexture2D::CreateTransient(Size, Size, PF_A32B32G32R32F);
+	if (!SpectrumTexture)
+	{
+		GpuCascade = INDEX_NONE;
+		return;
+	}
+	SpectrumTexture->SRGB = false;
+	SpectrumTexture->Filter = TF_Nearest;
+	SpectrumTexture->CompressionSettings = TC_HDR;
+	FByteBulkData& Mip0 = SpectrumTexture->GetPlatformData()->Mips[0].BulkData;
+	FMemory::Memcpy(Mip0.Lock(LOCK_READ_WRITE), Spectrum.GetData(), int64(Spectrum.Num()) * sizeof(FLinearColor));
+	Mip0.Unlock();
+	SpectrumTexture->UpdateResource();
+	GpuSpectrumTexture = SpectrumTexture;
+
+	GpuTargets.Reset();
+	for (int32 Target = 0; Target < 3; ++Target)
+	{
+		UTextureRenderTarget2D* RenderTarget = NewObject<UTextureRenderTarget2D>(this, NAME_None, RF_Transient);
+		RenderTarget->bCanCreateUAV = true;
+		RenderTarget->bAutoGenerateMips = true; // allocates the mip chain; OceanGpuSimulateCascade fills it
+		RenderTarget->MipsSamplerFilter = TF_Bilinear;
+		RenderTarget->AddressX = TA_Wrap;
+		RenderTarget->AddressY = TA_Wrap;
+		RenderTarget->Filter = TF_Trilinear;
+		RenderTarget->ClearColor = FLinearColor::Transparent;
+		RenderTarget->InitCustomFormat(Size, Size, PF_FloatRGBA, true);
+		RenderTarget->UpdateResourceImmediate(true);
+		GpuTargets.Add(RenderTarget);
+	}
+	GpuLastTime = -1.f;
+}
+
+void AOceanActor::StepGpuCascade(float Time)
+{
+	if (GpuCascade == INDEX_NONE || !GpuSpectrumTexture || GpuTargets.Num() != 3)
+	{
+		return;
+	}
+	const float DeltaTime = GpuLastTime >= 0.f ? FMath::Max(Time - GpuLastTime, 0.f) : 0.f;
+	GpuLastTime = Time;
+
+	FOceanGpuCascadeStep Step;
+	Step.Resolution = Simulation->GetCascadeResolution(GpuCascade);
+	Step.Time = Time;
+	Step.PatchSize = Simulation->GetCascadePatchSize(GpuCascade);
+	Step.Depth = Settings.Depth;
+	Step.Choppiness = Settings.Choppiness;
+	Step.FoamThreshold = Settings.FoamThreshold;
+	Step.FoamIntensity = Settings.FoamIntensity;
+	Step.FoamFade = FMath::Exp(-Settings.FoamDecay * DeltaTime);
+
+	FTextureResource* SpectrumResource = GpuSpectrumTexture->GetResource();
+	FTextureRenderTargetResource* Targets[3] = {
+		GpuTargets[0]->GameThread_GetRenderTargetResource(),
+		GpuTargets[1]->GameThread_GetRenderTargetResource(),
+		GpuTargets[2]->GameThread_GetRenderTargetResource() };
+	ENQUEUE_RENDER_COMMAND(OceanGpuCascade)([Step, SpectrumResource, Targets](FRHICommandListImmediate& RHICmdList) mutable
+	{
+		if (!SpectrumResource || !Targets[0] || !Targets[1] || !Targets[2])
+		{
+			return;
+		}
+		Step.Spectrum = SpectrumResource->GetTexture2DRHI();
+		Step.Displacement = Targets[0]->GetRenderTargetTexture();
+		Step.Derivatives = Targets[1]->GetRenderTargetTexture();
+		Step.Moments = Targets[2]->GetRenderTargetTexture();
+		OceanGpuSimulateCascade(RHICmdList, Step);
+	});
 }
 
 void AOceanActor::UploadFrame(const FOceanFrame& Frame)

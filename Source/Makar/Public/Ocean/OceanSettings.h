@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "Ocean/OceanShoreData.h"
@@ -105,4 +105,12 @@ struct FOceanSettings
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation")
 	int32 Seed = 1234;
+
+	/**
+	 * Resolution of the finest cascade (Cascade2Size), simulated on the GPU by compute shaders (power of two, up to
+	 * 1024); 0 = on the CPU with the others, at Resolution. That cascade only shades the surface (normals, glints,
+	 * foam, caustics): geometry and water queries use the CPU cascades, so they stay exactly consistent.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation", meta = (ClampMin = "0", ClampMax = "1024"))
+	int32 GpuDetailResolution = 512;
 };

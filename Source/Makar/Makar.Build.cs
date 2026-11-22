@@ -1,4 +1,4 @@
-using UnrealBuildTool;
+﻿using UnrealBuildTool;
 
 public class Makar : ModuleRules
 {
@@ -17,6 +17,9 @@ public class Makar : ModuleRules
 			"MeshDescription",         // procedural flora and rocks (OceanFlora)
 			"StaticMeshDescription"
 		});
+
+		// The finest ocean cascade runs on the GPU (compute shaders in the MakarShaders module).
+		PrivateDependencyModuleNames.AddRange(new string[] { "MakarShaders", "RenderCore", "RHI" });
 
 		if (Target.bBuildEditor)
 		{

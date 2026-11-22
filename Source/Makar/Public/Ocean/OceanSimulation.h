@@ -65,6 +65,14 @@ public:
 	int32 GetResolution() const { return N; }
 	int32 GetNumMips() const { return LogN + 1; }
 
+	/** The finest cascade can be simulated on the GPU (FOceanSettings::GpuDetailResolution): Simulate() skips it. */
+	bool IsCascadeOnGpu(int32 Index) const { return Index >= 0 && Index < NumCascades && Cascades[Index].bOnGpu; }
+	int32 GetCascadeResolution(int32 Index) const { return Cascades[Index].Resolution; }
+	float GetCascadePatchSize(int32 Index) const { return Cascades[Index].PatchSize; }
+
+	/** Initial spectrum of a cascade for OceanGpuSimulateCascade: h0(k).re, .im, conj(h0(-k)).re, .im per texel. */
+	void GetSpectrum(int32 Index, TArray<FLinearColor>& Out) const;
+
 private:
 	struct FComplex
 	{
@@ -74,6 +82,10 @@ private:
 
 	struct FCascade
 	{
+		int32 Resolution = 0;
+		bool bOnGpu = false;
+		/** Expected significant height, from the spectrum (for cascades on the GPU, which never come back). */
+		float SpectrumSignificantHeight = 0.f;
 		float PatchSize = 0.f;
 		TArray<FComplex> H0;          // h0(k)
 		TArray<FComplex> H0MinusConj; // conj(h0(-k))
@@ -82,7 +94,7 @@ private:
 		TArray<float> Foam;           // persistent foam, decays over time
 	};
 
-	void InitializeCascade(FCascade& Cascade, float PatchSize, float KMin, float KMax, int32 Seed) const;
+	void InitializeCascade(FCascade& Cascade, int32 Resolution, float PatchSize, float KMin, float KMax, int32 Seed) const;
 	void SimulateCascade(FCascade& Cascade, float Time, float DeltaTime, FOceanCascadeFrame& Out);
 
 	void Dispersion(float K, float& OutOmega, float& OutDOmegaDK) const;
