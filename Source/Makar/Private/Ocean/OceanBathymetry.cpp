@@ -420,11 +420,48 @@ void AOceanBathymetry::Build()
 			Normals[Index] = FVector(-DHX, -DHY, 2.f * Texel).GetSafeNormal();
 		}
 	});
+	// Along the coast the 2.5 m triangles show: the swash sheet and the waterline cut them along long straight
+	// edges. Chunks of the grid that hold the coast (ground between -CoastBand and +CoastBand) are rebuilt
+	// Subdivision times finer (section 1); the rest of the grid keeps one vertex per texel (section 0).
+	constexpr int32 ChunkCells = 16;
+	constexpr int32 Subdivision = 5;
+	constexpr float CoastBand = 3.f;
+	const int32 Chunks = FMath::DivideAndRoundUp(N - 1, ChunkCells);
+	TArray<bool> FineChunk;
+	FineChunk.SetNumZeroed(Chunks * Chunks);
+	for (int32 CY = 0; CY < Chunks; ++CY)
+	{
+		for (int32 CX = 0; CX < Chunks; ++CX)
+		{
+			bool bCoast = false;
+			for (int32 Y = CY * ChunkCells; Y <= FMath::Min((CY + 1) * ChunkCells, N - 1) && !bCoast; ++Y)
+			{
+				for (int32 X = CX * ChunkCells; X <= FMath::Min((CX + 1) * ChunkCells, N - 1); ++X)
+				{
+					if (FMath::Abs(Heights[Y * N + X]) < CoastBand)
+					{
+						bCoast = true;
+						break;
+					}
+				}
+			}
+			FineChunk[CY * Chunks + CX] = bCoast;
+		}
+	}
+	auto IsFine = [&](int32 CX, int32 CY)
+	{
+		return CX >= 0 && CY >= 0 && CX < Chunks && CY < Chunks && FineChunk[CY * Chunks + CX];
+	};
+
 	Triangles.Reserve((N - 1) * (N - 1) * 6);
 	for (int32 Y = 0; Y + 1 < N; ++Y)
 	{
 		for (int32 X = 0; X + 1 < N; ++X)
 		{
+			if (IsFine(X / ChunkCells, Y / ChunkCells))
+			{
+				continue;
+			}
 			const int32 V00 = Y * N + X;
 			const int32 V10 = V00 + 1;
 			const int32 V01 = V00 + N;
@@ -433,6 +470,95 @@ void AOceanBathymetry::Build()
 		}
 	}
 	Terrain->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, TArray<FVector2D>(), TArray<FLinearColor>(), Tangents, false);
+
+	// Fine coast chunks. Edges shared with a coarse chunk follow the coarse edge (linear between its vertices), so
+	// the two meshes meet without cracks; edges between fine chunks sample the same heights on both sides.
+	TArray<FVector> FineVertices;
+	TArray<FVector> FineNormals;
+	TArray<int32> FineTriangles;
+	const float FineStep = Texel / Subdivision;
+	for (int32 CY = 0; CY < Chunks; ++CY)
+	{
+		for (int32 CX = 0; CX < Chunks; ++CX)
+		{
+			if (!IsFine(CX, CY))
+			{
+				continue;
+			}
+			const int32 X0 = CX * ChunkCells;
+			const int32 Y0 = CY * ChunkCells;
+			const int32 X1 = FMath::Min(X0 + ChunkCells, N - 1);
+			const int32 Y1 = FMath::Min(Y0 + ChunkCells, N - 1);
+			const int32 W = (X1 - X0) * Subdivision + 1;
+			const int32 H = (Y1 - Y0) * Subdivision + 1;
+			const FVector2f Origin = TexelCenter(X0, Y0);
+
+			// Heights with a one-sample ring around the chunk, for the normals.
+			const int32 RW = W + 2;
+			TArray<float> Local;
+			Local.SetNumUninitialized(RW * (H + 2));
+			ParallelFor(H + 2, [&](int32 J)
+			{
+				for (int32 I = 0; I < RW; ++I)
+				{
+					Local[J * RW + I] = GetTerrainHeight(Origin + FVector2f((I - 1) * FineStep, (J - 1) * FineStep));
+				}
+			});
+			const auto CoarseLerp = [&](int32 XA, int32 YA, int32 XB, int32 YB, int32 Step)
+			{
+				const int32 Cell = Step / Subdivision;
+				const float T = float(Step % Subdivision) / Subdivision;
+				const float A = Heights[(YA + (YB - YA) * Cell) * N + XA + (XB - XA) * Cell];
+				const float B = T > 0.f ? Heights[(YA + (YB - YA) * (Cell + 1)) * N + XA + (XB - XA) * (Cell + 1)] : A;
+				return FMath::Lerp(A, B, T);
+			};
+			for (int32 J = 0; J < H; ++J)
+			{
+				if (!IsFine(CX - 1, CY)) { Local[(J + 1) * RW + 1] = CoarseLerp(X0, Y0, X0, Y0 + 1, J); }
+				if (!IsFine(CX + 1, CY)) { Local[(J + 1) * RW + W] = CoarseLerp(X1, Y0, X1, Y0 + 1, J); }
+			}
+			for (int32 I = 0; I < W; ++I)
+			{
+				if (!IsFine(CX, CY - 1)) { Local[RW + I + 1] = CoarseLerp(X0, Y0, X0 + 1, Y0, I); }
+				if (!IsFine(CX, CY + 1)) { Local[H * RW + I + 1] = CoarseLerp(X0, Y1, X0 + 1, Y1, I); }
+			}
+
+			const int32 Base = FineVertices.Num();
+			for (int32 J = 0; J < H; ++J)
+			{
+				for (int32 I = 0; I < W; ++I)
+				{
+					const int32 L = (J + 1) * RW + I + 1;
+					const FVector2f Position = Origin + FVector2f(I * FineStep, J * FineStep) - Center;
+					FineVertices.Add(FVector(Position.X * 100.0, Position.Y * 100.0, Local[L] * 100.0 - ActorZ));
+					FineNormals.Add(FVector(-(Local[L + 1] - Local[L - 1]), -(Local[L + RW] - Local[L - RW]), 2.f * FineStep).GetSafeNormal());
+				}
+			}
+			for (int32 J = 0; J + 1 < H; ++J)
+			{
+				for (int32 I = 0; I + 1 < W; ++I)
+				{
+					const int32 V00 = Base + J * W + I;
+					const int32 V10 = V00 + 1;
+					const int32 V01 = V00 + W;
+					const int32 V11 = V01 + 1;
+					FineTriangles.Append({ V00, V01, V10, V10, V01, V11 });
+				}
+			}
+		}
+	}
+	if (FineVertices.Num() > 0)
+	{
+		TArray<FProcMeshTangent> FineTangents;
+		FineTangents.Init(FProcMeshTangent(1.f, 0.f, 0.f), FineVertices.Num());
+		Terrain->CreateMeshSection_LinearColor(1, FineVertices, FineTriangles, FineNormals, TArray<FVector2D>(), TArray<FLinearColor>(), FineTangents, false);
+	}
+	else
+	{
+		Terrain->ClearMeshSection(1);
+	}
+	UE_LOG(LogTemp, Display, TEXT("OceanBathymetry: coast mesh %d vertices at %.2f m (%d chunks)"),
+		FineVertices.Num(), FineStep, FineChunk.FilterByPredicate([](bool bFine) { return bFine; }).Num());
 	BuildShoreTexture(*Data);
 	ShoreData = Data;
 	BuildFootprintTexture();
@@ -454,7 +580,10 @@ void AOceanBathymetry::Build()
 			TerrainMaterialInstance->SetVectorParameterValue(TEXT("ShoreMapOrigin"), FLinearColor(Data->OriginM.X, Data->OriginM.Y, 0.f, 0.f));
 			TerrainMaterialInstance->SetScalarParameterValue(TEXT("ShoreMapSize"), Data->SizeM);
 		}
-		Terrain->SetMaterial(0, TerrainMaterialInstance);
+		for (int32 Section = 0; Section < Terrain->GetNumSections(); ++Section)
+		{
+			Terrain->SetMaterial(Section, TerrainMaterialInstance);
+		}
 	}
 	bBuilt = true;
 }
