@@ -18,3 +18,11 @@ foreach ($category in Get-ChildItem $source -Directory) {
         }
     }
 }
+
+# Coconut frond textures for the palm leaf cards (Scripts/infinigen/render_frond_atlas.py).
+$frond = "\\wsl.localhost\$Distro\root\makar\frond_atlas"
+if (Test-Path "$frond\frond_basecolor.png") {
+    New-Item -ItemType Directory -Force (Join-Path $target "frond") | Out-Null
+    Copy-Item -Force "$frond\*.png", "$frond\frond.json" (Join-Path $target "frond")
+    "frond"
+}

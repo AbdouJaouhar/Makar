@@ -29,6 +29,7 @@ AOceanIslandFlora::AOceanIslandFlora()
 
 	BarkMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_Bark.M_Bark")));
 	FoliageMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_Foliage.M_Foliage")));
+	PalmFrondMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_PalmFrond.M_PalmFrond")));
 	RockMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_Rock.M_Rock")));
 
 	auto Infinigen = [](TArray<TSoftObjectPtr<UStaticMesh>>& Out, const TCHAR* Category, const TCHAR* Factory, int32 Count)
@@ -110,13 +111,18 @@ void AOceanIslandFlora::Build()
 
 	UMaterialInterface* Bark = BarkMaterial.LoadSynchronous();
 	UMaterialInterface* Foliage = FoliageMaterial.LoadSynchronous();
+	UMaterialInterface* PalmFrond = PalmFrondMaterial.LoadSynchronous();
+	if (!PalmFrond)
+	{
+		PalmFrond = Foliage; // no frond textures yet (Scripts/create_flora_materials.py)
+	}
 	UMaterialInterface* Stone = RockMaterial.LoadSynchronous();
 
 	// --- Meshes: a few variants of each, generated from the seed ---
 	TArray<UHierarchicalInstancedStaticMeshComponent*> Palms, Trees, Shrubs, Rocks;
 	for (int32 Variant = 0; Variant < NumPalmVariants; ++Variant)
 	{
-		UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeCoconutPalm(Seed * 100 + Variant), { Bark, Foliage });
+		UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeCoconutPalm(Seed * 100 + Variant), { Bark, PalmFrond });
 		Meshes.Add(Mesh);
 		Palms.Add(AddInstancer(Mesh, 3000.f));
 	}

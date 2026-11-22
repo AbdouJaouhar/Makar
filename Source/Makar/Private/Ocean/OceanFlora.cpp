@@ -364,37 +364,42 @@ namespace OceanFlora
 			const FVector3f Outward(FMath::Cos(Azimuth), FMath::Sin(Azimuth), 0.f);
 			const FLinearColor Green = FMath::Lerp(FLinearColor(0.09f, 0.2f, 0.03f), FLinearColor(0.24f, 0.25f, 0.07f), Age * Age);
 
+			// A leaf card along the arching rachis, textured with a frond rendered from Infinigen's coconut palm
+			// (Scripts/infinigen/render_frond_atlas.py: base at V = 1, tip at V = 0, the frond spanning
+			// U 0.27-0.73 of the square image). Three vertices across: the leaflets droop on both sides of the
+			// rachis, more towards the tip, so the card has a V cross-section instead of being a flat ribbon.
+			const FLinearColor Color = Green * Random.FRandRange(0.85f, 1.15f);
+			const float HalfWidth = 0.24f * Length;
 			const int32 Steps = 12;
 			FVector3f Position = Top;
-			for (int32 Step = 0; Step < Steps; ++Step)
+			int32 Previous[3] = { INDEX_NONE, INDEX_NONE, INDEX_NONE };
+			for (int32 Step = 0; Step <= Steps; ++Step)
 			{
-				const float S = (Step + 0.5f) / Steps;
+				const float S = float(Step) / Steps;
 				const float Pitch = StartPitch - Droop * FMath::Pow(S, 1.5f);
 				const FVector3f Direction = (Outward * FMath::Cos(Pitch) + FVector3f(0.f, 0.f, FMath::Sin(Pitch))).GetSafeNormal();
-				const FVector3f Next = Position + Direction * (Length / Steps);
 				const FVector3f Side = FVector3f::CrossProduct(Direction, FVector3f::UpVector).GetSafeNormal();
-				const float Width = 80.f * FMath::Sin(UE_PI * FMath::Pow(S, 0.7f)) + 10.f;
-				const FLinearColor Color = Green * Random.FRandRange(0.85f, 1.15f) * FMath::Lerp(0.8f, 1.1f, S);
-				// Two leaflets per side per step: thin triangles hanging down and forward from the rachis.
-				for (int32 Leaflet = 0; Leaflet < 2; ++Leaflet)
+				const FVector3f Up = FVector3f::CrossProduct(Side, Direction).GetSafeNormal();
+				const float Sag = HalfWidth * FMath::Lerp(0.25f, 0.6f, S);
+				const float V = FMath::Lerp(0.99f, 0.01f, S);
+				const FVector3f Left = Position - Side * HalfWidth - Up * Sag;
+				const FVector3f Right = Position + Side * HalfWidth - Up * Sag;
+				const FVector3f LeftNormal = (Up + Side * 0.4f).GetSafeNormal();
+				const FVector3f RightNormal = (Up - Side * 0.4f).GetSafeNormal();
+				const int32 Row[3] = {
+					Data.AddVertex(Left, LeftNormal, FVector2f(0.27f, V), Color),
+					Data.AddVertex(Position, Up, FVector2f(0.5f, V), Color),
+					Data.AddVertex(Right, RightNormal, FVector2f(0.73f, V), Color) };
+				if (Step > 0)
 				{
-					const FVector3f Base = FMath::Lerp(Position, Next, Leaflet * 0.5f);
-					const FVector3f BaseEnd = Base + Direction * (Length / Steps) * 0.35f;
-					for (const float Sign : { -1.f, 1.f })
+					for (int32 Column = 0; Column < 2; ++Column)
 					{
-						const FVector3f Tip = Base + Side * (Sign * Width) + Direction * (Width * 0.35f) - FVector3f(0.f, 0.f, Width * 0.45f);
-						FVector3f Normal = FVector3f::CrossProduct(BaseEnd - Base, Tip - Base).GetSafeNormal();
-						if (Normal.Z < 0.f)
-						{
-							Normal = -Normal;
-						}
-						const int32 A = Data.AddVertex(Base, Normal, FVector2f(0.f, S), Color);
-						const int32 B = Data.AddVertex(BaseEnd, Normal, FVector2f(0.f, S), Color);
-						const int32 C = Data.AddVertex(Tip, Normal, FVector2f(1.f, S), Color * 1.15f);
-						Data.AddTriangle(SectionFoliage, A, B, C);
+						Data.AddTriangle(SectionFoliage, Previous[Column], Row[Column], Previous[Column + 1]);
+						Data.AddTriangle(SectionFoliage, Previous[Column + 1], Row[Column], Row[Column + 1]);
 					}
 				}
-				Position = Next;
+				FMemory::Memcpy(Previous, Row, sizeof(Row));
+				Position += Direction * (Length / Steps);
 			}
 		}
 		return Data;
