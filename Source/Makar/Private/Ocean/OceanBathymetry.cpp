@@ -266,7 +266,7 @@ void AOceanBathymetry::EnsureBuilt()
 float AOceanBathymetry::GetTerrainHeight(const FVector2f& PositionM) const
 {
 	const FOceanTerrainSample Sample = SampleTerrain(PositionM);
-	return Sample.Ground + Sample.Understory;
+	return Sample.Ground + UnderstoryRelief * Sample.Understory;
 }
 
 FOceanTerrainSample AOceanBathymetry::SampleTerrain(const FVector2f& PositionM) const
@@ -305,7 +305,8 @@ FOceanTerrainSample AOceanBathymetry::SampleTerrain(const FVector2f& PositionM) 
 		const float Rock = Rockiness * FMath::SmoothStep(0.45f, 0.7f, OceanGradientNoise(Seeded / 70.f + 3.1f));
 		const float Cliff = Rock * 8.f * FMath::SmoothStep(0.f, 8.f, Inland);
 		const float Ground = Beach + Hills + Cliff;
-		// Understory: 1.5-3 m of lumpy bush mass behind the beach, under the trees of AOceanIslandFlora.
+		// Understory: 1.5-3 m of lumpy bush mass behind the beach, under the trees of AOceanIslandFlora, which covers
+		// it with shrubs (only UnderstoryRelief of it is terrain).
 		// Thinner on the rocky points. Uses the same vegetation line as OceanTerrainSurface (Shaders/Ocean.ush),
 		// minus its fine noise, with a gradual edge (a sudden step reads as a dark cliff).
 		const float ForestRamp = FMath::SmoothStep(2.f, 6.f, Ground + 1.5f * (OceanValueNoise(PositionM / 40.f) - 0.5f));

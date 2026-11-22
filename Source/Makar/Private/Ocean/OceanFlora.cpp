@@ -232,6 +232,58 @@ namespace
 		}
 	}
 
+	/**
+	 * A leaf mass drawn with cards: quads showing a cluster of real leaves (Infinigen leaves rendered from above,
+	 * Scripts/infinigen/render_leaf_cluster.py; the whole image on each card), scattered through a flattened ball,
+	 * mostly towards its surface, and facing mostly up and out as leaves do. Each card is built twice, front and back
+	 * with opposite windings, both with normals bent outwards from the mass: it is lit as one soft volume rather than
+	 * as flat cards (a two-sided material would flip the back face's normal). Inner cards are darker (self-shadowing).
+	 * The vertex colour multiplies the rendered leaves (0.5 = as rendered).
+	 */
+	void AddLeafCards(FOceanMeshData& Data, int32 Section, const FVector3f& Center, float Radius, float CardSize,
+		FRandomStream& Random, const FLinearColor& Tint)
+	{
+		// Enough cards to cover about half the mass's surface.
+		const int32 Cards = FMath::Clamp(FMath::RoundToInt(12.8f * FMath::Square(Radius / CardSize)), 4, 28);
+		const FVector3f Below = Center - FVector3f(0.f, 0.f, 0.3f * Radius); // normals radiate from a little below
+		for (int32 Card = 0; Card < Cards; ++Card)
+		{
+			const FVector3f Direction(Random.GetUnitVector());
+			const float Depth = Random.FRandRange(0.55f, 1.f);
+			const FVector3f Position = Center + FVector3f(Direction.X, Direction.Y, Direction.Z * 0.7f) * (Radius * Depth);
+			const FVector3f Normal = (Direction * 0.5f + FVector3f::UpVector * 0.8f + FVector3f(Random.GetUnitVector()) * 0.3f).GetSafeNormal();
+			const FVector3f Tangent = FVector3f::CrossProduct(Normal, FVector3f(Random.GetUnitVector())).GetSafeNormal();
+			const FVector3f Bitangent = FVector3f::CrossProduct(Normal, Tangent);
+			const float Half = 0.5f * CardSize * Random.FRandRange(0.8f, 1.2f);
+			const bool bMirror = Random.FRand() < 0.5f;
+			const FLinearColor Color = Tint * Random.FRandRange(0.88f, 1.12f) * FMath::Lerp(0.6f, 1.f, (Depth - 0.55f) / 0.45f);
+			const FVector3f Corners[4] = {
+				Position - Tangent * Half - Bitangent * Half, Position + Tangent * Half - Bitangent * Half,
+				Position + Tangent * Half + Bitangent * Half, Position - Tangent * Half + Bitangent * Half };
+			const FVector2f UVs[4] = { FVector2f(0.f, 1.f), FVector2f(1.f, 1.f), FVector2f(1.f, 0.f), FVector2f(0.f, 0.f) };
+			for (int32 Face = 0; Face < 2; ++Face)
+			{
+				const int32 First = Data.Vertices.Num();
+				for (int32 Corner = 0; Corner < 4; ++Corner)
+				{
+					const FVector3f Radial = (Corners[Corner] - Below).GetSafeNormal();
+					const FVector2f UV = bMirror ? FVector2f(1.f - UVs[Corner].X, UVs[Corner].Y) : UVs[Corner];
+					Data.AddVertex(Corners[Corner], (Normal * 0.35f + Radial * 0.65f).GetSafeNormal(), UV, Color);
+				}
+				if (Face == 0)
+				{
+					Data.AddTriangle(Section, First, First + 1, First + 2);
+					Data.AddTriangle(Section, First, First + 2, First + 3);
+				}
+				else
+				{
+					Data.AddTriangle(Section, First, First + 2, First + 1);
+					Data.AddTriangle(Section, First, First + 3, First + 2);
+				}
+			}
+		}
+	}
+
 	// --- L-system ---------------------------------------------------------------------------------------------
 
 	struct FLSystemRule
@@ -291,6 +343,10 @@ namespace
 		FLinearColor Leaf = FLinearColor(0.06f, 0.14f, 0.03f);
 		FLinearColor LeafAccent = FLinearColor(0.16f, 0.2f, 0.05f);
 		float AccentAmount = 0.5f;
+		// Leaf masses as textured cards (AddLeafCards) rather than lumpy balls.
+		bool bLeafCards = false;
+		float CardSize = 140.f;    // cm
+		FLinearColor CardTint = FLinearColor(0.5f, 0.5f, 0.5f);
 	};
 
 	/**
@@ -357,7 +413,14 @@ namespace
 			case TEXT('A'):
 			{
 				const float Radius = Params.LeafRadius * Random.FRandRange(0.75f, 1.2f);
-				AddLeafCluster(Data, State.Position + FVector3f(0.f, 0.f, Radius * 0.3f), Radius, Random, Params.Leaf, Params.LeafAccent, Params.AccentAmount);
+				if (Params.bLeafCards)
+				{
+					AddLeafCards(Data, SectionFoliage, State.Position + FVector3f(0.f, 0.f, Radius * 0.3f), Radius, Params.CardSize, Random, Params.CardTint);
+				}
+				else
+				{
+					AddLeafCluster(Data, State.Position + FVector3f(0.f, 0.f, Radius * 0.3f), Radius, Random, Params.Leaf, Params.LeafAccent, Params.AccentAmount);
+				}
 				break;
 			}
 			default:
@@ -477,6 +540,10 @@ namespace OceanFlora
 		Params.LeafRadius = Random.FRandRange(130.f, 170.f);
 		Params.Leaf = FLinearColor(0.03f, 0.08f, 0.018f);
 		Params.LeafAccent = FLinearColor(0.07f, 0.12f, 0.025f);
+		// Leaf cards (M_LeafCards_Broadleaf): leaves ~30 cm, like the tropical almond's; each tree its own shade.
+		Params.bLeafCards = true;
+		Params.CardSize = Random.FRandRange(125.f, 150.f);
+		Params.CardTint = FLinearColor(0.5f * Random.FRandRange(0.9f, 1.05f), 0.5f * Random.FRandRange(0.92f, 1.08f), 0.5f * Random.FRandRange(0.85f, 1.f));
 		InterpretLSystem(Data, Program, Params, Random);
 		return Data;
 	}
@@ -504,6 +571,38 @@ namespace OceanFlora
 		Params.Leaf = FLinearColor(0.08f, 0.15f, 0.04f);
 		Params.LeafAccent = FLinearColor(0.24f, 0.11f, 0.05f); // red-veined old leaves
 		Params.AccentAmount = 0.35f;
+		// Leaf cards (M_LeafCards_SeaGrape): round leaves ~20 cm along zigzag stems, a few turning red.
+		Params.bLeafCards = true;
+		Params.CardSize = Random.FRandRange(95.f, 115.f);
+		Params.CardTint = FLinearColor(0.5f * Random.FRandRange(0.92f, 1.05f), 0.5f * Random.FRandRange(0.95f, 1.05f), 0.5f);
+		InterpretLSystem(Data, Program, Params, Random);
+		return Data;
+	}
+
+	FOceanMeshData MakeCoastalBush(int32 Seed)
+	{
+		FRandomStream Random(Seed);
+		FOceanMeshData Data(2);
+		// The evergreen scrub of the coastal forest edge (seaside mahoe, bay cedar, young tropical almonds): three
+		// stems from the ground, each forking into leafy masses, so the bush is a mound of foliage from knee height
+		// up, ~2-2.5 m tall.
+		const TArray<FLSystemRule> Rules = {
+			{ TEXT('A'), 0.6f, TEXT("F'[&FLA]////[&FLA]////[&LA]") },
+			{ TEXT('A'), 0.4f, TEXT("F'[&FLA]//////[&FL]") },
+		};
+		const FString Program = RewriteLSystem(TEXT("[&A]/////[&A]/////[&A]"), Rules, 2, Random);
+		FTurtleParams Params;
+		Params.Length = Random.FRandRange(55.f, 75.f);
+		Params.Radius = 4.f;
+		Params.LengthScale = 0.85f;
+		Params.BranchAngle = 35.f;
+		Params.RollAngle = 24.f;
+		Params.Phototropism = 0.1f;
+		Params.LeafRadius = Random.FRandRange(65.f, 90.f);
+		Params.Bark = FLinearColor(0.17f, 0.15f, 0.12f);
+		Params.bLeafCards = true;
+		Params.CardSize = Random.FRandRange(85.f, 105.f);
+		Params.CardTint = FLinearColor(0.5f * Random.FRandRange(0.85f, 1.f), 0.5f * Random.FRandRange(0.9f, 1.05f), 0.5f * Random.FRandRange(0.85f, 1.f));
 		InterpretLSystem(Data, Program, Params, Random);
 		return Data;
 	}

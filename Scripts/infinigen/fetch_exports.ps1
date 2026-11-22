@@ -26,3 +26,11 @@ if (Test-Path "$frond\frond_basecolor.png") {
     Copy-Item -Force "$frond\*.png", "$frond\frond.json" (Join-Path $target "frond")
     "frond"
 }
+
+# Leaf clusters for the leaf cards of the broadleaf trees and sea grapes (Scripts/infinigen/render_leaf_cluster.py).
+$leaves = "\\wsl.localhost\$Distro\root\makar\leaf_atlas"
+if (Test-Path "$leaves\*_basecolor.png") {
+    New-Item -ItemType Directory -Force (Join-Path $target "leaves") | Out-Null
+    Copy-Item -Force "$leaves\*.png" (Join-Path $target "leaves")
+    "leaves"
+}

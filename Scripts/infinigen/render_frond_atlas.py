@@ -141,8 +141,19 @@ def main(scene_path, out_dir, resolution, rank, source_name="Plane.001"):
     low, high = flat.min(axis=0), flat.max(axis=0)
     length = float(high[1] - low[1])
     width = float(high[0] - low[0])
-    span = max(length, width) * 1.02
-    mid = (low + high) * 0.5
+    span, mid = render_top_view(out_dir, "frond", resolution, low, high)
+    with open(os.path.join(out_dir, "frond.json"), "w") as f:
+        json.dump({"length_m": length, "width_m": width, "image_span_m": span,
+                   "center_offset_m": [float(mid[0] - low[0] - width * 0.5), float(mid[1])]}, f, indent=2)
+    print(f"render_frond_atlas: frond {length:.2f} x {width:.2f} m, image span {span:.2f} m -> {out_dir}")
+
+
+def render_top_view(out_dir, prefix, resolution, low, high):
+    """Renders the scene from above, orthographic over the square covering low-high (XY), with Cycles passes:
+    diffuse colour + alpha -> <prefix>_basecolor.png, normal remapped from [-1, 1] to [0, 1] -> <prefix>_normal.png
+    (world space = card tangent space: the card is the XY plane, image up = +Y). Returns the span and centre."""
+    span = float(max(high[0] - low[0], high[1] - low[1])) * 1.02
+    mid = (np.asarray(low) + np.asarray(high)) * 0.5
 
     # Orthographic camera above, looking down -Z; the image covers span x span.
     camera_data = bpy.data.cameras.new("Camera")
@@ -194,8 +205,8 @@ def main(scene_path, out_dir, resolution, rank, source_name="Plane.001"):
     output.format.color_mode = "RGBA"
     output.format.color_depth = "8"
     output.file_slots.clear()
-    output.file_slots.new("frond_basecolor")
-    output.file_slots.new("frond_normal")
+    output.file_slots.new(f"{prefix}_basecolor")
+    output.file_slots.new(f"{prefix}_normal")
     tree.links.new(set_alpha.outputs[0], output.inputs[0])
     tree.links.new(normal_alpha.outputs[0], output.inputs[1])
     composite = tree.nodes.new("CompositorNodeComposite")
@@ -204,14 +215,11 @@ def main(scene_path, out_dir, resolution, rank, source_name="Plane.001"):
     os.makedirs(out_dir, exist_ok=True)
     bpy.ops.render.render(write_still=False)
     # File Output appends the frame number: rename to stable names.
-    for name in ("frond_basecolor", "frond_normal"):
+    for name in (f"{prefix}_basecolor", f"{prefix}_normal"):
         for file in os.listdir(out_dir):
             if file.startswith(name) and file != name + ".png":
                 os.replace(os.path.join(out_dir, file), os.path.join(out_dir, name + ".png"))
-    with open(os.path.join(out_dir, "frond.json"), "w") as f:
-        json.dump({"length_m": length, "width_m": width, "image_span_m": span,
-                   "center_offset_m": [float(mid[0] - low[0] - width * 0.5), float(mid[1])]}, f, indent=2)
-    print(f"render_frond_atlas: frond {length:.2f} x {width:.2f} m, image span {span:.2f} m -> {out_dir}")
+    return span, mid
 
 
 if __name__ == "__main__":

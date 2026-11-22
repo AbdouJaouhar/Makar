@@ -14,7 +14,7 @@ class UTexture2D;
 struct FOceanTerrainSample
 {
 	float Ground = 0.f;     // ground height above sea level (negative under water)
-	float Understory = 0.f; // bush mass above the ground, part of the terrain mesh
+	float Understory = 0.f; // bush mass above the ground (UnderstoryRelief of it in the terrain mesh, the rest shrubs)
 	float Rock = 0.f;       // 0..1, rocky shore
 	float Inland = 0.f;     // approximate distance from the coastline, positive on land
 };
@@ -48,8 +48,11 @@ public:
 	/** The terrain's material instance (sand, sea floor), for the ocean to pass its wave slopes (caustics). */
 	UMaterialInstanceDynamic* GetTerrainMaterialInstance() const { return TerrainMaterialInstance; }
 
-	/** Terrain height above sea level (m) from the analytic island shape: ground plus understory. */
+	/** Terrain height above sea level (m) from the analytic island shape: ground plus the understory's relief. */
 	float GetTerrainHeight(const FVector2f& PositionM) const;
+
+	/** Share of the understory mass that is terrain (UnderstoryRelief). */
+	float GetUnderstoryRelief() const { return UnderstoryRelief; }
 
 	/** Ground height (without understory) under a world location, cm, for scripts placing cameras or props. */
 	UFUNCTION(BlueprintPure, Category = "Island")
@@ -112,6 +115,13 @@ protected:
 	/** 0 = sandy coast all around, 1 = mostly rocky points. */
 	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0", ClampMax = "1"))
 	float Rockiness = 0.5f;
+
+	/**
+	 * Share of the forest's understory mass (1.5-3 m) built into the terrain mesh. The rest is real shrubs
+	 * (AOceanIslandFlora): a full mass reads as smooth green mounds between them.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0", ClampMax = "1"))
+	float UnderstoryRelief = 0.2f;
 
 	/** Drop per metre offshore at the waterline (0.05 = 1:20, a gentle sandy beach). */
 	UPROPERTY(EditAnywhere, Category = "Sea floor", meta = (ClampMin = "0.001"))

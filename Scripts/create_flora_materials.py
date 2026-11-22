@@ -1,7 +1,8 @@
 """
 Builds the materials of the procedural flora and rocks (AOceanIslandFlora, Source/Makar/.../OceanFlora.cpp):
-/Game/Ocean/Flora/M_Bark, M_Foliage, M_Rock, M_PalmFrond (with its frond textures) and M_PalmBark. Colours come from the
-generated vertex colours.
+/Game/Ocean/Flora/M_Bark, M_Foliage, M_Rock, M_PalmBark, and the leaf cards textured with Infinigen renders
+(Saved/Infinigen, fetched by Scripts/infinigen/fetch_exports.ps1): M_PalmFrond, M_LeafCards_Broadleaf and
+M_LeafCards_SeaGrape. Colours come from the generated vertex colours.
 
 Run before create_ocean_map.py, from the editor (Tools > Execute Python Script...) or headless:
     UnrealEditor-Cmd.exe Makar.uproject -run=pythonscript -script=Scripts/create_flora_materials.py
@@ -100,7 +101,7 @@ def rock():
 FROND_SOURCE = os.path.join(unreal.Paths.project_saved_dir(), "Infinigen", "frond")
 
 
-def import_texture(path, name, normal_map):
+def import_texture(path, name, normal_map, alpha_coverage=None):
     task = unreal.AssetImportTask()
     task.set_editor_property("filename", path)
     task.set_editor_property("destination_path", DIRECTORY)
@@ -115,6 +116,10 @@ def import_texture(path, name, normal_map):
         texture.set_editor_property("srgb", False)
         # The frond was rendered with its tip up the image (+Y), Unreal's normal maps point green down (+V).
         texture.set_editor_property("flip_green_channel", True)
+    elif alpha_coverage is not None:
+        # Cut-out foliage: keep the alpha-tested coverage through the mips, or distant leaves thin out and vanish.
+        texture.set_editor_property("do_scale_mips_for_alpha_coverage", True)
+        texture.set_editor_property("alpha_coverage_thresholds", unreal.Vector4(0.0, 0.0, 0.0, alpha_coverage))
     unreal.EditorAssetLibrary.save_asset(f"{DIRECTORY}/{name}")
     return texture
 
@@ -235,9 +240,58 @@ def palm_bark():
     save(material, "M_PalmBark")
 
 
+LEAF_SOURCE = os.path.join(unreal.Paths.project_saved_dir(), "Infinigen", "leaves")
+
+
+def leaf_cards(kind, title, roughness, specular):
+    """Leaf cards of the broadleaf trees and sea grapes (OceanFlora's AddLeafCards): a cluster of Infinigen leaves
+    rendered from above (Scripts/infinigen/render_leaf_cluster.py), cut out by its alpha, lit as foliage. One-sided:
+    the cards are built front and back, both with normals bent outwards from the leaf mass. The vertex colour
+    multiplies the render (0.5 = as rendered)."""
+    name = f"M_LeafCards_{title}"
+    color_path = os.path.join(LEAF_SOURCE, f"{kind}_basecolor.png")
+    if not os.path.isfile(color_path):
+        unreal.log_warning(f"No {kind} leaf cluster in {LEAF_SOURCE}: {name} not built (falls back to M_Foliage)")
+        return
+    color_texture = import_texture(color_path, f"T_Leaves{title}_BaseColor", False, alpha_coverage=0.4)
+    normal_texture = import_texture(os.path.join(LEAF_SOURCE, f"{kind}_normal.png"), f"T_Leaves{title}_Normal", True)
+
+    material = fresh_material(name)
+    material.set_editor_property("blend_mode", unreal.BlendMode.BLEND_MASKED)
+    material.set_editor_property("opacity_mask_clip_value", 0.4)
+    material.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_TWO_SIDED_FOLIAGE)
+    color = node(material, unreal.MaterialExpressionTextureSample, -900, 0)
+    color.set_editor_property("texture", color_texture)
+    normal = node(material, unreal.MaterialExpressionTextureSample, -900, 400)
+    normal.set_editor_property("texture", normal_texture)
+    normal.set_editor_property("sampler_type", unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL)
+    vertex = node(material, unreal.MaterialExpressionVertexColor, -900, 250)
+    tinted = node(material, unreal.MaterialExpressionMultiply, -600, 100)
+    connect(color, tinted, "A", "RGB")
+    connect(vertex, tinted, "B")
+    base = node(material, unreal.MaterialExpressionMultiply, -400, 100)
+    connect(tinted, base, "A")
+    connect(constant(material, 2.0, -600, 220), base, "B")
+    MEL.connect_material_property(base, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    MEL.connect_material_property(color, "A", unreal.MaterialProperty.MP_OPACITY_MASK)
+    MEL.connect_material_property(normal, "RGB", unreal.MaterialProperty.MP_NORMAL)
+    # Light through the leaves: a warmer, yellower green (muted, as for the palm fronds).
+    transmit = node(material, unreal.MaterialExpressionConstant3Vector, -500, 450)
+    transmit.set_editor_property("constant", unreal.LinearColor(0.45, 0.55, 0.18, 1.0))
+    transmitted = node(material, unreal.MaterialExpressionMultiply, -250, 400)
+    connect(base, transmitted, "A")
+    connect(transmit, transmitted, "B")
+    MEL.connect_material_property(transmitted, "", unreal.MaterialProperty.MP_SUBSURFACE_COLOR)
+    MEL.connect_material_property(constant(material, roughness, -250, 550), "", unreal.MaterialProperty.MP_ROUGHNESS)
+    MEL.connect_material_property(constant(material, specular, -250, 620), "", unreal.MaterialProperty.MP_SPECULAR)
+    save(material, name)
+
+
 bark()
 foliage()
 rock()
 palm_frond()
 palm_bark()
+leaf_cards("broadleaf", "Broadleaf", 0.6, 0.4)
+leaf_cards("seagrape", "SeaGrape", 0.38, 0.5)  # sea grape leaves are leathery and glossy
 unreal.log(f"Flora materials written to {DIRECTORY}")

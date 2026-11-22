@@ -13,6 +13,7 @@ namespace
 	constexpr int32 NumPalmVariants = 4;
 	constexpr int32 NumTreeVariants = 3;
 	constexpr int32 NumShrubVariants = 3;
+	constexpr int32 NumBushVariants = 4;
 	constexpr int32 NumRockVariants = 5;
 
 	float Smooth(float Edge0, float Edge1, float X)
@@ -31,6 +32,8 @@ AOceanIslandFlora::AOceanIslandFlora()
 	FoliageMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_Foliage.M_Foliage")));
 	PalmFrondMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_PalmFrond.M_PalmFrond")));
 	PalmBarkMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_PalmBark.M_PalmBark")));
+	BroadleafLeavesMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_LeafCards_Broadleaf.M_LeafCards_Broadleaf")));
+	SeaGrapeLeavesMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_LeafCards_SeaGrape.M_LeafCards_SeaGrape")));
 	RockMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_Rock.M_Rock")));
 
 	auto Infinigen = [](TArray<TSoftObjectPtr<UStaticMesh>>& Out, const TCHAR* Category, const TCHAR* Factory, int32 Count)
@@ -112,20 +115,20 @@ void AOceanIslandFlora::Build()
 
 	UMaterialInterface* Bark = BarkMaterial.LoadSynchronous();
 	UMaterialInterface* Foliage = FoliageMaterial.LoadSynchronous();
-	UMaterialInterface* PalmFrond = PalmFrondMaterial.LoadSynchronous();
-	if (!PalmFrond)
-	{
-		PalmFrond = Foliage; // no frond textures yet (Scripts/create_flora_materials.py)
-	}
-	UMaterialInterface* PalmBark = PalmBarkMaterial.LoadSynchronous();
-	if (!PalmBark)
-	{
-		PalmBark = Bark;
-	}
 	UMaterialInterface* Stone = RockMaterial.LoadSynchronous();
+	// Materials built from Infinigen renders (Scripts/create_flora_materials.py); until they exist, the plain ones.
+	auto LoadOr = [](const TSoftObjectPtr<UMaterialInterface>& Material, UMaterialInterface* Fallback)
+	{
+		UMaterialInterface* Loaded = Material.LoadSynchronous();
+		return Loaded ? Loaded : Fallback;
+	};
+	UMaterialInterface* PalmFrond = LoadOr(PalmFrondMaterial, Foliage);
+	UMaterialInterface* PalmBark = LoadOr(PalmBarkMaterial, Bark);
+	UMaterialInterface* BroadleafLeaves = LoadOr(BroadleafLeavesMaterial, Foliage);
+	UMaterialInterface* SeaGrapeLeaves = LoadOr(SeaGrapeLeavesMaterial, Foliage);
 
 	// --- Meshes: a few variants of each, generated from the seed ---
-	TArray<UHierarchicalInstancedStaticMeshComponent*> Palms, Trees, Shrubs, Rocks;
+	TArray<UHierarchicalInstancedStaticMeshComponent*> Palms, Trees, Shrubs, Bushes, Rocks;
 	for (int32 Variant = 0; Variant < NumPalmVariants; ++Variant)
 	{
 		UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeCoconutPalm(Seed * 100 + Variant), { PalmBark, PalmFrond, Bark });
@@ -134,15 +137,21 @@ void AOceanIslandFlora::Build()
 	}
 	for (int32 Variant = 0; Variant < NumTreeVariants; ++Variant)
 	{
-		UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeBroadleafTree(Seed * 200 + Variant), { Bark, Foliage });
+		UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeBroadleafTree(Seed * 200 + Variant), { Bark, BroadleafLeaves });
 		Meshes.Add(Mesh);
 		Trees.Add(AddInstancer(Mesh, 3000.f));
 	}
 	for (int32 Variant = 0; Variant < NumShrubVariants; ++Variant)
 	{
-		UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeSeaGrape(Seed * 300 + Variant), { Bark, Foliage });
+		UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeSeaGrape(Seed * 300 + Variant), { Bark, SeaGrapeLeaves });
 		Meshes.Add(Mesh);
 		Shrubs.Add(AddInstancer(Mesh, 1500.f));
+	}
+	for (int32 Variant = 0; Variant < NumBushVariants; ++Variant)
+	{
+		UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeCoastalBush(Seed * 400 + Variant), { Bark, BroadleafLeaves });
+		Meshes.Add(Mesh);
+		Bushes.Add(AddInstancer(Mesh, 1500.f));
 	}
 	// Infinigen assets that are present; each instancer remembers its mesh's size, to scale instances to metres.
 	TArray<float> RockSizes, CoralSizes, UrchinSizes, ShellSizes;
@@ -177,10 +186,11 @@ void AOceanIslandFlora::Build()
 	// --- Scatter on the island, on jittered grids, with rules per species ---
 	FRandomStream Random(Seed);
 	const FVector2f IslandCenter(float(Island->GetActorLocation().X * 0.01), float(Island->GetActorLocation().Y * 0.01));
-	TArray<TArray<FTransform>> PalmTransforms, TreeTransforms, ShrubTransforms, RockTransforms, CoralTransforms, UrchinTransforms, ShellTransforms;
+	TArray<TArray<FTransform>> PalmTransforms, TreeTransforms, ShrubTransforms, BushTransforms, RockTransforms, CoralTransforms, UrchinTransforms, ShellTransforms;
 	PalmTransforms.SetNum(NumPalmVariants);
 	TreeTransforms.SetNum(NumTreeVariants);
 	ShrubTransforms.SetNum(NumShrubVariants);
+	BushTransforms.SetNum(NumBushVariants);
 	RockTransforms.SetNum(Rocks.Num());
 	CoralTransforms.SetNum(Corals.Num());
 	UrchinTransforms.SetNum(Urchins.Num());
@@ -270,6 +280,38 @@ void AOceanIslandFlora::Build()
 		}
 		ShrubTransforms[Random.RandRange(0, NumShrubVariants - 1)].Add(
 			FTransform(FRotator(0.f, Random.FRandRange(0.f, 360.f), 0.f), Ground(Position, Terrain.Ground, 10.f), FVector(Random.FRandRange(0.7f, 1.4f))));
+	});
+
+	// The understory: the forest's bush mass (Understory, 1.5-3 m above the ground) is real shrubs, coastal bushes and
+	// sea grapes, standing on the terrain (which keeps only UnderstoryRelief of the mass) and as tall as the mass plus
+	// about a metre. Densest along the forest edge (low ground, just behind the beach), the wall of scrub seen from
+	// the beach; thinner under the canopy, where the trees hide it.
+	const float Relief = Island->GetUnderstoryRelief();
+	Scatter(3.f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
+	{
+		if (Terrain.Understory < 0.1f || Terrain.Rock > 0.6f)
+		{
+			return;
+		}
+		const float Fringe = 1.f - Smooth(6.f, 10.f, Terrain.Ground);
+		if (Random.FRand() >= ShrubDensity * Smooth(0.1f, 0.5f, Terrain.Understory) * FMath::Lerp(0.35f, 1.f, Fringe))
+		{
+			return;
+		}
+		// The bushes are ~2.2 m tall, the sea grapes ~1.6 m.
+		const bool bSeaGrape = Random.FRand() < 0.35f;
+		const float Height = (1.f - Relief) * Terrain.Understory + 1.f;
+		const float Scale = FMath::Clamp(Height / (bSeaGrape ? 1.6f : 2.2f), 0.6f, 1.8f) * Random.FRandRange(0.85f, 1.15f);
+		const FTransform Transform(FRotator(0.f, Random.FRandRange(0.f, 360.f), 0.f),
+			Ground(Position, Terrain.Ground + Relief * Terrain.Understory, 15.f), FVector(Scale));
+		if (bSeaGrape)
+		{
+			ShrubTransforms[Random.RandRange(0, NumShrubVariants - 1)].Add(Transform);
+		}
+		else
+		{
+			BushTransforms[Random.RandRange(0, NumBushVariants - 1)].Add(Transform);
+		}
 	});
 
 	// Limestone boulders: piled on the rocky points (also under water), a few at the waterline elsewhere.
@@ -372,6 +414,7 @@ void AOceanIslandFlora::Build()
 	AddAll(Palms, PalmTransforms);
 	AddAll(Trees, TreeTransforms);
 	AddAll(Shrubs, ShrubTransforms);
+	AddAll(Bushes, BushTransforms);
 	AddAll(Rocks, RockTransforms);
 	AddAll(Corals, CoralTransforms);
 	AddAll(Urchins, UrchinTransforms);
@@ -385,7 +428,8 @@ void AOceanIslandFlora::Build()
 		}
 		return Total;
 	};
-	UE_LOG(LogTemp, Display, TEXT("OceanIslandFlora: %d rock, %d coral, %d urchin, %d shell instances"),
+	UE_LOG(LogTemp, Display, TEXT("OceanIslandFlora: %d palm, %d tree, %d sea grape, %d bush, %d rock, %d coral, %d urchin, %d shell instances"),
+		Count(PalmTransforms), Count(TreeTransforms), Count(ShrubTransforms), Count(BushTransforms),
 		Count(RockTransforms), Count(CoralTransforms), Count(UrchinTransforms), Count(ShellTransforms));
 	bBuilt = true;
 }

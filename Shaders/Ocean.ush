@@ -807,7 +807,11 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 		// Horizontal part of each plane's bump: X-facing plane varies along Y, Y-facing plane along X.
 		const float2 CrownGradient = BumpTop * Weights.z + float2(0.0, BumpX.x) * Weights.x + float2(BumpY.x, 0.0) * Weights.y;
 		const float3 Dry = float3(0.16, 0.15, 0.07); // sun-dried scrub here and there, mostly on the upper beach
-		Color = lerp(Color, lerp(Green, Dry, 0.3 * smoothstep(0.6, 0.85, Large) * (1.0 - Dense)), Vegetation);
+		// Real shrubs and trees stand on it (AOceanIslandFlora): between them shows the forest floor, leaf litter,
+		// brown and grey, with patches of low green growth. The steep forest edge keeps the foliage.
+		const float3 Litter = float3(0.075, 0.06, 0.04) * lerp(0.7, 1.2, OceanValueNoise(PosM / 0.6 + 3.0));
+		const float3 Floor = lerp(lerp(Litter, Green, 0.45 * smoothstep(0.35, 0.65, Medium)), Green, Weights.x + Weights.y);
+		Color = lerp(Color, lerp(Floor, Dry, 0.3 * smoothstep(0.6, 0.85, Large) * (1.0 - Dense)), Vegetation);
 		Roughness = lerp(Roughness, 0.75, Vegetation);
 		Bump += CrownGradient * Vegetation;
 	}

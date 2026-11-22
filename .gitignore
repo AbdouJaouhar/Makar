@@ -12,3 +12,6 @@ Build/
 *.VC.db
 *.opensdf
 *.sdf
+
+# Python bytecode (the Infinigen scripts import each other in WSL)
+__pycache__/

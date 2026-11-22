@@ -28,17 +28,19 @@ struct MAKAR_API FOceanMeshData
 
 /**
  * Procedural Caribbean flora and coastal rocks, built as static meshes at load time (nothing is saved).
- *  - Coconut palm: parametric (a palm does not branch): curved ringed trunk, arching fronds with leaflets, nuts.
- *  - Broadleaf tree and sea grape shrub: stochastic L-systems (string rewriting) read by a 3D turtle,
- *    with leaf clusters at the branch tips.
+ *  - Coconut palm: parametric (a palm does not branch): curved ringed trunk, arching fronds as textured leaf
+ *    cards, nuts.
+ *  - Broadleaf tree, sea grape shrub and coastal bush: stochastic L-systems (string rewriting) read by a 3D turtle,
+ *    with leaf masses of textured cards (a cluster of Infinigen leaves) at the branch tips.
  *  - Rock: an icosphere displaced by 3D fractal noise, flattened at the base, like eroded coral limestone.
- * Section 0 = bark / trunk, 1 = foliage (plants); rocks have one section.
+ * Section 0 = bark / trunk, 1 = foliage (plants), 2 = coconuts (palms); rocks have one section.
  */
 namespace OceanFlora
 {
 	MAKAR_API FOceanMeshData MakeCoconutPalm(int32 Seed);
 	MAKAR_API FOceanMeshData MakeBroadleafTree(int32 Seed);
 	MAKAR_API FOceanMeshData MakeSeaGrape(int32 Seed);
+	MAKAR_API FOceanMeshData MakeCoastalBush(int32 Seed);
 	MAKAR_API FOceanMeshData MakeRock(int32 Seed);
 
 	/** Builds a transient static mesh (works in the editor and in a cooked game). One material per section. */
