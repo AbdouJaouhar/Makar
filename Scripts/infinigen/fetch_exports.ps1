@@ -27,6 +27,14 @@ if (Test-Path "$frond\frond_basecolor.png") {
     "frond"
 }
 
+# Grass tuft for the grass cards (Scripts/infinigen/render_grass_tuft.py).
+$tuft = "\\wsl.localhost\$Distro\root\makar\grass_tuft"
+if (Test-Path "$tuft\tuft_basecolor.png") {
+    New-Item -ItemType Directory -Force (Join-Path $target "tuft") | Out-Null
+    Copy-Item -Force "$tuft\*.png", "$tuft\tuft.json" (Join-Path $target "tuft")
+    "tuft"
+}
+
 # Ground tiles for the terrain material (Scripts/infinigen/render_ground_tiles.py).
 $ground = "\\wsl.localhost\$Distro\root\makar\ground_tiles"
 if (Test-Path "$ground\*_basecolor.png") {

@@ -14,6 +14,7 @@ namespace
 	constexpr int32 NumTreeVariants = 3;
 	constexpr int32 NumShrubVariants = 3;
 	constexpr int32 NumBushVariants = 4;
+	constexpr int32 NumGroundVariants = 3; // fallen fronds, coconuts, grass tufts
 	constexpr int32 NumRockVariants = 5;
 
 	float Smooth(float Edge0, float Edge1, float X)
@@ -34,6 +35,7 @@ AOceanIslandFlora::AOceanIslandFlora()
 	PalmBarkMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_PalmBark.M_PalmBark")));
 	BroadleafLeavesMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_LeafCards_Broadleaf.M_LeafCards_Broadleaf")));
 	SeaGrapeLeavesMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_LeafCards_SeaGrape.M_LeafCards_SeaGrape")));
+	GrassTuftMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_GrassTuft.M_GrassTuft")));
 	RockMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_Rock.M_Rock")));
 
 	auto Infinigen = [](TArray<TSoftObjectPtr<UStaticMesh>>& Out, const TCHAR* Category, const TCHAR* Factory, int32 Count)
@@ -152,6 +154,33 @@ void AOceanIslandFlora::Build()
 		UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeCoastalBush(Seed * 400 + Variant), { Bark, BroadleafLeaves });
 		Meshes.Add(Mesh);
 		Bushes.Add(AddInstancer(Mesh, 1500.f));
+	}
+	// Ground cover: dead fronds and coconuts under the palms, grass tufts (yellower in the last variant, for the sunny
+	// beach top). Small: culled sooner.
+	UMaterialInterface* GrassTuft = GrassTuftMaterial.LoadSynchronous();
+	TArray<UHierarchicalInstancedStaticMeshComponent*> FallenFronds, Coconuts, Tufts;
+	for (int32 Variant = 0; Variant < NumGroundVariants; ++Variant)
+	{
+		UStaticMesh* Frond = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeFallenFrond(Seed * 500 + Variant), { PalmFrond });
+		Meshes.Add(Frond);
+		FallenFronds.Add(AddInstancer(Frond, 250.f));
+		UStaticMesh* Nut = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeCoconut(Seed * 600 + Variant), { Bark });
+		Meshes.Add(Nut);
+		Coconuts.Add(AddInstancer(Nut, 150.f));
+		if (GrassTuft)
+		{
+			FOceanMeshData TuftData = OceanFlora::MakeGrassTuft(Seed * 700 + Variant, GrassTuftSpanCm, GrassTuftBaseV);
+			if (Variant == NumGroundVariants - 1)
+			{
+				for (FOceanMeshData::FVertex& Vertex : TuftData.Vertices)
+				{
+					Vertex.Color *= FLinearColor(1.35f, 1.1f, 0.75f); // sun-dried, straw-tipped
+				}
+			}
+			UStaticMesh* Tuft = OceanFlora::BuildStaticMesh(this, TuftData, { GrassTuft });
+			Meshes.Add(Tuft);
+			Tufts.Add(AddInstancer(Tuft, 120.f));
+		}
 	}
 	// Infinigen assets that are present; each instancer remembers its mesh's size, to scale instances to metres.
 	TArray<float> RockSizes, CoralSizes, UrchinSizes, ShellSizes;
@@ -334,6 +363,127 @@ void AOceanIslandFlora::Build()
 			Ground(Position, Terrain.Ground, 10.f * SizeM), FVector(Scale)));
 	});
 
+	// --- Ground cover ---
+	// Props that lie on the ground sit on the rendered terrain (ground plus the understory's relief).
+	auto Surface = [&](const FVector2f& Position) { return Island->GetTerrainHeight(Position); };
+	auto SlopeAt = [&](const FVector2f& Position, float Height)
+	{
+		return FVector2f((Island->SampleTerrain(Position + FVector2f(0.7f, 0.f)).Ground - Height) / 0.7f,
+			(Island->SampleTerrain(Position + FVector2f(0.f, 0.7f)).Ground - Height) / 0.7f).Size();
+	};
+
+	// Wind-pruned scrub on top of the rocky points: low sea grapes and bushes between the limestone, none on the cliff
+	// faces themselves (the forest's understory stops short of the rock).
+	Scatter(3.f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
+	{
+		if (Terrain.Rock < 0.25f || Terrain.Ground < 1.2f
+			|| Random.FRand() >= 0.6f * ShrubDensity * Smooth(0.25f, 0.45f, Terrain.Rock) || SlopeAt(Position, Terrain.Ground) > 0.6f)
+		{
+			return;
+		}
+		const FTransform Transform(FRotator(0.f, Random.FRandRange(0.f, 360.f), 0.f), Ground(Position, Terrain.Ground, 15.f),
+			FVector(Random.FRandRange(0.4f, 0.8f)));
+		if (Random.FRand() < 0.5f)
+		{
+			ShrubTransforms[Random.RandRange(0, NumShrubVariants - 1)].Add(Transform);
+		}
+		else
+		{
+			BushTransforms[Random.RandRange(0, NumBushVariants - 1)].Add(Transform);
+		}
+	});
+
+	// Under each palm, dead fronds and fallen coconuts, mostly under the crown (the side the palm leans to, its +X).
+	TArray<TArray<FTransform>> FrondTransforms, CoconutTransforms, TuftTransforms;
+	FrondTransforms.SetNum(NumGroundVariants);
+	CoconutTransforms.SetNum(NumGroundVariants);
+	TuftTransforms.SetNum(NumGroundVariants);
+	for (const TArray<FTransform>& Set : PalmTransforms)
+	{
+		for (const FTransform& Palm : Set)
+		{
+			const FVector2f Base(float(Palm.GetLocation().X * 0.01), float(Palm.GetLocation().Y * 0.01));
+			const FVector Forward3 = Palm.GetRotation().GetForwardVector();
+			const FVector2f Forward = FVector2f(float(Forward3.X), float(Forward3.Y)).GetSafeNormal();
+			auto Around = [&](float MinM, float MaxM, float Spread)
+			{
+				const float Angle = Random.FRandRange(-Spread, Spread);
+				const FVector2f Direction(Forward.X * FMath::Cos(Angle) - Forward.Y * FMath::Sin(Angle), Forward.X * FMath::Sin(Angle) + Forward.Y * FMath::Cos(Angle));
+				return Base + Direction * Random.FRandRange(MinM, MaxM);
+			};
+			const int32 Fronds = FMath::RoundToInt(Random.FRandRange(0.f, 2.4f) * GroundCoverDensity);
+			for (int32 Index = 0; Index < Fronds; ++Index)
+			{
+				const FVector2f Position = Around(0.3f, 3.5f, 2.2f);
+				const float Height = Surface(Position);
+				if (Height > 0.4f)
+				{
+					FrondTransforms[Random.RandRange(0, NumGroundVariants - 1)].Add(FTransform(FRotator(0.f, Random.FRandRange(0.f, 360.f), 0.f),
+						Ground(Position, Height, 2.f), FVector(Random.FRandRange(0.85f, 1.1f))));
+				}
+			}
+			const int32 Nuts = FMath::RoundToInt(Random.FRandRange(0.f, 3.4f) * GroundCoverDensity);
+			for (int32 Index = 0; Index < Nuts; ++Index)
+			{
+				const FVector2f Position = Around(0.5f, 4.f, 1.3f);
+				const float Height = Surface(Position);
+				if (Height > 0.4f)
+				{
+					CoconutTransforms[Random.RandRange(0, NumGroundVariants - 1)].Add(FTransform(
+						FRotator(Random.FRandRange(-15.f, 15.f), Random.FRandRange(0.f, 360.f), Random.FRandRange(-20.f, 20.f)),
+						Ground(Position, Height, 3.f), FVector(Random.FRandRange(0.85f, 1.15f))));
+				}
+			}
+		}
+	}
+
+	// Grass tufts, in colonies of a few tussocks: along the vegetation line (the forest's fringe and the last metres of
+	// sand in front of it, straw-tipped on the sunny sand), and in the clearings (the same clearings as the trees' and
+	// the ground texture's: OceanValueNoise(P / 80 + 3)).
+	if (Tufts.Num() == NumGroundVariants)
+	{
+		Scatter(2.f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
+		{
+			if (Terrain.Ground < 1.f || Terrain.Rock > 0.4f)
+			{
+				return;
+			}
+			const FVector2f Seaward = (Position - IslandCenter).GetSafeNormal();
+			const float Fringe = Terrain.Understory > 0.02f ? 1.f - Smooth(0.5f, 1.4f, Terrain.Understory)
+				: Smooth(0.1f, 0.5f, Island->SampleTerrain(Position - Seaward * 4.f).Understory);
+			const float Clearing = Smooth(0.65f, 0.8f, OceanValueNoise(Position / 80.f + FVector2f(3.f))) * Smooth(0.2f, 0.6f, Terrain.Understory);
+			const float Colonies = Smooth(0.45f, 0.7f, OceanValueNoise(Position / 9.f + FVector2f(31.f)));
+			if (Random.FRand() >= GroundCoverDensity * FMath::Max(0.9f * Fringe, 0.5f * Clearing) * Colonies
+				|| SlopeAt(Position, Terrain.Ground) > 0.7f)
+			{
+				return;
+			}
+			const bool bBeach = Terrain.Understory < 0.05f;
+			const int32 Count = Random.RandRange(3, 7);
+			for (int32 Index = 0; Index < Count; ++Index)
+			{
+				const FVector2f Tussock = Position + FVector2f(Random.FRandRange(-0.6f, 0.6f), Random.FRandRange(-0.6f, 0.6f));
+				const int32 Variant = bBeach && Random.FRand() < 0.6f ? NumGroundVariants - 1 : Random.RandRange(0, NumGroundVariants - 2);
+				TuftTransforms[Variant].Add(FTransform(FRotator(0.f, Random.FRandRange(0.f, 360.f), 0.f), Ground(Tussock, Surface(Tussock), 0.f),
+					FVector(Random.FRandRange(1.6f, 2.6f))));
+			}
+		});
+	}
+
+	// Loose stones: limestone cobbles and pebbles on top of the rocky points and at the foot of their cliffs.
+	Scatter(2.f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
+	{
+		if (Terrain.Rock < 0.25f || Terrain.Ground < 0.3f || Terrain.Ground > 12.f || Random.FRand() >= 0.3f * GroundCoverDensity * Terrain.Rock)
+		{
+			return;
+		}
+		const float SizeM = FMath::Lerp(0.12f, 0.55f, FMath::Square(Random.FRand()));
+		const int32 Variant = Random.RandRange(0, Rocks.Num() - 1);
+		RockTransforms[Variant].Add(FTransform(
+			FRotator(Random.FRandRange(-30.f, 30.f), Random.FRandRange(0.f, 360.f), Random.FRandRange(-30.f, 30.f)),
+			Ground(Position, Surface(Position), 30.f * SizeM), FVector(SizeM / RockSizes[Variant])));
+	});
+
 	// Patch reefs, exactly where the sea floor material draws them (OceanTerrainSurface in Shaders/Ocean.ush:
 	// same warped fractal gradient noise, evaluated on the CPU with the identical functions).
 	auto ReefCover = [](const FVector2f& PosM, float GroundM)
@@ -415,6 +565,9 @@ void AOceanIslandFlora::Build()
 	AddAll(Trees, TreeTransforms);
 	AddAll(Shrubs, ShrubTransforms);
 	AddAll(Bushes, BushTransforms);
+	AddAll(FallenFronds, FrondTransforms);
+	AddAll(Coconuts, CoconutTransforms);
+	AddAll(Tufts, TuftTransforms);
 	AddAll(Rocks, RockTransforms);
 	AddAll(Corals, CoralTransforms);
 	AddAll(Urchins, UrchinTransforms);
@@ -428,8 +581,10 @@ void AOceanIslandFlora::Build()
 		}
 		return Total;
 	};
-	UE_LOG(LogTemp, Display, TEXT("OceanIslandFlora: %d palm, %d tree, %d sea grape, %d bush, %d rock, %d coral, %d urchin, %d shell instances"),
+	UE_LOG(LogTemp, Display, TEXT("OceanIslandFlora: %d palm, %d tree, %d sea grape, %d bush, %d rock, %d coral, %d urchin, %d shell, ")
+		TEXT("%d fallen frond, %d coconut, %d grass tuft instances"),
 		Count(PalmTransforms), Count(TreeTransforms), Count(ShrubTransforms), Count(BushTransforms),
-		Count(RockTransforms), Count(CoralTransforms), Count(UrchinTransforms), Count(ShellTransforms));
+		Count(RockTransforms), Count(CoralTransforms), Count(UrchinTransforms), Count(ShellTransforms),
+		Count(FrondTransforms), Count(CoconutTransforms), Count(TuftTransforms));
 	bBuilt = true;
 }

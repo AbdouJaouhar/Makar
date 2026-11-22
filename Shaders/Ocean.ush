@@ -849,8 +849,11 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 			// trees there) and in patches of the open scrub; bare soil on the steeper banks the rain washes clean.
 			const float Clearing = smoothstep(0.65, 0.8, OceanValueNoise(PosM / 80.0 + 3.0));
 			const float Bank = smoothstep(0.05, 0.11, Slope + 0.04 * (Small - 0.5));
-			float WLitter = (1.0 - Clearing) * lerp(0.6, 1.0, Dense);
-			float WGrass = Clearing + 0.3 * (1.0 - Dense) * smoothstep(0.5, 0.7, Medium);
+			// The windswept coastal strip (the rocky points' tops, the back of the beaches) is grass and scrub, not forest.
+			const float FromShore = -OceanShoreSample(PosM, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize).y;
+			const float Forest = smoothstep(12.0, 30.0, FromShore + 6.0 * (Medium - 0.5));
+			float WLitter = (1.0 - Clearing) * lerp(0.6, 1.0, Dense) * Forest;
+			float WGrass = Clearing + 0.3 * (1.0 - Dense) * smoothstep(0.5, 0.7, Medium) + 0.8 * (1.0 - Forest);
 			float WSoil = 1.5 * Bank + 0.15 * smoothstep(0.6, 0.8, Small);
 			const float WSum = WLitter + WGrass + WSoil + 1e-3;
 			WLitter /= WSum;

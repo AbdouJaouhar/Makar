@@ -287,11 +287,55 @@ def leaf_cards(kind, title, roughness, specular):
     save(material, name)
 
 
+TUFT_SOURCE = os.path.join(unreal.Paths.project_saved_dir(), "Infinigen", "tuft")
+
+
+def grass_tuft():
+    """Grass cards (OceanFlora::MakeGrassTuft): a tuft of Infinigen grass seen from the side (Scripts/infinigen/
+    render_grass_tuft.py), cut out by its alpha, two-sided foliage. The vertex colour multiplies the render (0.5 = as
+    rendered); AOceanIslandFlora yellows the tufts of the sunny beach top."""
+    color_path = os.path.join(TUFT_SOURCE, "tuft_basecolor.png")
+    if not os.path.isfile(color_path):
+        unreal.log_warning(f"No grass tuft in {TUFT_SOURCE}: M_GrassTuft not built")
+        return
+    color_texture = import_texture(color_path, "T_GrassTuft_BaseColor", False, alpha_coverage=0.4)
+    normal_texture = import_texture(os.path.join(TUFT_SOURCE, "tuft_normal.png"), "T_GrassTuft_Normal", True)
+    material = fresh_material("M_GrassTuft")
+    material.set_editor_property("two_sided", True)
+    material.set_editor_property("blend_mode", unreal.BlendMode.BLEND_MASKED)
+    material.set_editor_property("opacity_mask_clip_value", 0.4)
+    material.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_TWO_SIDED_FOLIAGE)
+    color = node(material, unreal.MaterialExpressionTextureSample, -900, 0)
+    color.set_editor_property("texture", color_texture)
+    normal = node(material, unreal.MaterialExpressionTextureSample, -900, 400)
+    normal.set_editor_property("texture", normal_texture)
+    normal.set_editor_property("sampler_type", unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL)
+    vertex = node(material, unreal.MaterialExpressionVertexColor, -900, 250)
+    tinted = node(material, unreal.MaterialExpressionMultiply, -600, 100)
+    connect(color, tinted, "A", "RGB")
+    connect(vertex, tinted, "B")
+    base = node(material, unreal.MaterialExpressionMultiply, -400, 100)
+    connect(tinted, base, "A")
+    connect(constant(material, 2.0, -600, 220), base, "B")
+    MEL.connect_material_property(base, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    MEL.connect_material_property(color, "A", unreal.MaterialProperty.MP_OPACITY_MASK)
+    MEL.connect_material_property(normal, "RGB", unreal.MaterialProperty.MP_NORMAL)
+    transmit = node(material, unreal.MaterialExpressionConstant3Vector, -500, 450)
+    transmit.set_editor_property("constant", unreal.LinearColor(0.5, 0.6, 0.2, 1.0))
+    transmitted = node(material, unreal.MaterialExpressionMultiply, -250, 400)
+    connect(base, transmitted, "A")
+    connect(transmit, transmitted, "B")
+    MEL.connect_material_property(transmitted, "", unreal.MaterialProperty.MP_SUBSURFACE_COLOR)
+    MEL.connect_material_property(constant(material, 0.7, -250, 550), "", unreal.MaterialProperty.MP_ROUGHNESS)
+    save(material, "M_GrassTuft")
+
+
 bark()
 foliage()
 rock()
 palm_frond()
 palm_bark()
+grass_tuft()
 leaf_cards("broadleaf", "Broadleaf", 0.6, 0.4)
 leaf_cards("seagrape", "SeaGrape", 0.38, 0.5)  # sea grape leaves are leathery and glossy
 unreal.log(f"Flora materials written to {DIRECTORY}")

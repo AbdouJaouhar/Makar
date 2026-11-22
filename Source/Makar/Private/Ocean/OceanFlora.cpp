@@ -625,7 +625,7 @@ namespace OceanFlora
 		// Leaf cards (M_LeafCards_SeaGrape): round leaves ~20 cm along zigzag stems, a few turning red.
 		Params.bLeafCards = true;
 		Params.CardSize = Random.FRandRange(95.f, 115.f);
-		Params.CardTint = FLinearColor(0.5f * Random.FRandRange(0.92f, 1.05f), 0.5f * Random.FRandRange(0.95f, 1.05f), 0.5f);
+		Params.CardTint = FLinearColor(0.4f * Random.FRandRange(0.92f, 1.05f), 0.44f * Random.FRandRange(0.95f, 1.05f), 0.48f); // less yellow than the render
 		InterpretLSystem(Data, Program, Params, Random);
 		return Data;
 	}
@@ -656,6 +656,103 @@ namespace OceanFlora
 		Params.CardSize = Random.FRandRange(85.f, 105.f);
 		Params.CardTint = FLinearColor(0.5f * Random.FRandRange(0.85f, 1.f), 0.5f * Random.FRandRange(0.9f, 1.05f), 0.5f * Random.FRandRange(0.85f, 1.f));
 		InterpretLSystem(Data, Program, Params, Random);
+		return Data;
+	}
+
+	FOceanMeshData MakeFallenFrond(int32 Seed)
+	{
+		// A dead coconut frond lying under its palm: the frond card (M_PalmFrond, the leaflets cut out by the texture's
+		// alpha) laid along +X from its base, gently bowed sideways, the rachis a little off the ground (thicker at the
+		// base), the leaflets' tips on the sand. Straw-brown to grey-brown.
+		FRandomStream Random(Seed);
+		FOceanMeshData Data(1);
+		const float Length = Random.FRandRange(350.f, 470.f);
+		const float HalfWidth = 0.24f * Length; // as on the palm (the frond spans U 0.27-0.73 of the image)
+		const float Bow = Random.FRandRange(-0.3f, 0.3f);
+		const FLinearColor Color = FMath::Lerp(FLinearColor(0.2f, 0.11f, 0.045f), FLinearColor(0.24f, 0.18f, 0.09f), Random.FRand());
+		const int32 Steps = 10;
+		int32 Previous[3] = { INDEX_NONE, INDEX_NONE, INDEX_NONE };
+		FVector3f Position = FVector3f::ZeroVector;
+		for (int32 Step = 0; Step <= Steps; ++Step)
+		{
+			const float S = float(Step) / Steps;
+			const float Angle = Bow * S;
+			const FVector3f Direction(FMath::Cos(Angle), FMath::Sin(Angle), 0.f);
+			const FVector3f Side(-Direction.Y, Direction.X, 0.f);
+			const FVector3f Rachis = Position + FVector3f(0.f, 0.f, FMath::Lerp(14.f, 3.f, S));
+			const float V = FMath::Lerp(0.99f, 0.01f, S);
+			const int32 Row[3] = {
+				Data.AddVertex(Position - Side * HalfWidth + FVector3f(0.f, 0.f, 1.f), FVector3f::UpVector, FVector2f(0.27f, V), Color),
+				Data.AddVertex(Rachis, FVector3f::UpVector, FVector2f(0.5f, V), Color),
+				Data.AddVertex(Position + Side * HalfWidth + FVector3f(0.f, 0.f, 1.f), FVector3f::UpVector, FVector2f(0.73f, V), Color) };
+			if (Step > 0)
+			{
+				for (int32 Column = 0; Column < 2; ++Column)
+				{
+					Data.AddTriangle(0, Previous[Column], Row[Column], Previous[Column + 1]);
+					Data.AddTriangle(0, Previous[Column + 1], Row[Column], Row[Column + 1]);
+				}
+			}
+			FMemory::Memcpy(Previous, Row, sizeof(Row));
+			Position += Direction * (Length / Steps);
+		}
+		return Data;
+	}
+
+	FOceanMeshData MakeCoconut(int32 Seed)
+	{
+		// A fallen coconut: an ovoid husk ~28 cm long with a rounded triangular cross-section, resting on its side.
+		// Fresh green, ripening yellow-brown or dry brown (M_Bark, vertex colour).
+		FRandomStream Random(Seed);
+		FOceanMeshData Data(1);
+		static TArray<FVector3f> Sphere;
+		static TArray<int32> SphereTriangles;
+		if (Sphere.Num() == 0)
+		{
+			MakeIcosphere(2, Sphere, SphereTriangles);
+		}
+		const FLinearColor Husks[3] = { FLinearColor(0.11f, 0.15f, 0.035f), FLinearColor(0.32f, 0.21f, 0.06f), FLinearColor(0.15f, 0.09f, 0.045f) };
+		const FLinearColor Husk = Husks[Random.RandRange(0, 2)] * Random.FRandRange(0.85f, 1.15f);
+		const float Radius = Random.FRandRange(11.f, 13.f);
+		for (const FVector3f& Direction : Sphere)
+		{
+			const float Ridge = 1.f + 0.08f * FMath::Cos(3.f * FMath::Atan2(Direction.Z, Direction.Y));
+			const FVector3f Position(Direction.X * Radius * 1.2f, Direction.Y * Radius * Ridge, Direction.Z * Radius * Ridge * 0.92f + Radius * 0.85f);
+			Data.AddVertex(Position, Direction, FVector2f(Direction.X, Direction.Y), Husk * FMath::Lerp(0.8f, 1.05f, 0.5f + 0.5f * Direction.Z));
+		}
+		for (int32 I = 0; I < SphereTriangles.Num(); I += 3)
+		{
+			Data.AddTriangle(0, SphereTriangles[I], SphereTriangles[I + 2], SphereTriangles[I + 1]);
+		}
+		return Data;
+	}
+
+	FOceanMeshData MakeGrassTuft(int32 Seed, float SpanCm, float BaseV)
+	{
+		// A tuft of grass: three crossed cards showing a tuft of Infinigen grass seen from the side
+		// (Scripts/infinigen/render_grass_tuft.py, the whole image on each card: SpanCm square, the tuft's base at
+		// BaseV), leaning a little, each card its own shade (M_GrassTuft multiplies the render by the vertex colour).
+		FRandomStream Random(Seed);
+		FOceanMeshData Data(1);
+		const float Below = (1.f - BaseV) * SpanCm; // the image below the tuft's base goes underground
+		const FVector3f Lean(Random.FRandRange(-0.12f, 0.12f) * SpanCm, Random.FRandRange(-0.12f, 0.12f) * SpanCm, 0.f);
+		const float Start = Random.FRandRange(0.f, UE_PI);
+		for (int32 Card = 0; Card < 3; ++Card)
+		{
+			const float Angle = Start + Card * UE_PI / 3.f;
+			const FVector3f Across(FMath::Cos(Angle) * SpanCm * 0.5f, FMath::Sin(Angle) * SpanCm * 0.5f, 0.f);
+			const FVector3f Normal = FVector3f(-Across.Y, Across.X, 0.f).GetSafeNormal() * 0.3f + FVector3f::UpVector * 0.7f;
+			const FLinearColor Color = FLinearColor(0.6f, 0.6f, 0.6f) * Random.FRandRange(0.85f, 1.15f);
+			const FVector3f Bottom(0.f, 0.f, -Below);
+			const FVector3f Top = FVector3f(0.f, 0.f, SpanCm - Below) + Lean;
+			const int32 First = Data.Vertices.Num();
+			Data.AddVertex(Bottom - Across, Normal.GetSafeNormal(), FVector2f(0.f, 1.f), Color);
+			Data.AddVertex(Bottom + Across, Normal.GetSafeNormal(), FVector2f(1.f, 1.f), Color);
+			Data.AddVertex(Top + Across, Normal.GetSafeNormal(), FVector2f(1.f, 0.f), Color);
+			Data.AddVertex(Top - Across, Normal.GetSafeNormal(), FVector2f(0.f, 0.f), Color);
+			Data.AddTriangle(0, First, First + 1, First + 2);
+			Data.AddTriangle(0, First, First + 2, First + 3);
+		}
 		return Data;
 	}
 
