@@ -51,7 +51,31 @@ FOceanShoreWaveSample OceanShoreWave(const FOceanShoreData& Shore, const FVector
 
 	const FVector4f Here = Shore.Sample(PositionM);
 	const float Depth = Here.X;
-	if (Depth <= 0.02f || Depth >= Swell.MaxDepth)
+	if (Depth >= Swell.MaxDepth || Depth < -OceanSwashMaxHeightM)
+	{
+		return Out;
+	}
+
+	// Gaps along the wavefronts, drifting slowly (real sets never break as one straight wall).
+	const float Gaps = SmoothStep01(0.35f, 0.6f, ValueNoise(PositionM / 60.f + FVector2f(0.01f, 0.007f) * TimeS));
+
+	// Swash: after each bore reaches the beach, a thin sheet of water runs up the sand and drains back.
+	// The sea surface itself rises over the beach (where it is lower than the water, the sand hides it),
+	// so the waterline moves up and down the slope, and water queries see the water on the sand.
+	{
+		const float Runup = OceanSwashRunup(Swell.Height, Gaps);
+		const float Cycle = FMath::Frac((TimeS + FMath::Max(Here.Z, 0.f)) / Swell.Period);
+		const float Level = Runup * (1.1f * OceanSwashRise(Cycle) - 0.1f);
+		const float Weight = 1.f - SmoothStep01(0.5f, 1.5f, Depth); // beach and the last metre of water
+		Out.Displacement.Z = Level * Weight;
+		// A lace of foam rides the edge of the uprush.
+		if (Depth < 0.f && Cycle < 0.6f)
+		{
+			Out.Foam = 0.6f * Gaps * (1.f - SmoothStep01(0.f, 0.08f, FMath::Abs(Level + Depth)));
+		}
+	}
+
+	if (Depth <= 0.02f)
 	{
 		return Out;
 	}
@@ -79,8 +103,6 @@ FOceanShoreWaveSample OceanShoreWave(const FOceanShoreData& Shore, const FVector
 	const float Surf = FMath::Clamp((Ratio - 1.f) / 1.5f, 0.f, 1.f); // broken, in the surf zone
 	const float Height = FMath::Min(Shoaled, 0.78f * Depth * (1.f - 0.5f * Surf));
 
-	// Gaps along the wavefronts, drifting slowly (real sets never break as one straight wall).
-	const float Gaps = SmoothStep01(0.35f, 0.6f, ValueNoise(PositionM / 60.f + FVector2f(0.01f, 0.007f) * TimeS));
 	const float FadeDeep = 1.f - SmoothStep01(0.7f * Swell.MaxDepth, Swell.MaxDepth, Depth);
 	const float Amplitude = 0.5f * Height * FadeDeep * Gaps;
 
@@ -91,11 +113,11 @@ FOceanShoreWaveSample OceanShoreWave(const FOceanShoreData& Shore, const FVector
 	const float Lip = Amplitude * Crest * Crest * Crest * (1.2f * Pitch * (1.f - Surf) + 0.6f * Surf);
 	const float Forward = Orbit * FMath::Sin(Phase) + Lip;
 
-	Out.Displacement = FVector3f(TowardShore.X * Forward, TowardShore.Y * Forward, Amplitude * FMath::Cos(Phase));
+	Out.Displacement += FVector3f(TowardShore.X * Forward, TowardShore.Y * Forward, Amplitude * FMath::Cos(Phase));
 	// Dense on the face of the bore, below full coverage so the bubble pattern shows; the foam map turns
 	// what it leaves behind into a lacy trail.
-	Out.Foam = FadeDeep * Gaps * FMath::Max(0.75f * FMath::Clamp(2.f * Surf, 0.f, 1.f) * SmoothStep01(0.55f, 0.95f, Crest),
-		0.6f * Pitch * (1.f - Surf) * SmoothStep01(0.9f, 1.f, Crest));
+	Out.Foam = FMath::Max(Out.Foam, FadeDeep * Gaps * FMath::Max(0.75f * FMath::Clamp(2.f * Surf, 0.f, 1.f) * SmoothStep01(0.55f, 0.95f, Crest),
+		0.6f * Pitch * (1.f - Surf) * SmoothStep01(0.9f, 1.f, Crest)));
 	return Out;
 }
 

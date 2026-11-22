@@ -40,6 +40,26 @@ inline float OceanDepthAttenuation(float DepthM, float SignificantHeightM)
 	return FMath::Clamp(0.78f * DepthM / FMath::Max(SignificantHeightM, 0.01f), 0.f, 1.f);
 }
 
+/** Highest point of the beach the swash can reach is well below this, m above sea level. */
+constexpr float OceanSwashMaxHeightM = 1.5f;
+
+/** Vertical run-up of the swash on the beach, m: a fraction of the breaking wave height (gentle sandy beach). */
+inline float OceanSwashRunup(float SwellHeightM, float Gaps)
+{
+	return 0.6f * SwellHeightM * Gaps;
+}
+
+/** Water level of the swash over one wave period, 0..1: fast uprush, slow backwash. Cycle 0 = the bore arrives. */
+inline float OceanSwashRise(float Cycle)
+{
+	if (Cycle < 0.3f)
+	{
+		return FMath::Sin(0.5f * UE_PI * Cycle / 0.3f);
+	}
+	const float T = FMath::Clamp((Cycle - 0.3f) / 0.7f, 0.f, 1.f);
+	return 1.f - T * T * (3.f - 2.f * T);
+}
+
 /** Swell rolling onto the coast and breaking on the beach (see OceanShoreWave). */
 struct FOceanShoreSwell
 {
@@ -58,7 +78,8 @@ struct FOceanShoreWaveSample
  * Breaking waves on the shore, the same shape everywhere (like the single baked cross-section of
  * Horizon Forbidden West, but analytic so the CPU evaluates exactly what the GPU draws):
  * a Gerstner swell whose crests follow the shore's wave travel time, grows as the water gets shallower
- * (Green's law), steepens and pitches forward near the breaking depth, then collapses into a bore in the surf zone.
+ * (Green's law), steepens and pitches forward near the breaking depth, then collapses into a bore in the surf zone;
+ * on the beach, the swash raises the water over the sand after each bore.
  * Must match OceanShoreWave in Shaders/Ocean.ush.
  */
 MAKAR_API FOceanShoreWaveSample OceanShoreWave(const FOceanShoreData& Shore, const FVector2f& PositionM, float TimeS, const FOceanShoreSwell& Swell);

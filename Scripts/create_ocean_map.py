@@ -76,15 +76,50 @@ def seabed_material():
     sand.set_editor_property("parameter_name", "SandColor")
     # Linear albedo ~0.55: bright coral sand, but not so white that the sunlit beach blows out.
     sand.set_editor_property("default_value", unreal.LinearColor(0.6, 0.53, 0.4, 1.0))
-    MEL.connect_material_property(sand, "", unreal.MaterialProperty.MP_BASE_COLOR)
 
-    roughness = expression(unreal.MaterialExpressionConstant, -400, 200)
-    roughness.set_editor_property("r", 0.95)
+    world_pos = expression(unreal.MaterialExpressionWorldPosition, -1000, 300)
+    time = expression(unreal.MaterialExpressionTime, -1000, 400)
+
+    # Wet sand (OceanWetSand in Shaders/Ocean.ush): below the highest reach of the swash the sand is darker
+    # and glossy. ShoreSwellHeight must match the ocean's (FOceanSettings::ShoreSwellHeight).
+    swell_height = scalar("ShoreSwellHeight", 0.8, -1000, -200)
+    wet = expression(unreal.MaterialExpressionCustom, -700, -150)
+    wet.set_editor_property("description", "Wet Sand")
+    wet.set_editor_property("code", "return OceanWetSand(WorldPos, Time, SwellHeight);")
+    wet.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT1)
+    wet.set_editor_property("include_file_paths", ["/Makar/Ocean.ush"])
+    wet_inputs = []
+    for name in ("WorldPos", "Time", "SwellHeight"):
+        custom_input = unreal.CustomInput()
+        custom_input.set_editor_property("input_name", name)
+        wet_inputs.append(custom_input)
+    wet.set_editor_property("inputs", wet_inputs)
+    connect(world_pos, wet, "WorldPos")
+    connect(time, wet, "Time")
+    connect(swell_height, wet, "SwellHeight")
+
+    wet_darkening = scalar("WetSandDarkening", 0.55, -700, -50)
+    one = expression(unreal.MaterialExpressionConstant, -700, 20)
+    one.set_editor_property("r", 1.0)
+    darkening = expression(unreal.MaterialExpressionLinearInterpolate, -450, -100)
+    connect(one, darkening, "A")
+    connect(wet_darkening, darkening, "B")
+    connect(wet, darkening, "Alpha")
+    base = expression(unreal.MaterialExpressionMultiply, -250, -50)
+    connect(sand, base, "A")
+    connect(darkening, base, "B")
+    MEL.connect_material_property(base, "", unreal.MaterialProperty.MP_BASE_COLOR)
+
+    dry_roughness = expression(unreal.MaterialExpressionConstant, -700, 120)
+    dry_roughness.set_editor_property("r", 0.95)
+    wet_roughness = scalar("WetSandRoughness", 0.3, -700, 200)
+    roughness = expression(unreal.MaterialExpressionLinearInterpolate, -450, 150)
+    connect(dry_roughness, roughness, "A")
+    connect(wet_roughness, roughness, "B")
+    connect(wet, roughness, "Alpha")
     MEL.connect_material_property(roughness, "", unreal.MaterialProperty.MP_ROUGHNESS)
 
     # Caustics (Shaders/Ocean.ush): light focused by the waves, added on top of the sunlit sand.
-    world_pos = expression(unreal.MaterialExpressionWorldPosition, -1000, 300)
-    time = expression(unreal.MaterialExpressionTime, -1000, 400)
     cell_size = scalar("CausticCellSize", 1.2, -1000, 480)
     fade_depth = scalar("CausticFadeDepth", 12.0, -1000, 560)
     caustics = expression(unreal.MaterialExpressionCustom, -700, 400)
