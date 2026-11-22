@@ -222,15 +222,15 @@ def seabed_material():
 
 
 def caribbean_sea_state(ocean):
-    """A sheltered lagoon on a fine day: light breeze, glassy water with small ripples, almost no whitecaps,
+    """A fine trade-wind day: a moderate breeze (Beaufort 4) raising a lively chop with scattered whitecaps,
     and a low swell lapping on the beaches."""
     settings = ocean.get_editor_property("settings")
-    settings.set_editor_property("wind_speed", 4.5)
+    settings.set_editor_property("wind_speed", 7.0)
     settings.set_editor_property("wind_direction", 200.0)
-    settings.set_editor_property("fetch", 40000.0)
+    settings.set_editor_property("fetch", 60000.0)
     settings.set_editor_property("swell", 0.3)
-    settings.set_editor_property("choppiness", 0.8)
-    # The surface barely compresses at this wind speed: whitecaps stay rare.
+    settings.set_editor_property("choppiness", 0.9)
+    # Beaufort 4: whitecaps here and there, not everywhere.
     settings.set_editor_property("foam_threshold", 0.87)
     settings.set_editor_property("foam_intensity", 1.5)
     settings.set_editor_property("foam_decay", 0.25)

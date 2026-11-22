@@ -1,4 +1,4 @@
-"""
+﻿"""
 Builds /Game/Ocean/M_Ocean, the material used by AOceanActor.
 
 Run once in the Unreal editor (and again after changing this script):
@@ -175,13 +175,13 @@ def build():
         "ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, "
         "SignificantHeight0, SignificantHeight1, SignificantHeight2, "
         "Time, SwellHeight, SwellPeriod, SwellMaxDepth, "
-        "PatchSize0, PatchSize1, PatchSize2, CrestHeight, BaseRoughness, Foam, Crest, Roughness);",
+        "PatchSize0, PatchSize1, PatchSize2, CrestHeight, BaseRoughness, LeanScale, Foam, Crest, Roughness);",
         ["WorldPos", "Disp0", "Disp1", "Disp2", "Deriv0", "Deriv1", "Deriv2", "Moments0", "Moments1", "Moments2",
          "FoamMap", "FoamMapOrigin", "FoamMapSize",
          "ShoreMap", "ShoreMapOrigin", "ShoreMapSize",
          "SignificantHeight0", "SignificantHeight1", "SignificantHeight2",
          "Time", "SwellHeight", "SwellPeriod", "SwellMaxDepth",
-         "PatchSize0", "PatchSize1", "PatchSize2", "CrestHeight", "BaseRoughness"],
+         "PatchSize0", "PatchSize1", "PatchSize2", "CrestHeight", "BaseRoughness", "LeanScale"],
         unreal.CustomMaterialOutputType.CMOT_FLOAT3,
         extra_outputs=[("Foam", unreal.CustomMaterialOutputType.CMOT_FLOAT1),
                        ("Crest", unreal.CustomMaterialOutputType.CMOT_FLOAT1),
@@ -196,6 +196,10 @@ def build():
         "SignificantHeight2": sig_height[2], **swell_inputs,
         "PatchSize0": patch[0], "PatchSize1": patch[1], "PatchSize2": patch[2], "CrestHeight": crest_height,
         "BaseRoughness": roughness_water,
+        # Weight of the LEAN roughness (unresolved wave slopes); 0 = the water's own micro-roughness only.
+        # Full LEAN (1) turned the sea into a matte plate: very rough reflections lose most of their energy at
+        # grazing angles in Unreal's shading. 0.3 keeps the sky reflections and a sun glitter path (iteration 38).
+        "LeanScale": scalar(material, "LeanScale", 0.3, -1300, 1160),
     }, pixel)
     MEL.connect_material_property(pixel, "", unreal.MaterialProperty.MP_NORMAL)
 
@@ -210,8 +214,13 @@ def build():
     MEL.connect_material_property(pixel, "Foam", unreal.MaterialProperty.MP_OPACITY)
 
     roughness_foam = scalar(material, "FoamRoughness", 0.7, -500, 640)
+    # Diagnostic: scales the water's roughness (0 = perfect mirror) to tell blurred reflections from missing ones.
+    roughness_scale = scalar(material, "RoughnessScale", 1.0, -650, 560)
+    water_roughness = node(material, unreal.MaterialExpressionMultiply, -350, 560)
+    connect(pixel, water_roughness, "A", "Roughness")
+    connect(roughness_scale, water_roughness, "B")
     roughness = node(material, unreal.MaterialExpressionLinearInterpolate, -200, 580)
-    connect(pixel, roughness, "A", "Roughness")
+    connect(water_roughness, roughness, "A")
     connect(roughness_foam, roughness, "B")
     connect(pixel, roughness, "Alpha", "Foam")
     MEL.connect_material_property(roughness, "", unreal.MaterialProperty.MP_ROUGHNESS)

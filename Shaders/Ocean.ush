@@ -952,26 +952,62 @@ float OceanCellular(float2 P)
 	return sqrt(Nearest);
 }
 
-// Foam is a network of bubbles, not a flat white sheet: dense where it was just created,
-// a thin lace along bubble borders as it decays. Returns surface coverage in [0, 1].
-float OceanFoamCoverage(float2 PosM, float Amount)
+// Distance to the border between the two nearest of one random point per cell (Worley F2 - F1): 0 on the cell
+// walls, up to ~0.5 in the middle of a cell.
+float OceanCellWalls(float2 P)
 {
-	// Bubble cells of ~0.8 m and ~0.25 m, attached to the undisplaced surface so they drift with the waves.
-	// The large cells are warped by the small ones so the holes are not perfectly round.
-	const float Small = OceanCellular(PosM * 4.0);
-	const float Large = OceanCellular(PosM * 1.25 + Small * 0.6);
-	float Pattern = saturate((Large * 0.45 + Small * 0.55) / 0.7);
+	const float2 Cell = floor(P);
+	const float2 Local = P - Cell;
+	float F1 = 8.0;
+	float F2 = 8.0;
+	for (int Y = -1; Y <= 1; ++Y)
+	{
+		for (int X = -1; X <= 1; ++X)
+		{
+			const float2 Offset = float2(X, Y);
+			const float Distance = length(Offset + OceanHash22(Cell + Offset) - Local);
+			F2 = Distance < F1 ? F1 : min(F2, Distance);
+			F1 = min(F1, Distance);
+		}
+	}
+	return F2 - F1;
+}
 
-	// More foam fills more of the pattern: borders first, then whole cells.
-	const float Coverage = saturate((Amount * 1.3 - (1.0 - Pattern)) * 4.0);
-	// Old, thin foam lets the water show through; fresh whitecaps are opaque.
-	const float Detailed = Coverage * lerp(0.55, 1.0, saturate(Amount));
+// Sea foam is a froth of bubbles: fresh foam a dense white mass, and as the bubbles burst, polygonal holes of
+// every size open in it (the cells of a foam), the walls between them thinning until only a lace is left.
+// Thick and thin patches decay at different rates, and the water stretches everything into streaks.
+// Returns the surface coverage in [0, 1]; Height = foam thickness (0..1), for its relief.
+float OceanFoamCoverage(float2 PosM, float Amount, out float Height)
+{
+	const float2 Warp = float2(OceanGradientNoise(PosM / 4.0 + 1.3), OceanGradientNoise(PosM / 4.0 + 7.9)) - 0.5;
+	const float2 P = PosM + Warp * 2.0;
+	const float Footprint = max(length(fwidth(PosM)), 1e-4);
 
-	// Where the bubble cells are smaller than a pixel the threshold above turns into flat white smears:
-	// use the average coverage instead (the fraction of the surface the bubbles would cover).
-	const float2 Footprint = fwidth(PosM) * 4.0;
-	const float Blur = saturate(max(Footprint.x, Footprint.y) - 0.5);
-	return lerp(Detailed, 0.6 * saturate(Amount) * saturate(Amount), Blur);
+	// Local amount: thicker and thinner patches (0.3 - 3 m).
+	const float Patches = OceanFractalNoise(P, 3.0, 4, 0.55) + 0.5;
+	const float A = saturate(saturate(Amount) * lerp(0.45, 1.35, Patches));
+
+	// Cell walls at three scales (cells of ~0.7, ~0.3 and ~0.12 m, the larger warped by the smaller so they are
+	// not all alike), each thickening with the amount and along its length; at full amount the walls swallow the
+	// cells, at zero they vanish. Faded to their mean where the cells get below a few pixels.
+	const float Small = OceanCellWalls(P / 0.12 + 5.3);
+	const float Medium = OceanCellWalls(P / 0.3 + 11.7 + 0.25 * Small);
+	const float Large = OceanCellWalls(P / 0.7 + 0.4 * Medium);
+	const float Vary = lerp(0.4, 1.6, OceanGradientNoise(P / 0.5 + 2.2));
+	const float Wall = A * A * 0.6 * Vary;
+	const float LargeNet = 1.0 - smoothstep(Wall - 0.04, Wall + 0.03, Large);
+	const float MediumNet = 1.0 - smoothstep(Wall * 0.9 - 0.04, Wall * 0.9 + 0.03, Medium);
+	const float SmallNet = 1.0 - smoothstep(Wall * 0.8 - 0.05, Wall * 0.8 + 0.03, Small);
+	const float Detailed = saturate(max(LargeNet, MediumNet * 0.85) * lerp(0.6, 1.0, SmallNet));
+	const float Detail = saturate(0.3 / Footprint / 6.0 - 0.5);
+	float Coverage = lerp(A * (0.4 + 0.6 * A), Detailed, Detail);
+
+	// Bubbles: a fine grain of brighter and duller spots in the froth.
+	const float BubbleDetail = saturate(0.03 / Footprint - 1.0);
+	Coverage *= lerp(1.0, lerp(0.78, 1.0, OceanGradientNoise(P / 0.025 + 9.1)), BubbleDetail);
+
+	Height = Coverage * lerp(0.3, 1.0, A);
+	return Coverage;
 }
 
 // Curvature of the simulated surface (Hessian of the height: xx, yy, xy) from one cascade's slope texture, by
@@ -1042,7 +1078,7 @@ float3 OceanPixel(float3 WorldPos,
 	Texture2D ShoreMap, SamplerState ShoreMapSampler, float3 ShoreMapOrigin, float ShoreMapSize,
 	float SignificantHeight0, float SignificantHeight1, float SignificantHeight2,
 	float Time, float SwellHeight, float SwellPeriod, float SwellMaxDepth,
-	float PatchSize0, float PatchSize1, float PatchSize2, float CrestHeight, float BaseRoughness,
+	float PatchSize0, float PatchSize1, float PatchSize2, float CrestHeight, float BaseRoughness, float LeanScale,
 	out float Foam, out float Crest, out float Roughness)
 {
 	const float2 PosM = WorldPos.xy * 0.01;
@@ -1074,7 +1110,7 @@ float3 OceanPixel(float3 WorldPos,
 	// Beckmann: alpha^2 = 2 * slope variance (isotropic average), added to the surface's own micro-roughness.
 	// Unreal's Roughness is sqrt(alpha). Distant water keeps its glitter instead of turning into a mirror.
 	const float BaseAlpha = BaseRoughness * BaseRoughness;
-	const float Alpha2 = BaseAlpha * BaseAlpha + (Variance.x + Variance.y);
+	const float Alpha2 = BaseAlpha * BaseAlpha + (Variance.x + Variance.y) * LeanScale;
 	Roughness = sqrt(sqrt(Alpha2));
 
 	// Slope of the displaced surface: height slope divided by the horizontal stretch.
@@ -1117,8 +1153,20 @@ float3 OceanPixel(float3 WorldPos,
 		ShoreNormal = normalize(cross(TangentX, TangentY));
 	}
 
-	Foam = OceanFoamCoverage(PosM, max(FoamAmount, ShoreFoam));
+	float FoamHeight;
+	Foam = OceanFoamCoverage(PosM, max(FoamAmount, ShoreFoam), FoamHeight);
 	Crest = saturate((S0.z * A0 + S1.z * A1 + W0.z) / max(CrestHeight, 0.01));
 
-	return normalize(ShoreNormal + float3(-Slope, 0.0));
+	// Relief of the foam (a few centimetres thick), so it catches the light instead of lying flat. World-space
+	// gradient of its height from the screen-space derivatives.
+	const float2 DPDX = ddx(PosM);
+	const float2 DPDY = ddy(PosM);
+	const float DHX = ddx(FoamHeight);
+	const float DHY = ddy(FoamHeight);
+	const float Determinant = DPDX.x * DPDY.y - DPDX.y * DPDY.x;
+	const float2 FoamGradient = abs(Determinant) > 1e-10
+		? float2(DHX * DPDY.y - DHY * DPDX.y, DHY * DPDX.x - DHX * DPDY.x) / Determinant : 0.0;
+	const float2 FoamSlope = clamp(FoamGradient * 0.04, -1.5, 1.5);
+
+	return normalize(ShoreNormal + float3(-Slope - FoamSlope, 0.0));
 }
