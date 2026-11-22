@@ -115,6 +115,13 @@ float OceanSwashRunup(float SwellHeightM, float Gaps)
 	return 0.6 * SwellHeightM * Gaps;
 }
 
+// Run-up of each swash relative to the average: 0.65..1.1, one value per wave. Identical to OceanShoreData.cpp.
+float OceanSwashWaveSize(float Phase)
+{
+	const uint Wave = uint(int(floor(Phase)));
+	return lerp(0.65, 1.1, float(OceanShoreHash(Wave * 0x9e3779b9u)) / 4294967295.0);
+}
+
 float OceanSwashRise(float Cycle)
 {
 	if (Cycle < 0.3)
@@ -529,6 +536,30 @@ float OceanSurfTurbidity(float3 WorldPos, float Time, Texture2D ShoreMap, Sample
 	return smoothstep(0.5, 1.0, BreakRatio) * lerp(0.35, 1.0, Plumes);
 }
 
+// The glassy film of the swash on the sand: 1 while this height is under the swash sheet, then fading as the water
+// sinks into the sand (~2 s). Solves the swash level of OceanShoreWave (Runup x (1.1 Rise - 0.1)) for the
+// moments it rises past and drains below this height.
+float OceanSwashFilm(float HeightM, float Runup, float Cycle, float Period)
+{
+	const float Needed = (HeightM / max(Runup, 1e-3) + 0.1) / 1.1; // the Rise that just covers this height
+	if (Needed >= 1.0)
+	{
+		return 0.0; // above this wave's run-up
+	}
+	if (Needed <= 0.0)
+	{
+		return 1.0;
+	}
+	const float Up = 0.3 * asin(Needed) * 2.0 / PI;                     // uprush: Rise = sin(pi/2 Cycle/0.3)
+	const float Down = 0.3 + 0.7 * (0.5 - sin(asin(2.0 * Needed - 1.0) / 3.0)); // backwash: inverse smoothstep
+	if (Cycle >= Up && Cycle <= Down)
+	{
+		return 1.0;
+	}
+	const float Since = (Cycle > Down ? Cycle - Down : Cycle + 1.0 - Down) * Period;
+	return exp(-Since / 2.0);
+}
+
 // Footprints simulated in sand (OceanSimulateSandFootprints, Sumner et al. 1999): a periodic tile, RG = height
 // offset (m) and disturbance. Laid twice with different orientations and offsets, picked in patches, so the tile
 // does not show; more trails in the busy stretches. Returns the height gradient; Disturbance = trampled (0..1).
@@ -622,19 +653,73 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 	Roughness = 0.9;
 	float SandMask = 1.0; // where the sparkles can show: bare sand above the water
 
-	// --- Wet sand: soaked and glossy where the swash runs, damp a little higher, a wrack line at the top ---
-	if (HeightM > 0.0 && HeightM < OceanSwashMaxHeightM + 0.5)
+	// --- The swash zone (layer 4): soaked sand, the glassy film each backwash leaves, swash marks, the wrack ---
+	if (HeightM > -0.05 && HeightM < OceanSwashMaxHeightM + 1.0)
 	{
+		// Same swash as the water surface (OceanShoreWave): run-up, phase along the beach, size of each wave.
 		const float Gaps = smoothstep(0.35, 0.6, OceanValueNoise(PosM / 60.0 + float2(0.01, 0.007) * Time));
 		const float Reach = OceanSwashRunup(SwellHeight, Gaps);
-		const float Wet = 1.0 - smoothstep(Reach * 0.6, Reach * 1.2 + 0.05, HeightM);
-		const float Damp = 1.0 - smoothstep(Reach * 1.2, Reach * 1.2 + 0.45, HeightM);
-		Color *= lerp(1.0, 0.82, Damp) * lerp(1.0, 0.62, Wet);
-		Roughness = lerp(Roughness, 0.25, Wet);
-		Bump *= 1.0 - 0.8 * Wet; // the water smooths the ripples
-		const float Wrack = exp(-pow((HeightM - (Reach * 1.25 + 0.05)) / 0.04, 2.0))
-			* smoothstep(0.55, 0.75, OceanValueNoise(PosM / 0.8 + 3.0)) * FineDetail;
-		Color = lerp(Color, float3(0.12, 0.1, 0.07), 0.7 * Wrack);
+		const float Phase = (Time + max(OceanShoreSample(PosM, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize).z, 0.0))
+			/ max(SwellPeriod, 0.1);
+		const float MaxReach = Reach * 1.1;
+		const float Wet = 1.0 - smoothstep(MaxReach * 0.7, MaxReach + 0.05, HeightM);
+		const float Damp = 1.0 - smoothstep(MaxReach, MaxReach + 0.45, HeightM);
+		// The film drains unevenly: the tops of the little bumps dry first.
+		const float Film = OceanSwashFilm(HeightM, Reach * OceanSwashWaveSize(Phase), frac(Phase), SwellPeriod)
+			* lerp(0.55, 1.0, OceanGradientNoise(PosM / 0.35 + 9.4));
+		Color *= lerp(1.0, 0.82, Damp) * lerp(1.0, 0.62, Wet) * lerp(1.0, 0.92, Film);
+		Roughness = lerp(lerp(Roughness, 0.3, Wet), 0.1, Film); // a sheen of the sky while the water drains
+		Bump *= (1.0 - 0.8 * Wet) * (1.0 - 0.5 * Film);       // the water smooths the ripples
+		SandMask *= 1.0 - Wet;
+
+		// Swash marks: each backwash leaves a thin line of fine debris and burst foam at the top of its run-up,
+		// scalloped into cusps, until a bigger swash washes over it. The last six waves.
+		const float Tilt = sqrt(max(1.0 - VertexNormal.z * VertexNormal.z, 1e-4)) / max(VertexNormal.z, 0.1);
+		const float MarkDetail = saturate(0.004 / max(Tilt, 0.01) / Footprint - 0.5);
+		if (MarkDetail > 0.0)
+		{
+			float Higher = Reach * OceanSwashWaveSize(Phase) * (frac(Phase) > 0.3 ? 1.0 : 0.0); // the current wave
+			float Marks = 0.0;
+			[unroll] for (int K = 1; K <= 6; ++K)
+			{
+				const float Cusp = 1.0 + 0.1 * (OceanGradientNoise(PosM / 2.2 + 13.1 * K) - 0.5);
+				const float Top = Reach * OceanSwashWaveSize(Phase - K) * Cusp;
+				if (Top > Higher)
+				{
+					Marks = max(Marks, exp(-Square((HeightM - Top) / 0.004)) * (1.0 - 0.1 * K));
+				}
+				Higher = max(Higher, Top);
+			}
+			Marks *= MarkDetail * lerp(0.5, 1.0, OceanGradientNoise(PosM / 0.3 + 2.0));
+			Color *= 1.0 - 0.3 * Marks;
+		}
+
+		// Wrack line at the top of the highest swash: sargassum, in fresh golden and dried dark clumps.
+		// A narrow, ragged line along the beach, thick in places and broken in others; within it, a tangled mat
+		// with holes (fractal noise, not discs), fresh golden weed and darker dried weed.
+		const float WrackHeight = 0.6 * SwellHeight * 1.1 * 1.25 + 0.12 + 0.03 * OceanFractalNoise(PosM, 6.0, 4, 0.6);
+		const float Band = 1.0 - smoothstep(0.012, 0.035, abs(HeightM - WrackHeight));
+		const float Density = Band * smoothstep(0.35, 0.6, OceanGradientNoise(PosM / 18.0 + 5.0));
+		if (Density > 0.01)
+		{
+			const float Mat = OceanFractalNoise(PosM + 3.3, 0.5, 4, 0.55) + 0.5;
+			const float Cover = smoothstep(0.55, 0.62, Mat + 0.5 * (Density - 0.5)) * saturate(4.0 * Density) * saturate(0.3 / Footprint);
+			if (Cover > 0.0)
+			{
+				// Fronds and air bladders: a fine broken texture, darker in the gaps of the mat.
+				const float Fronds = lerp(1.0, lerp(0.75, 1.15, 0.6 * OceanGradientNoise(PosM / 0.02 + 4.4) + 0.4 * OceanGradientNoise(PosM / 0.007 + 1.9)), FineDetail);
+				const float3 Sargassum = lerp(float3(0.3, 0.19, 0.06), float3(0.1, 0.07, 0.04),
+					smoothstep(0.35, 0.75, OceanGradientNoise(PosM / 1.2 + 6.6))) * Fronds * lerp(0.75, 1.0, smoothstep(0.55, 0.7, Mat));
+				Color = lerp(Color, Sargassum, Cover);
+				Roughness = lerp(Roughness, 0.7, Cover);
+				SandMask *= 1.0 - Cover;
+				const float E = 0.02;
+				const float2 MatSlope = float2(OceanFractalNoise(PosM + float2(E, 0.0) + 3.3, 0.5, 4, 0.55) + 0.5 - Mat,
+					OceanFractalNoise(PosM + float2(0.0, E) + 3.3, 0.5, 4, 0.55) + 0.5 - Mat) / E;
+				// Gentle lumps only: steep fine-scale slopes turn into a maze of light and shadow.
+				Bump = lerp(Bump, MatSlope * 0.03 + OceanNoiseGradient(PosM, 0.05) * 0.015 * FineDetail, Cover);
+			}
+		}
 	}
 
 	// --- Coral heads and seagrass on the shallow floor: the dark patches seen through clear lagoon water ---
@@ -745,8 +830,9 @@ float3 OceanShoreWave(float2 PosM, float Time,
 	// Swash: the sea surface rises over the beach after each bore and drains back (see the CPU version).
 	float3 Result = 0.0;
 	{
-		const float Runup = OceanSwashRunup(SwellHeight, Gaps);
-		const float Cycle = frac((Time + max(Here.z, 0.0)) / SwellPeriod);
+		const float Phase = (Time + max(Here.z, 0.0)) / SwellPeriod;
+		const float Runup = OceanSwashRunup(SwellHeight, Gaps) * OceanSwashWaveSize(Phase); // each wave its own reach
+		const float Cycle = frac(Phase);
 		const float Level = Runup * (1.1 * OceanSwashRise(Cycle) - 0.1);
 		const float Weight = 1.0 - smoothstep(0.5, 1.5, Depth);
 		Result.z = Level * Weight;

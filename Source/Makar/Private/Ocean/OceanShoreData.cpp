@@ -46,6 +46,12 @@ float OceanValueNoise(const FVector2f& P)
 	return ValueNoiseImpl(P);
 }
 
+float OceanSwashWaveSize(float Phase)
+{
+	const uint32 Wave = uint32(int32(FMath::FloorToFloat(Phase)));
+	return FMath::Lerp(0.65f, 1.1f, float(ShoreHash(Wave * 0x9e3779b9u)) / 4294967295.f);
+}
+
 namespace
 {
 	/** Height in [0, 1] and slope in [-1, 1]^2 at a lattice node. */
@@ -124,8 +130,10 @@ FOceanShoreWaveSample OceanShoreWave(const FOceanShoreData& Shore, const FVector
 	// The sea surface itself rises over the beach (where it is lower than the water, the sand hides it),
 	// so the waterline moves up and down the slope, and water queries see the water on the sand.
 	{
-		const float Runup = OceanSwashRunup(Swell.Height, Gaps);
-		const float Cycle = FMath::Frac((TimeS + FMath::Max(Here.Z, 0.f)) / Swell.Period);
+		// Each wave runs up its own distance: a set is never uniform.
+		const float Phase = (TimeS + FMath::Max(Here.Z, 0.f)) / Swell.Period;
+		const float Runup = OceanSwashRunup(Swell.Height, Gaps) * OceanSwashWaveSize(Phase);
+		const float Cycle = FMath::Frac(Phase);
 		const float Level = Runup * (1.1f * OceanSwashRise(Cycle) - 0.1f);
 		const float Weight = 1.f - SmoothStep01(0.5f, 1.5f, Depth); // beach and the last metre of water
 		Out.Displacement.Z = Level * Weight;

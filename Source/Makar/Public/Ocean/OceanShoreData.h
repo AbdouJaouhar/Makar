@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 
@@ -59,6 +59,9 @@ MAKAR_API float OceanFractalNoise(const FVector2f& P, float WavelengthM, int32 O
 constexpr float OceanSwashMaxHeightM = 1.5f;
 
 /** Vertical run-up of the swash on the beach, m: a fraction of the breaking wave height (gentle sandy beach). */
+/** Run-up of each swash relative to the average: 0.65..1.1, one value per wave (Phase = time / period). Identical to OceanSwashWaveSize in Shaders/Ocean.ush. */
+MAKAR_API float OceanSwashWaveSize(float Phase);
+
 inline float OceanSwashRunup(float SwellHeightM, float Gaps)
 {
 	return 0.6f * SwellHeightM * Gaps;
