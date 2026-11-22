@@ -137,7 +137,8 @@ def build():
     grid_growth = scalar(material, "GridGrowth", 0.13, -1300, 760)
     fade_start = scalar(material, "FadeStart", 3000.0, -1300, 840)
     fade_end = scalar(material, "FadeEnd", 8000.0, -1300, 920)
-    crest_height = scalar(material, "CrestHeight", 1.5, -1300, 1000)
+    # Height above the mean surface counted as a thin crest (crest scattering and light through the waves).
+    crest_height = scalar(material, "CrestHeight", 0.6, -1300, 1000)
 
     # --- Vertex: displacement ---
     vertex = custom(
@@ -175,17 +176,22 @@ def build():
         "ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, "
         "SignificantHeight0, SignificantHeight1, SignificantHeight2, "
         "Time, SwellHeight, SwellPeriod, SwellMaxDepth, "
-        "PatchSize0, PatchSize1, PatchSize2, CrestHeight, BaseRoughness, LeanScale, Foam, Crest, Roughness);",
+        "PatchSize0, PatchSize1, PatchSize2, CrestHeight, BaseRoughness, LeanScale, ToSun, ToCamera, "
+        "Foam, Crest, Roughness, Translucency);",
         ["WorldPos", "Disp0", "Disp1", "Disp2", "Deriv0", "Deriv1", "Deriv2", "Moments0", "Moments1", "Moments2",
          "FoamMap", "FoamMapOrigin", "FoamMapSize",
          "ShoreMap", "ShoreMapOrigin", "ShoreMapSize",
          "SignificantHeight0", "SignificantHeight1", "SignificantHeight2",
          "Time", "SwellHeight", "SwellPeriod", "SwellMaxDepth",
-         "PatchSize0", "PatchSize1", "PatchSize2", "CrestHeight", "BaseRoughness", "LeanScale"],
+         "PatchSize0", "PatchSize1", "PatchSize2", "CrestHeight", "BaseRoughness", "LeanScale", "ToSun", "ToCamera"],
         unreal.CustomMaterialOutputType.CMOT_FLOAT3,
         extra_outputs=[("Foam", unreal.CustomMaterialOutputType.CMOT_FLOAT1),
                        ("Crest", unreal.CustomMaterialOutputType.CMOT_FLOAT1),
-                       ("Roughness", unreal.CustomMaterialOutputType.CMOT_FLOAT1)])
+                       ("Roughness", unreal.CustomMaterialOutputType.CMOT_FLOAT1),
+                       ("Translucency", unreal.CustomMaterialOutputType.CMOT_FLOAT1)])
+    # The sun, as the sky atmosphere sees it: direction and illuminance at this point (through the atmosphere).
+    sun_direction = node(material, unreal.MaterialExpressionSkyAtmosphereLightDirection, -1300, 1240)
+    sun_illuminance = node(material, unreal.MaterialExpressionSkyAtmosphereLightIlluminance, -500, 1640)
     connect_inputs({
         "WorldPos": world_pos, "Disp0": disp[0], "Disp1": disp[1], "Disp2": disp[2],
         "Deriv0": deriv[0], "Deriv1": deriv[1], "Deriv2": deriv[2],
@@ -200,8 +206,25 @@ def build():
         # Full LEAN (1) turned the sea into a matte plate: very rough reflections lose most of their energy at
         # grazing angles in Unreal's shading. 0.3 keeps the sky reflections and a sun glitter path (iteration 38).
         "LeanScale": scalar(material, "LeanScale", 0.3, -1300, 1160),
+        "ToSun": sun_direction,
+        "ToCamera": node(material, unreal.MaterialExpressionCameraVectorWS, -1300, 1320),
     }, pixel)
     MEL.connect_material_property(pixel, "", unreal.MaterialProperty.MP_NORMAL)
+
+    # Light through the waves (OceanPixel's Translucency): emitted with the colour of a few tens of centimetres of
+    # clear tropical water, scaled by the sun's illuminance (emissive ~ radiance ~ illuminance / pi).
+    translucency_color = color(material, "TranslucencyColor", (0.03, 0.42, 0.34), -500, 1720)
+    translucency_strength = scalar(material, "TranslucencyStrength", 0.35, -500, 1800)
+    translucency = node(material, unreal.MaterialExpressionMultiply, -300, 1640)
+    connect(pixel, translucency, "A", "Translucency")
+    connect(translucency_strength, translucency, "B")
+    translucency_tinted = node(material, unreal.MaterialExpressionMultiply, -200, 1700)
+    connect(translucency, translucency_tinted, "A")
+    connect(translucency_color, translucency_tinted, "B")
+    translucency_lit = node(material, unreal.MaterialExpressionMultiply, -100, 1680)
+    connect(translucency_tinted, translucency_lit, "A")
+    connect(sun_illuminance, translucency_lit, "B")
+    MEL.connect_material_property(translucency_lit, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
 
     # --- Surface: the water itself is shaded by the volume below; base colour only carries the foam ---
     foam_color = color(material, "FoamColor", (0.8, 0.85, 0.85), -500, 420)

@@ -1079,7 +1079,7 @@ float3 OceanPixel(float3 WorldPos,
 	float SignificantHeight0, float SignificantHeight1, float SignificantHeight2,
 	float Time, float SwellHeight, float SwellPeriod, float SwellMaxDepth,
 	float PatchSize0, float PatchSize1, float PatchSize2, float CrestHeight, float BaseRoughness, float LeanScale,
-	out float Foam, out float Crest, out float Roughness)
+	float3 ToSun, float3 ToCamera, out float Foam, out float Crest, out float Roughness, out float Translucency)
 {
 	const float2 PosM = WorldPos.xy * 0.01;
 	const float2 Uv0 = PosM / PatchSize0;
@@ -1168,5 +1168,17 @@ float3 OceanPixel(float3 WorldPos,
 		? float2(DHX * DPDY.y - DHY * DPDX.y, DHY * DPDX.x - DHX * DPDY.x) / Determinant : 0.0;
 	const float2 FoamSlope = clamp(FoamGradient * 0.04, -1.5, 1.5);
 
-	return normalize(ShoreNormal + float3(-Slope - FoamSlope, 0.0));
+	const float3 Normal = normalize(ShoreNormal + float3(-Slope - FoamSlope, 0.0));
+
+	// Light through the waves (subsurface scattering, as Rare does in Sea of Thieves): sunlight enters a wave and
+	// leaves it forwards, so looking towards the sun the thin backs of the crests glow turquoise. Forward lobe around
+	// the refracted sun direction, bent by the surface normal; thin water = high on a crest. Facing the sun, the
+	// crests still brighten a little (light scattered back up). Foam is opaque: no light through it.
+	const float3 Through = normalize(ToSun + Normal * 0.5);
+	const float Forward = pow(saturate(dot(ToCamera, -Through)), 5.0);
+	const float Thin = saturate(Crest);
+	const float Lit = saturate(dot(Normal, ToSun));
+	Translucency = (Forward * lerp(0.1, 1.0, Thin) + 0.12 * Thin * Lit) * (1.0 - Foam);
+
+	return Normal;
 }
