@@ -17,6 +17,16 @@ SEABED_MATERIAL_PATH = "/Game/Ocean/M_Seabed"
 ISLAND_CENTRE_M = (-500.0, 0.0)
 ISLAND_RADIUS_M = 250.0
 
+# Post-process overrides (FPostProcessSettings property names), tuned on screenshots of the beach from the sea:
+# without them the sand clips to ~236/230/218; highlight compression alone also darkened the water by half,
+# lifting the shadows and +0.3 EV brings the turquoise back (sand ~216/206/185, water ~0/112/127).
+POST_PROCESS = {
+    "local_exposure_highlight_contrast_scale": 0.7,
+    "local_exposure_shadow_contrast_scale": 0.7,
+    "auto_exposure_bias": 0.3,
+    "bloom_intensity": 0.5,
+}
+
 actors = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
 levels = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
 MEL = unreal.MaterialEditingLibrary
@@ -156,6 +166,17 @@ def build():
     sky_light.set_editor_property("real_time_capture", True)
 
     spawn(unreal.VolumetricCloud, label="Clouds")
+
+    # Exposure: the auto exposure meters a frame dominated by dark water (it reflects a few % of the light),
+    # so it overexposes everything brighter, and the sunlit beach clips to white. Local exposure compresses
+    # the highlights like a good camera without darkening the water; less bloom removes the halo.
+    post = spawn(unreal.PostProcessVolume, label="PostProcess")
+    post.set_editor_property("unbound", True)
+    settings = post.get_editor_property("settings")
+    for name, value in POST_PROCESS.items():
+        settings.set_editor_property(f"override_{name}", True)
+        settings.set_editor_property(name, value)
+    post.set_editor_property("settings", settings)
 
     # Clean tropical air: only a light haze on the horizon.
     fog = spawn(unreal.ExponentialHeightFog, label="Fog")
