@@ -1,4 +1,4 @@
-#include "Ocean/OceanBathymetry.h"
+﻿#include "Ocean/OceanBathymetry.h"
 
 #include "Async/ParallelFor.h"
 #include "Engine/Texture2D.h"
@@ -201,6 +201,13 @@ void AOceanBathymetry::EnsureBuilt()
 
 float AOceanBathymetry::GetTerrainHeight(const FVector2f& PositionM) const
 {
+	const FOceanTerrainSample Sample = SampleTerrain(PositionM);
+	return Sample.Ground + Sample.Understory;
+}
+
+FOceanTerrainSample AOceanBathymetry::SampleTerrain(const FVector2f& PositionM) const
+{
+	FOceanTerrainSample Out;
 	const FVector2f Center(float(GetActorLocation().X * 0.01), float(GetActorLocation().Y * 0.01));
 	const FVector2f Delta = PositionM - Center;
 	const float Angle = FMath::Atan2(Delta.Y, Delta.X);
@@ -217,6 +224,7 @@ float AOceanBathymetry::GetTerrainHeight(const FVector2f& PositionM) const
 	const FVector2f Seeded = PositionM + FVector2f(Seed * 37.1f, Seed * 11.3f);
 	const float Across = Delta.Size() - (IslandRadius + CoastlineVariation * Coast)
 		+ 18.f * (OceanValueNoise(Seeded / 80.f) - 0.5f) + 5.f * (OceanValueNoise(Seeded / 22.f) - 0.5f);
+	Out.Inland = -Across;
 	if (Across < 0.f)
 	{
 		const float Inland = -Across;
@@ -232,21 +240,25 @@ float AOceanBathymetry::GetTerrainHeight(const FVector2f& PositionM) const
 		const float Rock = Rockiness * FMath::SmoothStep(0.45f, 0.7f, OceanValueNoise(Seeded / 70.f + 3.1f));
 		const float Cliff = Rock * 8.f * FMath::SmoothStep(0.f, 8.f, Inland);
 		const float Ground = Beach + Hills + Cliff;
-		// Forest canopy: 4-8 m of lumpy tree tops above the ground behind the beach, so the island has the
-		// bumpy silhouette of a wooded cay instead of a grassy hill. Thinner on the rocky points.
-		// Uses the same vegetation line as OceanTerrainSurface (Shaders/Ocean.ush), minus its fine noise.
-		// A gradual edge (squared ramp over ~4 m of ground height): a sudden 6 m step reads as a dark cliff.
+		// Understory: 1.5-3 m of lumpy bush mass behind the beach, under the trees of AOceanIslandFlora.
+		// Thinner on the rocky points. Uses the same vegetation line as OceanTerrainSurface (Shaders/Ocean.ush),
+		// minus its fine noise, with a gradual edge (a sudden step reads as a dark cliff).
 		const float ForestRamp = FMath::SmoothStep(2.f, 6.f, Ground + 1.5f * (OceanValueNoise(PositionM / 40.f) - 0.5f));
 		const float Forest = ForestRamp * ForestRamp * (1.f - 0.7f * Rock);
-		const float Canopy = Forest * (4.f + 3.f * OceanValueNoise(Seeded / 12.f + 2.2f) + 1.5f * OceanValueNoise(Seeded / 5.f + 8.1f));
-		return Ground + Canopy;
+		Out.Ground = Ground;
+		Out.Understory = Forest * (1.5f + 1.f * OceanValueNoise(Seeded / 12.f + 2.2f) + 0.5f * OceanValueNoise(Seeded / 5.f + 8.1f));
+		Out.Rock = Rock;
+		return Out;
 	}
 
 	// Drops with BeachSlope at the waterline, levels off at ShelfDepth, then the reef drop-off.
 	const float Shelf = FMath::Max(ShelfDepth, 0.01f);
 	const float Depth = Shelf * (1.f - FMath::Exp(-Across * BeachSlope / Shelf))
 		+ DropOffDepth * FMath::SmoothStep(ShelfWidth, ShelfWidth + DropOffWidth, Across);
-	return -Depth;
+	Out.Ground = -Depth;
+	// Rocky points continue a little under water: boulders on the rocky shores.
+	Out.Rock = Rockiness * FMath::SmoothStep(0.45f, 0.7f, OceanValueNoise(Seeded / 70.f + 3.1f)) * (1.f - FMath::SmoothStep(5.f, 25.f, Across));
+	return Out;
 }
 
 void AOceanBathymetry::Build()

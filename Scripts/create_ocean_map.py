@@ -17,6 +17,11 @@ SEABED_MATERIAL_PATH = "/Game/Ocean/M_Seabed"
 ISLAND_CENTRE_M = (-500.0, 0.0)
 ISLAND_RADIUS_M = 250.0
 
+# Sky: Mie (aerosol) scattering and absorption scales (engine defaults 0.003996 / 0.000444), height fog density.
+SKY_MIE_SCATTERING = 0.0013
+SKY_MIE_ABSORPTION = 0.00015
+SKY_FOG_DENSITY = 0.0003
+
 # Swell lapping on the beaches of the lagoon (ocean settings and the wet sand band of M_Seabed).
 SHORE_SWELL_HEIGHT_M = 0.4
 
@@ -197,7 +202,12 @@ def build():
     sun_light.set_editor_property("intensity", 10.0)
     sun_light.set_editor_property("light_color", unreal.Color(r=255, g=248, b=235, a=255))
 
-    spawn(unreal.SkyAtmosphere, label="SkyAtmosphere")
+    # Clean maritime tropical air: the default Mie (aerosol) scattering is that of a hazy continental sky,
+    # which turns the whole horizon milky white. A third of it keeps a soft horizon glow with a deep blue sky.
+    atmosphere = spawn(unreal.SkyAtmosphere, label="SkyAtmosphere")
+    atmosphere_component = atmosphere.get_component_by_class(unreal.SkyAtmosphereComponent)
+    atmosphere_component.set_editor_property("mie_scattering_scale", SKY_MIE_SCATTERING)
+    atmosphere_component.set_editor_property("mie_absorption_scale", SKY_MIE_ABSORPTION)
 
     sky = spawn(unreal.SkyLight, (0.0, 0.0, 500.0), label="SkyLight")
     sky_light = sky.get_component_by_class(unreal.SkyLightComponent)
@@ -217,9 +227,9 @@ def build():
         settings.set_editor_property(name, value)
     post.set_editor_property("settings", settings)
 
-    # Clean tropical air: only a light haze on the horizon.
+    # The sky atmosphere already gives the distance its aerial perspective; the height fog only adds a faint haze.
     fog = spawn(unreal.ExponentialHeightFog, label="Fog")
-    fog.get_component_by_class(unreal.ExponentialHeightFogComponent).set_editor_property("fog_density", 0.001)
+    fog.get_component_by_class(unreal.ExponentialHeightFogComponent).set_editor_property("fog_density", SKY_FOG_DENSITY)
 
     # --- Ocean: its Z is the sea level ---
     ocean = spawn(load_class("/Script/Makar.OceanActor"), (0.0, 0.0, 0.0), label="Ocean")
@@ -232,6 +242,11 @@ def build():
                    label="Island")
     island.set_editor_property("island_radius", ISLAND_RADIUS_M)
     island.set_editor_property("rockiness", 0.85)  # dark rocky points between the beaches
+
+    # --- Caribbean flora and limestone boulders, generated on load (AOceanIslandFlora, needs
+    # create_flora_materials.py) ---
+    spawn(load_class("/Script/Makar.OceanIslandFlora"), (ISLAND_CENTRE_M[0] * 100.0, ISLAND_CENTRE_M[1] * 100.0, 0.0),
+          label="IslandFlora")
 
     # --- Camera start: on the shelf a few metres above the water, facing the beach; the trade-wind
     # waves roll in from behind towards the island ---

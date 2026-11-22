@@ -9,6 +9,15 @@ class UMaterialInterface;
 class UOceanMeshComponent;
 class UTexture2D;
 
+/** The island's shape at one point, m. */
+struct FOceanTerrainSample
+{
+	float Ground = 0.f;     // ground height above sea level (negative under water)
+	float Understory = 0.f; // bush mass above the ground, part of the terrain mesh
+	float Rock = 0.f;       // 0..1, rocky shore
+	float Inland = 0.f;     // approximate distance from the coastline, positive on land
+};
+
 /**
  * A procedural island and its sea floor, centred on the actor: land rising from a sandy beach,
  * a shallow shelf (clear turquoise water) and a reef drop-off into deep water.
@@ -35,8 +44,11 @@ public:
 	/** RGBA = depth, signed distance to shore, wave travel time to shore, unused (see FOceanShoreData). */
 	UTexture2D* GetShoreTexture() const { return ShoreTexture; }
 
-	/** Terrain height above sea level (m) from the analytic island shape. */
+	/** Terrain height above sea level (m) from the analytic island shape: ground plus understory. */
 	float GetTerrainHeight(const FVector2f& PositionM) const;
+
+	/** Ground, understory, rockiness and distance inland, for placing vegetation and rocks. */
+	FOceanTerrainSample SampleTerrain(const FVector2f& PositionM) const;
 
 	virtual void OnConstruction(const FTransform& Transform) override;
 

@@ -13,7 +13,9 @@ public class Makar : ModuleRules
 			"Engine",
 			"InputCore",
 			"EnhancedInput",
-			"ProceduralMeshComponent" // ocean surface mesh
+			"ProceduralMeshComponent", // ocean surface mesh
+			"MeshDescription",         // procedural flora and rocks (OceanFlora)
+			"StaticMeshDescription"
 		});
 
 		if (Target.bBuildEditor)
