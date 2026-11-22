@@ -177,7 +177,7 @@ def build():
         "SignificantHeight0, SignificantHeight1, SignificantHeight2, "
         "Time, SwellHeight, SwellPeriod, SwellMaxDepth, "
         "PatchSize0, PatchSize1, PatchSize2, CrestHeight, BaseRoughness, LeanScale, ToSun, ToCamera, "
-        "Foam, Crest, Roughness, Translucency);",
+        "Foam, Crest, Roughness, Translucency, Glitter);",
         ["WorldPos", "Disp0", "Disp1", "Disp2", "Deriv0", "Deriv1", "Deriv2", "Moments0", "Moments1", "Moments2",
          "FoamMap", "FoamMapOrigin", "FoamMapSize",
          "ShoreMap", "ShoreMapOrigin", "ShoreMapSize",
@@ -188,7 +188,8 @@ def build():
         extra_outputs=[("Foam", unreal.CustomMaterialOutputType.CMOT_FLOAT1),
                        ("Crest", unreal.CustomMaterialOutputType.CMOT_FLOAT1),
                        ("Roughness", unreal.CustomMaterialOutputType.CMOT_FLOAT1),
-                       ("Translucency", unreal.CustomMaterialOutputType.CMOT_FLOAT1)])
+                       ("Translucency", unreal.CustomMaterialOutputType.CMOT_FLOAT1),
+                       ("Glitter", unreal.CustomMaterialOutputType.CMOT_FLOAT1)])
     # The sun, as the sky atmosphere sees it: direction and illuminance at this point (through the atmosphere).
     sun_direction = node(material, unreal.MaterialExpressionSkyAtmosphereLightDirection, -1300, 1240)
     sun_illuminance = node(material, unreal.MaterialExpressionSkyAtmosphereLightIlluminance, -500, 1640)
@@ -221,8 +222,16 @@ def build():
     translucency_tinted = node(material, unreal.MaterialExpressionMultiply, -200, 1700)
     connect(translucency, translucency_tinted, "A")
     connect(translucency_color, translucency_tinted, "B")
+    # Sun glitter (OceanPixel's Glitter, radiance relative to the sun's illuminance), white like the sun.
+    glitter_strength = scalar(material, "GlitterStrength", 0.5, -500, 1880)
+    glitter = node(material, unreal.MaterialExpressionMultiply, -300, 1860)
+    connect(pixel, glitter, "A", "Glitter")
+    connect(glitter_strength, glitter, "B")
+    light_emitted = node(material, unreal.MaterialExpressionAdd, -200, 1780)
+    connect(translucency_tinted, light_emitted, "A")
+    connect(glitter, light_emitted, "B")
     translucency_lit = node(material, unreal.MaterialExpressionMultiply, -100, 1680)
-    connect(translucency_tinted, translucency_lit, "A")
+    connect(light_emitted, translucency_lit, "A")
     connect(sun_illuminance, translucency_lit, "B")
     MEL.connect_material_property(translucency_lit, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
 

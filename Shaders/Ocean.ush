@@ -998,9 +998,13 @@ float OceanFoamCoverage(float2 PosM, float Amount, out float Height)
 	const float Large = OceanCellWalls(P / 0.7 + 0.4 * Medium);
 	const float Vary = lerp(0.4, 1.6, OceanGradientNoise(P / 0.5 + 2.2));
 	const float Wall = A * A * 0.6 * Vary;
-	const float LargeNet = 1.0 - smoothstep(Wall - 0.04, Wall + 0.03, Large);
-	const float MediumNet = 1.0 - smoothstep(Wall * 0.9 - 0.04, Wall * 0.9 + 0.03, Medium);
-	const float SmallNet = 1.0 - smoothstep(Wall * 0.8 - 0.05, Wall * 0.8 + 0.03, Small);
+	// Edges at least ~1.5 pixels wide (fwidth), or the walls alias into staircases at a distance.
+	const float LargeEdge = max(0.035, 1.5 * fwidth(Large));
+	const float MediumEdge = max(0.035, 1.5 * fwidth(Medium));
+	const float SmallEdge = max(0.04, 1.5 * fwidth(Small));
+	const float LargeNet = 1.0 - smoothstep(Wall - LargeEdge, Wall + LargeEdge, Large);
+	const float MediumNet = 1.0 - smoothstep(Wall * 0.9 - MediumEdge, Wall * 0.9 + MediumEdge, Medium);
+	const float SmallNet = 1.0 - smoothstep(Wall * 0.8 - SmallEdge, Wall * 0.8 + SmallEdge, Small);
 	const float Detailed = saturate(max(LargeNet, MediumNet * 0.85) * lerp(0.6, 1.0, SmallNet));
 	const float Detail = saturate(0.3 / Footprint / 6.0 - 0.5);
 	float Coverage = lerp(A * (0.4 + 0.6 * A), Detailed, Detail);
@@ -1011,6 +1015,52 @@ float OceanFoamCoverage(float2 PosM, float Amount, out float Height)
 
 	Height = Coverage * lerp(0.3, 1.0, A);
 	return Coverage;
+}
+
+// Sun glitter: the ripples too small to be resolved are tiny mirrors whose slopes follow the unresolved slope
+// variance (LEAN). A few of them face exactly halfway between the sun and the eye and flash; as the water moves
+// they change every fraction of a second. Each cell of ~2 cm facets (grouped to the pixel size, two levels
+// blended) draws whether one of its facets is aligned, from the Gaussian slope density at the needed slope; a lit
+// cell is as bright as one facet out of all those it holds. Returns radiance relative to the sun's illuminance.
+float OceanSunGlitter(float2 PosM, float Time, float3 Normal, float2 Variance, float3 ToSun, float3 ToCamera)
+{
+	const float3 Half = normalize(ToSun + ToCamera);
+	if (ToSun.z <= 0.0 || Half.z <= 0.05)
+	{
+		return 0.0;
+	}
+	// Facet slope needed, relative to the resolved surface, and how likely it is.
+	const float2 Needed = Normal.xy / max(Normal.z, 0.05) - Half.xy / Half.z;
+	const float2 Sigma = sqrt(max(Variance, 1e-5));
+	const float Density = exp(-0.5 * dot(Needed / Sigma, Needed / Sigma));
+	if (Density < 1e-3)
+	{
+		return 0.0;
+	}
+	// Fraction of facets aligned within the sun's disc and the facets' own blur (~0.01 in slope).
+	const float Aligned = Density * (0.0001 / max(Sigma.x * Sigma.y, 1e-5));
+
+	const float FacetM = 0.02;
+	const float Footprint = max(length(fwidth(PosM)), 1e-4);
+	const float Level = max(0.0, log2(Footprint / FacetM));
+	const float Level0 = floor(Level);
+	float Sum = 0.0;
+	[unroll] for (int K = 0; K < 2; ++K)
+	{
+		const float L = Level0 + K;
+		const float Weight = K == 0 ? 1.0 - (Level - Level0) : Level - Level0;
+		const float Facets = exp2(2.0 * L);
+		const float Chance = 1.0 - pow(saturate(1.0 - Aligned), Facets);
+		const uint Cell = OceanCellHash(int2(floor(PosM / (FacetM * exp2(L)))), 0x9a1u + uint(L));
+		const uint Blink = uint(floor(Time * 4.0 + 4.0 * OceanHash01(Cell))); // a new draw ~4 times a second
+		if (OceanHash01(OceanShoreHash(Cell ^ (Blink * 0x9e3779b9u))) < Chance)
+		{
+			// Mirror reflection of the sun (radiance ~ 0.02 x 1 / 6.8e-5 sr of illuminance) over 1 / Facets of the
+			// cell, capped so single pixels do not explode into fireflies.
+			Sum += Weight * min(290.0 * max(Aligned * Facets, 1.0) / Facets, 40.0);
+		}
+	}
+	return Sum;
 }
 
 // Curvature of the simulated surface (Hessian of the height: xx, yy, xy) from one cascade's slope texture, by
@@ -1082,7 +1132,8 @@ float3 OceanPixel(float3 WorldPos,
 	float SignificantHeight0, float SignificantHeight1, float SignificantHeight2,
 	float Time, float SwellHeight, float SwellPeriod, float SwellMaxDepth,
 	float PatchSize0, float PatchSize1, float PatchSize2, float CrestHeight, float BaseRoughness, float LeanScale,
-	float3 ToSun, float3 ToCamera, out float Foam, out float Crest, out float Roughness, out float Translucency)
+	float3 ToSun, float3 ToCamera, out float Foam, out float Crest, out float Roughness, out float Translucency,
+	out float Glitter)
 {
 	const float2 PosM = WorldPos.xy * 0.01;
 	const float2 Uv0 = PosM / PatchSize0;
@@ -1162,10 +1213,11 @@ float3 OceanPixel(float3 WorldPos,
 
 	// Relief of the foam (a few centimetres thick), so it catches the light instead of lying flat. World-space
 	// gradient of its height from the screen-space derivatives.
-	const float2 DPDX = ddx(PosM);
-	const float2 DPDY = ddy(PosM);
-	const float DHX = ddx(FoamHeight);
-	const float DHY = ddy(FoamHeight);
+	// Fine derivatives (per pixel): the coarse ones are constant over 2x2 pixels and light the foam in blocks.
+	const float2 DPDX = ddx_fine(PosM);
+	const float2 DPDY = ddy_fine(PosM);
+	const float DHX = ddx_fine(FoamHeight);
+	const float DHY = ddy_fine(FoamHeight);
 	const float Determinant = DPDX.x * DPDY.y - DPDX.y * DPDY.x;
 	const float2 FoamGradient = abs(Determinant) > 1e-10
 		? float2(DHX * DPDY.y - DHY * DPDX.y, DHY * DPDX.x - DHX * DPDY.x) / Determinant : 0.0;
@@ -1182,6 +1234,9 @@ float3 OceanPixel(float3 WorldPos,
 	const float Thin = saturate(Crest);
 	const float Lit = saturate(dot(Normal, ToSun));
 	Translucency = (Forward * lerp(0.1, 1.0, Thin) + 0.12 * Thin * Lit) * (1.0 - Foam);
+
+	// Sparkles of the unresolved ripples on the sun's path (none on foam).
+	Glitter = OceanSunGlitter(PosM, Time, Normal, Variance, ToSun, ToCamera) * (1.0 - Foam);
 
 	return Normal;
 }
