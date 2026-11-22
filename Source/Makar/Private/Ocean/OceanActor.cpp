@@ -7,6 +7,9 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "EngineUtils.h"
+#if WITH_EDITOR
+#include "LevelEditorViewport.h"
+#endif
 #include "Ocean/OceanBathymetry.h"
 #include "Ocean/OceanMeshComponent.h"
 #include "Rendering/Texture2DResource.h"
@@ -125,6 +128,12 @@ void AOceanActor::OnConstruction(const FTransform& Transform)
 	if (!bMeshBuilt)
 	{
 		BuildMesh();
+	}
+	// In the editor the textures and the coastline must exist even before the first tick
+	// (or if the viewport is not realtime), otherwise the water cannot be drawn.
+	if (bNeedsInitialization && GetWorld() && !GetWorld()->IsGameWorld())
+	{
+		InitializeSimulation();
 	}
 	FollowCamera();
 }
@@ -375,17 +384,32 @@ void AOceanActor::BuildMesh()
 
 void AOceanActor::FollowCamera()
 {
+	// The fine part of the grid (and the foam map) must be where the viewer is: the player's camera in game,
+	// the level viewport's camera in the editor, otherwise the actor itself.
 	FVector Center = GetActorLocation();
+	bool bHasViewer = false;
+	FVector ViewerLocation = FVector::ZeroVector;
 	if (const UWorld* World = GetWorld(); World && World->IsGameWorld())
 	{
 		if (const APlayerCameraManager* CameraManager = UGameplayStatics::GetPlayerCameraManager(this, 0))
 		{
-			// Snap to the vertex spacing so the inner vertices never slide over the waves.
-			const double Step = FMath::Max(GridSpacing, 0.05f) * 100.0;
-			const FVector CameraLocation = CameraManager->GetCameraLocation();
-			Center.X = FMath::GridSnap(CameraLocation.X, Step);
-			Center.Y = FMath::GridSnap(CameraLocation.Y, Step);
+			ViewerLocation = CameraManager->GetCameraLocation();
+			bHasViewer = true;
 		}
+	}
+#if WITH_EDITOR
+	else if (GCurrentLevelEditingViewportClient && GCurrentLevelEditingViewportClient->IsPerspective())
+	{
+		ViewerLocation = GCurrentLevelEditingViewportClient->GetViewLocation();
+		bHasViewer = true;
+	}
+#endif
+	if (bHasViewer)
+	{
+		// Snap to the vertex spacing so the inner vertices never slide over the waves.
+		const double Step = FMath::Max(GridSpacing, 0.05f) * 100.0;
+		Center.X = FMath::GridSnap(ViewerLocation.X, Step);
+		Center.Y = FMath::GridSnap(ViewerLocation.Y, Step);
 	}
 	OceanMesh->SetWorldLocation(Center);
 }

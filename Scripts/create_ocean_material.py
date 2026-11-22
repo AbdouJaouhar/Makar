@@ -225,8 +225,8 @@ def build():
     # and deep water reads saturated blue.
     # Single Layer Water applies these coefficients per CENTIMETRE (checked in-engine: the per-metre
     # values 0.45 / 0.06 / 0.03 made 6 m of water fully opaque). ---
-    absorption = color(material, "Absorption", (0.009, 0.0012, 0.0006), -500, 800)
-    scattering = color(material, "Scattering", (0.00008, 0.00044, 0.00056), -500, 920)
+    absorption = color(material, "Absorption", (0.009, 0.001, 0.0005), -500, 800)
+    scattering = color(material, "Scattering", (0.0001, 0.0006, 0.0007), -500, 920)
 
     # Thin wave crests let more light through: boost scattering there.
     crest_boost = scalar(material, "CrestScatterBoost", 2.0, -500, 1040)

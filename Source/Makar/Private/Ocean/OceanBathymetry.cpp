@@ -213,12 +213,33 @@ float AOceanBathymetry::GetTerrainHeight(const FVector2f& PositionM) const
 	}
 
 	// Signed distance-like coordinate across the coast: negative inland, positive at sea.
-	const float Across = Delta.Size() - (IslandRadius + CoastlineVariation * Coast);
+	// Two octaves of noise add coves and small points to the large bays of the harmonics.
+	const FVector2f Seeded = PositionM + FVector2f(Seed * 37.1f, Seed * 11.3f);
+	const float Across = Delta.Size() - (IslandRadius + CoastlineVariation * Coast)
+		+ 18.f * (OceanValueNoise(Seeded / 80.f) - 0.5f) + 5.f * (OceanValueNoise(Seeded / 22.f) - 0.5f);
 	if (Across < 0.f)
 	{
-		// Rises with LandSlope at the waterline, levels off at MaxLandHeight.
-		const float Height = FMath::Max(MaxLandHeight, 0.01f);
-		return Height * (1.f - FMath::Exp(Across * LandSlope / Height));
+		const float Inland = -Across;
+		// Beach: rises with LandSlope at the waterline and levels off on the berm.
+		const float Berm = FMath::Max(BermHeight, 0.1f);
+		const float Beach = Berm * (1.f - FMath::Exp(-Inland * LandSlope / Berm));
+		// Wooded hills behind beaches of varying width.
+		const float BeachWidth = 15.f + 35.f * OceanValueNoise(Seeded / 90.f + 5.3f);
+		const float HillMask = FMath::SmoothStep(BeachWidth, BeachWidth + 70.f, Inland);
+		const float Hills = HillMask * (HillHeight * (0.45f + 0.55f * OceanValueNoise(Seeded / 110.f + 1.7f))
+			+ 7.f * (OceanValueNoise(Seeded / 35.f + 9.2f) - 0.5f) + 3.f * (OceanValueNoise(Seeded / 14.f + 4.4f) - 0.5f));
+		// Rocky points: the ground rises steeply right from the water (~45 degrees, shaded as rock by slope).
+		const float Rock = Rockiness * FMath::SmoothStep(0.45f, 0.7f, OceanValueNoise(Seeded / 70.f + 3.1f));
+		const float Cliff = Rock * 8.f * FMath::SmoothStep(0.f, 8.f, Inland);
+		const float Ground = Beach + Hills + Cliff;
+		// Forest canopy: 4-8 m of lumpy tree tops above the ground behind the beach, so the island has the
+		// bumpy silhouette of a wooded cay instead of a grassy hill. Thinner on the rocky points.
+		// Uses the same vegetation line as OceanTerrainSurface (Shaders/Ocean.ush), minus its fine noise.
+		// A gradual edge (squared ramp over ~4 m of ground height): a sudden 6 m step reads as a dark cliff.
+		const float ForestRamp = FMath::SmoothStep(2.f, 6.f, Ground + 1.5f * (OceanValueNoise(PositionM / 40.f) - 0.5f));
+		const float Forest = ForestRamp * ForestRamp * (1.f - 0.7f * Rock);
+		const float Canopy = Forest * (4.f + 3.f * OceanValueNoise(Seeded / 12.f + 2.2f) + 1.5f * OceanValueNoise(Seeded / 5.f + 8.1f));
+		return Ground + Canopy;
 	}
 
 	// Drops with BeachSlope at the waterline, levels off at ShelfDepth, then the reef drop-off.

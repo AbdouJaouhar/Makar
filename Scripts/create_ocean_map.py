@@ -17,14 +17,18 @@ SEABED_MATERIAL_PATH = "/Game/Ocean/M_Seabed"
 ISLAND_CENTRE_M = (-500.0, 0.0)
 ISLAND_RADIUS_M = 250.0
 
+# Swell lapping on the beaches of the lagoon (ocean settings and the wet sand band of M_Seabed).
+SHORE_SWELL_HEIGHT_M = 0.4
+
 # Post-process overrides (FPostProcessSettings property names), tuned on screenshots of the beach from the sea:
 # without them the sand clips to ~236/230/218; highlight compression alone also darkened the water by half,
-# lifting the shadows and +0.3 EV brings the turquoise back (sand ~216/206/185, water ~0/112/127).
+# +0.3 EV brings the turquoise back. A little extra saturation for the vivid tropical light.
 POST_PROCESS = {
     "local_exposure_highlight_contrast_scale": 0.7,
-    "local_exposure_shadow_contrast_scale": 0.7,
+    "local_exposure_shadow_contrast_scale": 0.8,
     "auto_exposure_bias": 0.3,
     "bloom_intensity": 0.5,
+    "color_saturation": unreal.Vector4(1.12, 1.12, 1.12, 1.12),
 }
 
 actors = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
@@ -77,47 +81,43 @@ def seabed_material():
     # Linear albedo ~0.55: bright coral sand, but not so white that the sunlit beach blows out.
     sand.set_editor_property("default_value", unreal.LinearColor(0.6, 0.53, 0.4, 1.0))
 
+    material.set_editor_property("tangent_space_normal", False)  # the surface function returns world normals
+
     world_pos = expression(unreal.MaterialExpressionWorldPosition, -1000, 300)
     time = expression(unreal.MaterialExpressionTime, -1000, 400)
+    vertex_normal = expression(unreal.MaterialExpressionVertexNormalWS, -1000, 200)
 
-    # Wet sand (OceanWetSand in Shaders/Ocean.ush): below the highest reach of the swash the sand is darker
-    # and glossy. ShoreSwellHeight must match the ocean's (FOceanSettings::ShoreSwellHeight).
-    swell_height = scalar("ShoreSwellHeight", 0.8, -1000, -200)
-    wet = expression(unreal.MaterialExpressionCustom, -700, -150)
-    wet.set_editor_property("description", "Wet Sand")
-    wet.set_editor_property("code", "return OceanWetSand(WorldPos, Time, SwellHeight);")
-    wet.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT1)
-    wet.set_editor_property("include_file_paths", ["/Makar/Ocean.ush"])
-    wet_inputs = []
-    for name in ("WorldPos", "Time", "SwellHeight"):
+    # Sand, wet sand, rock, vegetation, coral and seagrass (OceanTerrainSurface in Shaders/Ocean.ush).
+    # ShoreSwellHeight must match the ocean's (FOceanSettings::ShoreSwellHeight) for the wet band.
+    swell_height = scalar("ShoreSwellHeight", SHORE_SWELL_HEIGHT_M, -1000, -200)
+    surface = expression(unreal.MaterialExpressionCustom, -700, -100)
+    surface.set_editor_property("description", "Terrain Surface")
+    surface.set_editor_property(
+        "code", "return OceanTerrainSurface(WorldPos, VertexNormal, Time, SwellHeight, SandColor, Roughness, Normal);")
+    surface.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
+    surface.set_editor_property("include_file_paths", ["/Makar/Ocean.ush"])
+    surface_inputs = []
+    for name in ("WorldPos", "VertexNormal", "Time", "SwellHeight", "SandColor"):
         custom_input = unreal.CustomInput()
         custom_input.set_editor_property("input_name", name)
-        wet_inputs.append(custom_input)
-    wet.set_editor_property("inputs", wet_inputs)
-    connect(world_pos, wet, "WorldPos")
-    connect(time, wet, "Time")
-    connect(swell_height, wet, "SwellHeight")
-
-    wet_darkening = scalar("WetSandDarkening", 0.55, -700, -50)
-    one = expression(unreal.MaterialExpressionConstant, -700, 20)
-    one.set_editor_property("r", 1.0)
-    darkening = expression(unreal.MaterialExpressionLinearInterpolate, -450, -100)
-    connect(one, darkening, "A")
-    connect(wet_darkening, darkening, "B")
-    connect(wet, darkening, "Alpha")
-    base = expression(unreal.MaterialExpressionMultiply, -250, -50)
-    connect(sand, base, "A")
-    connect(darkening, base, "B")
-    MEL.connect_material_property(base, "", unreal.MaterialProperty.MP_BASE_COLOR)
-
-    dry_roughness = expression(unreal.MaterialExpressionConstant, -700, 120)
-    dry_roughness.set_editor_property("r", 0.95)
-    wet_roughness = scalar("WetSandRoughness", 0.3, -700, 200)
-    roughness = expression(unreal.MaterialExpressionLinearInterpolate, -450, 150)
-    connect(dry_roughness, roughness, "A")
-    connect(wet_roughness, roughness, "B")
-    connect(wet, roughness, "Alpha")
-    MEL.connect_material_property(roughness, "", unreal.MaterialProperty.MP_ROUGHNESS)
+        surface_inputs.append(custom_input)
+    surface.set_editor_property("inputs", surface_inputs)
+    outputs = []
+    for name, kind in (("Roughness", unreal.CustomMaterialOutputType.CMOT_FLOAT1),
+                       ("Normal", unreal.CustomMaterialOutputType.CMOT_FLOAT3)):
+        custom_output = unreal.CustomOutput()
+        custom_output.set_editor_property("output_name", name)
+        custom_output.set_editor_property("output_type", kind)
+        outputs.append(custom_output)
+    surface.set_editor_property("additional_outputs", outputs)
+    connect(world_pos, surface, "WorldPos")
+    connect(vertex_normal, surface, "VertexNormal")
+    connect(time, surface, "Time")
+    connect(swell_height, surface, "SwellHeight")
+    connect(sand, surface, "SandColor")
+    MEL.connect_material_property(surface, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    MEL.connect_material_property(surface, "Roughness", unreal.MaterialProperty.MP_ROUGHNESS)
+    MEL.connect_material_property(surface, "Normal", unreal.MaterialProperty.MP_NORMAL)
 
     # Caustics (Shaders/Ocean.ush): light focused by the waves, added on top of the sunlit sand.
     cell_size = scalar("CausticCellSize", 1.2, -1000, 480)
@@ -144,7 +144,7 @@ def seabed_material():
     connect(caustics, scaled, "A")
     connect(strength, scaled, "B")
     tinted = expression(unreal.MaterialExpressionMultiply, -250, 400)
-    connect(sand, tinted, "A")
+    connect(surface, tinted, "A")  # caustics light whatever the floor is: sand, coral, seagrass
     connect(scaled, tinted, "B")
     MEL.connect_material_property(tinted, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
 
@@ -154,18 +154,20 @@ def seabed_material():
 
 
 def caribbean_sea_state(ocean):
-    """Trade winds over the open Atlantic: steady moderate breeze, long fetch, few whitecaps."""
+    """A sheltered lagoon on a fine day: light breeze, glassy water with small ripples, almost no whitecaps,
+    and a low swell lapping on the beaches."""
     settings = ocean.get_editor_property("settings")
-    settings.set_editor_property("wind_speed", 7.0)
+    settings.set_editor_property("wind_speed", 4.5)
     settings.set_editor_property("wind_direction", 200.0)
-    settings.set_editor_property("fetch", 300000.0)
-    settings.set_editor_property("swell", 0.35)
-    settings.set_editor_property("choppiness", 0.9)
-    # Scattered whitecaps (a few % of the surface at Beaufort 4) leaving streaks that last a few seconds.
-    # Tuned on the simulated foam map (FOceanFoamMap): 0.85 gives a few isolated whitecaps, 0.91 too many.
+    settings.set_editor_property("fetch", 40000.0)
+    settings.set_editor_property("swell", 0.3)
+    settings.set_editor_property("choppiness", 0.8)
+    # The surface barely compresses at this wind speed: whitecaps stay rare.
     settings.set_editor_property("foam_threshold", 0.87)
     settings.set_editor_property("foam_intensity", 1.5)
     settings.set_editor_property("foam_decay", 0.25)
+    settings.set_editor_property("shore_swell_height", SHORE_SWELL_HEIGHT_M)
+    settings.set_editor_property("shore_swell_period", 7.0)
     settings.set_editor_property("resolution", 256)
     ocean.set_editor_property("settings", settings)
 
@@ -186,7 +188,9 @@ def build():
     world.get_world_settings().set_editor_property("default_game_mode", unreal.GameModeBase.static_class())
 
     # --- Sky: high tropical sun in a physical atmosphere, real-time sky light, scattered cumulus ---
-    sun = spawn(unreal.DirectionalLight, (0.0, 0.0, 1000.0), (0.0, -50.0, 35.0), "Sun")
+    # The sun is behind the start, facing the island (light travelling towards -X): the island and the lagoon
+    # are front-lit like in holiday photos, instead of showing their shaded sides against the light.
+    sun = spawn(unreal.DirectionalLight, (0.0, 0.0, 1000.0), (0.0, -50.0, 215.0), "Sun")
     sun_light = sun.get_component_by_class(unreal.DirectionalLightComponent)
     sun_light.set_mobility(unreal.ComponentMobility.MOVABLE)
     sun_light.set_editor_property("atmosphere_sun_light", True)
@@ -215,7 +219,7 @@ def build():
 
     # Clean tropical air: only a light haze on the horizon.
     fog = spawn(unreal.ExponentialHeightFog, label="Fog")
-    fog.get_component_by_class(unreal.ExponentialHeightFogComponent).set_editor_property("fog_density", 0.002)
+    fog.get_component_by_class(unreal.ExponentialHeightFogComponent).set_editor_property("fog_density", 0.001)
 
     # --- Ocean: its Z is the sea level ---
     ocean = spawn(load_class("/Script/Makar.OceanActor"), (0.0, 0.0, 0.0), label="Ocean")
@@ -227,6 +231,7 @@ def build():
     island = spawn(load_class("/Script/Makar.OceanBathymetry"), (ISLAND_CENTRE_M[0] * 100.0, ISLAND_CENTRE_M[1] * 100.0, 0.0),
                    label="Island")
     island.set_editor_property("island_radius", ISLAND_RADIUS_M)
+    island.set_editor_property("rockiness", 0.85)  # dark rocky points between the beaches
 
     # --- Camera start: on the shelf a few metres above the water, facing the beach; the trade-wind
     # waves roll in from behind towards the island ---

@@ -1,4 +1,4 @@
-#include "Ocean/OceanShoreData.h"
+﻿#include "Ocean/OceanShoreData.h"
 
 namespace
 {
@@ -19,7 +19,7 @@ namespace
 		return float(ShoreHash(uint32(X) * 1597334677u ^ ShoreHash(uint32(Y)))) / 4294967295.f;
 	}
 
-	float ValueNoise(const FVector2f& P)
+	float ValueNoiseImpl(const FVector2f& P)
 	{
 		const float FloorX = FMath::FloorToFloat(P.X);
 		const float FloorY = FMath::FloorToFloat(P.Y);
@@ -41,6 +41,11 @@ namespace
 	}
 }
 
+float OceanValueNoise(const FVector2f& P)
+{
+	return ValueNoiseImpl(P);
+}
+
 FOceanShoreWaveSample OceanShoreWave(const FOceanShoreData& Shore, const FVector2f& PositionM, float TimeS, const FOceanShoreSwell& Swell)
 {
 	FOceanShoreWaveSample Out;
@@ -57,7 +62,7 @@ FOceanShoreWaveSample OceanShoreWave(const FOceanShoreData& Shore, const FVector
 	}
 
 	// Gaps along the wavefronts, drifting slowly (real sets never break as one straight wall).
-	const float Gaps = SmoothStep01(0.35f, 0.6f, ValueNoise(PositionM / 60.f + FVector2f(0.01f, 0.007f) * TimeS));
+	const float Gaps = SmoothStep01(0.35f, 0.6f, ValueNoiseImpl(PositionM / 60.f + FVector2f(0.01f, 0.007f) * TimeS));
 
 	// Swash: after each bore reaches the beach, a thin sheet of water runs up the sand and drains back.
 	// The sea surface itself rises over the beach (where it is lower than the water, the sand hides it),

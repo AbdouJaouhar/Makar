@@ -54,12 +54,21 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0", Units = "Meters"))
 	float CoastlineVariation = 45.f;
 
-	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0", Units = "Meters"))
-	float MaxLandHeight = 8.f;
+	/** Height of the beach berm, the sand bank the swash builds above the waterline. */
+	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0.1", Units = "Meters"))
+	float BermHeight = 1.8f;
 
 	/** Rise per metre inland at the waterline. */
 	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0.001"))
-	float LandSlope = 0.06f;
+	float LandSlope = 0.08f;
+
+	/** Height of the wooded hills inland. */
+	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0", Units = "Meters"))
+	float HillHeight = 28.f;
+
+	/** 0 = sandy coast all around, 1 = mostly rocky points. */
+	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0", ClampMax = "1"))
+	float Rockiness = 0.5f;
 
 	/** Drop per metre offshore at the waterline (0.05 = 1:20, a gentle sandy beach). */
 	UPROPERTY(EditAnywhere, Category = "Sea floor", meta = (ClampMin = "0.001"))
@@ -89,7 +98,7 @@ protected:
 
 	/** Samples per side (power of two keeps the distance transform exact). */
 	UPROPERTY(EditAnywhere, Category = "Grid", meta = (ClampMin = "64", ClampMax = "1024"))
-	int32 GridResolution = 512;
+	int32 GridResolution = 1024;
 
 	UPROPERTY(EditAnywhere, Category = "Rendering")
 	TSoftObjectPtr<UMaterialInterface> TerrainMaterial;

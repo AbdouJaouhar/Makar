@@ -15,5 +15,11 @@ public class Makar : ModuleRules
 			"EnhancedInput",
 			"ProceduralMeshComponent" // ocean surface mesh
 		});
+
+		if (Target.bBuildEditor)
+		{
+			// The ocean follows the level editor's viewport camera when previewed in the editor.
+			PrivateDependencyModuleNames.Add("UnrealEd");
+		}
 	}
 }

@@ -40,6 +40,9 @@ inline float OceanDepthAttenuation(float DepthM, float SignificantHeightM)
 	return FMath::Clamp(0.78f * DepthM / FMath::Max(SignificantHeightM, 0.01f), 0.f, 1.f);
 }
 
+/** Smooth lattice value noise in [0, 1], one lattice cell per unit. Identical to OceanValueNoise in Shaders/Ocean.ush. */
+MAKAR_API float OceanValueNoise(const FVector2f& P);
+
 /** Highest point of the beach the swash can reach is well below this, m above sea level. */
 constexpr float OceanSwashMaxHeightM = 1.5f;
 
