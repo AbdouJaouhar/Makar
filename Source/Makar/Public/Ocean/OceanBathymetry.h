@@ -47,6 +47,13 @@ public:
 	/** Terrain height above sea level (m) from the analytic island shape: ground plus understory. */
 	float GetTerrainHeight(const FVector2f& PositionM) const;
 
+	/** Ground height (without understory) under a world location, cm, for scripts placing cameras or props. */
+	UFUNCTION(BlueprintPure, Category = "Island")
+	float GetGroundHeightAt(const FVector& WorldLocation) const
+	{
+		return SampleTerrain(FVector2f(float(WorldLocation.X * 0.01), float(WorldLocation.Y * 0.01))).Ground * 100.f;
+	}
+
 	/** Ground, understory, rockiness and distance inland, for placing vegetation and rocks. */
 	FOceanTerrainSample SampleTerrain(const FVector2f& PositionM) const;
 

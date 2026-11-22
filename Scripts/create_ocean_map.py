@@ -1,4 +1,4 @@
-"""
+﻿"""
 Builds /Game/Maps/Ocean: a Caribbean sea showcase (a sandy island, clear water over a white sand shelf,
 a reef drop-off, tropical sun, trade-wind sea state) explored with a free-flying camera.
 
@@ -6,6 +6,8 @@ Run after create_ocean_material.py, from the editor (Tools > Execute Python Scri
     UnrealEditor-Cmd.exe Makar.uproject -run=pythonscript -script=Scripts/create_ocean_map.py
 Running it again rebuilds the level from scratch.
 """
+
+import math
 
 import unreal
 
@@ -58,6 +60,15 @@ def spawn(cls, location=(0.0, 0.0, 0.0), rotation=(0.0, 0.0, 0.0), label=None):
     return actor
 
 
+SUN_ROTATION = (0.0, -50.0, 215.0)  # roll, pitch, yaw of the directional light
+
+
+def sun_direction():
+    """Unit vector towards the sun (the light travels along the actor's forward axis)."""
+    _, pitch, yaw = (math.radians(a) for a in SUN_ROTATION)
+    return (-math.cos(pitch) * math.cos(yaw), -math.cos(pitch) * math.sin(yaw), -math.sin(pitch))
+
+
 def seabed_material():
     """Bright, slightly warm coral sand: it is what turns the clear water turquoise."""
     if unreal.EditorAssetLibrary.does_asset_exist(SEABED_MATERIAL_PATH):
@@ -83,8 +94,9 @@ def seabed_material():
 
     sand = expression(unreal.MaterialExpressionVectorParameter, -400, 0)
     sand.set_editor_property("parameter_name", "SandColor")
-    # Linear albedo ~0.55: bright coral sand, but not so white that the sunlit beach blows out.
-    sand.set_editor_property("default_value", unreal.LinearColor(0.6, 0.53, 0.4, 1.0))
+    # Mean linear albedo of the grain mix (OceanSandGrains): white-cream carbonate sand. Local exposure keeps
+    # the sunlit beach from blowing out.
+    sand.set_editor_property("default_value", unreal.LinearColor(0.66, 0.61, 0.51, 1.0))
 
     material.set_editor_property("tangent_space_normal", False)  # the surface function returns world normals
 
@@ -98,18 +110,19 @@ def seabed_material():
     surface = expression(unreal.MaterialExpressionCustom, -700, -100)
     surface.set_editor_property("description", "Terrain Surface")
     surface.set_editor_property(
-        "code", "return OceanTerrainSurface(WorldPos, VertexNormal, Time, SwellHeight, SandColor, Roughness, Normal);")
+        "code", "return OceanTerrainSurface(WorldPos, VertexNormal, Time, SwellHeight, SandColor, ToSun, ToCamera, Roughness, Normal, Glint);")
     surface.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
     surface.set_editor_property("include_file_paths", ["/Makar/Ocean.ush"])
     surface_inputs = []
-    for name in ("WorldPos", "VertexNormal", "Time", "SwellHeight", "SandColor"):
+    for name in ("WorldPos", "VertexNormal", "Time", "SwellHeight", "SandColor", "ToSun", "ToCamera"):
         custom_input = unreal.CustomInput()
         custom_input.set_editor_property("input_name", name)
         surface_inputs.append(custom_input)
     surface.set_editor_property("inputs", surface_inputs)
     outputs = []
     for name, kind in (("Roughness", unreal.CustomMaterialOutputType.CMOT_FLOAT1),
-                       ("Normal", unreal.CustomMaterialOutputType.CMOT_FLOAT3)):
+                       ("Normal", unreal.CustomMaterialOutputType.CMOT_FLOAT3),
+                       ("Glint", unreal.CustomMaterialOutputType.CMOT_FLOAT1)):
         custom_output = unreal.CustomOutput()
         custom_output.set_editor_property("output_name", name)
         custom_output.set_editor_property("output_type", kind)
@@ -120,6 +133,12 @@ def seabed_material():
     connect(time, surface, "Time")
     connect(swell_height, surface, "SwellHeight")
     connect(sand, surface, "SandColor")
+    # Sand sparkles need the sun and view directions.
+    to_sun = expression(unreal.MaterialExpressionVectorParameter, -1000, 600)
+    to_sun.set_editor_property("parameter_name", "ToSun")
+    to_sun.set_editor_property("default_value", unreal.LinearColor(*sun_direction(), 0.0))
+    connect(to_sun, surface, "ToSun")
+    connect(expression(unreal.MaterialExpressionCameraVectorWS, -1000, 700), surface, "ToCamera")
     MEL.connect_material_property(surface, "", unreal.MaterialProperty.MP_BASE_COLOR)
     MEL.connect_material_property(surface, "Roughness", unreal.MaterialProperty.MP_ROUGHNESS)
     MEL.connect_material_property(surface, "Normal", unreal.MaterialProperty.MP_NORMAL)
@@ -151,7 +170,15 @@ def seabed_material():
     tinted = expression(unreal.MaterialExpressionMultiply, -250, 400)
     connect(surface, tinted, "A")  # caustics light whatever the floor is: sand, coral, seagrass
     connect(scaled, tinted, "B")
-    MEL.connect_material_property(tinted, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
+    # Sparkles, in the same emissive units: sun radiance ~ sun lux / pi, warm sun colour.
+    glint_strength = scalar("GlintStrength", 60.0, -450, 650)
+    glint = expression(unreal.MaterialExpressionMultiply, -250, 600)
+    MEL.connect_material_expressions(surface, "Glint", glint, "A")
+    connect(glint_strength, glint, "B")
+    emissive = expression(unreal.MaterialExpressionAdd, -100, 500)
+    connect(tinted, emissive, "A")
+    connect(glint, emissive, "B")
+    MEL.connect_material_property(emissive, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
 
     MEL.recompile_material(material)
     unreal.EditorAssetLibrary.save_asset(SEABED_MATERIAL_PATH)
@@ -195,7 +222,7 @@ def build():
     # --- Sky: high tropical sun in a physical atmosphere, real-time sky light, scattered cumulus ---
     # The sun is behind the start, facing the island (light travelling towards -X): the island and the lagoon
     # are front-lit like in holiday photos, instead of showing their shaded sides against the light.
-    sun = spawn(unreal.DirectionalLight, (0.0, 0.0, 1000.0), (0.0, -50.0, 215.0), "Sun")
+    sun = spawn(unreal.DirectionalLight, (0.0, 0.0, 1000.0), SUN_ROTATION, "Sun")
     sun_light = sun.get_component_by_class(unreal.DirectionalLightComponent)
     sun_light.set_mobility(unreal.ComponentMobility.MOVABLE)
     sun_light.set_editor_property("atmosphere_sun_light", True)
