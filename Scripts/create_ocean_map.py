@@ -29,6 +29,9 @@ SHORE_SWELL_HEIGHT_M = 0.4
 SHORE_SWELL_PERIOD_S = 7.0
 SHORE_SWELL_MAX_DEPTH_M = 12.0
 
+# Resolution of the finest ocean cascade, simulated on the GPU (FOceanSettings::GpuDetailResolution).
+GPU_DETAIL_RESOLUTION = 1024
+
 # Post-process overrides (FPostProcessSettings property names), tuned on screenshots of the beach from the sea:
 # without them the sand clips to ~236/230/218; highlight compression alone also darkened the water by half,
 # +0.3 EV brings the turquoise back. A little extra saturation for the vivid tropical light.
@@ -235,6 +238,8 @@ def caribbean_sea_state(ocean):
     settings.set_editor_property("shore_swell_period", SHORE_SWELL_PERIOD_S)
     settings.set_editor_property("shore_swell_max_depth", SHORE_SWELL_MAX_DEPTH_M)
     settings.set_editor_property("resolution", 256)
+    # The finest cascade (10 m) on the GPU: ripples down to ~1 cm, sharp caustics (0 = on the CPU at 256).
+    settings.set_editor_property("gpu_detail_resolution", GPU_DETAIL_RESOLUTION)
     ocean.set_editor_property("settings", settings)
 
 

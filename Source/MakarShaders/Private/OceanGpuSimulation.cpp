@@ -95,6 +95,11 @@ public:
 };
 IMPLEMENT_GLOBAL_SHADER(FOceanAssembleCS, "/Makar/OceanFFT.usf", "AssembleCS", SF_Compute);
 
+namespace
+{
+	void AddOceanCascadePasses(FRDGBuilder& GraphBuilder, const FOceanGpuCascadeStep& Step);
+}
+
 void OceanGpuSimulateCascade(FRHICommandListImmediate& RHICmdList, const FOceanGpuCascadeStep& Step)
 {
 	const int32 N = Step.Resolution;
@@ -103,7 +108,59 @@ void OceanGpuSimulateCascade(FRHICommandListImmediate& RHICmdList, const FOceanG
 		return;
 	}
 
+	// GPU time of the whole step, from two timestamps, averaged and logged every few seconds (render thread only).
+	static FRenderQueryPoolRHIRef QueryPool;
+	static TArray<TPair<FRHIPooledRenderQuery, FRHIPooledRenderQuery>> PendingQueries;
+	static double TotalMs = 0.0;
+	static int32 TimedSteps = 0;
+	if (!QueryPool.IsValid())
+	{
+		QueryPool = RHICreateRenderQueryPool(RQT_AbsoluteTime);
+	}
+	FRHIPooledRenderQuery Begin = QueryPool->AllocateQuery();
+	RHICmdList.EndRenderQuery(Begin.GetQuery());
+
 	FRDGBuilder GraphBuilder(RHICmdList);
+	AddOceanCascadePasses(GraphBuilder, Step);
+	GraphBuilder.Execute();
+
+	FRHIPooledRenderQuery End = QueryPool->AllocateQuery();
+	RHICmdList.EndRenderQuery(End.GetQuery());
+	PendingQueries.Emplace(MoveTemp(Begin), MoveTemp(End));
+	for (int32 Index = 0; Index < PendingQueries.Num();)
+	{
+		uint64 BeginUs = 0, EndUs = 0;
+		if (RHIGetRenderQueryResult(PendingQueries[Index].Key.GetQuery(), BeginUs, false)
+			&& RHIGetRenderQueryResult(PendingQueries[Index].Value.GetQuery(), EndUs, false))
+		{
+			TotalMs += double(EndUs - BeginUs) / 1000.0;
+			++TimedSteps;
+			PendingQueries.RemoveAt(Index);
+		}
+		else
+		{
+			++Index;
+		}
+	}
+	if (PendingQueries.Num() > 16)
+	{
+		PendingQueries.RemoveAt(0); // never resolved: drop rather than grow
+	}
+	if (TimedSteps >= 120)
+	{
+		UE_LOG(LogTemp, Display, TEXT("OceanGpuCascade: %dx%d, GPU %.3f ms per step (%d steps)"), N, N, TotalMs / TimedSteps, TimedSteps);
+		TotalMs = 0.0;
+		TimedSteps = 0;
+	}
+}
+
+namespace
+{
+void AddOceanCascadePasses(FRDGBuilder& GraphBuilder, const FOceanGpuCascadeStep& Step)
+{
+	// Named in ProfileGPU. The scope must close before GraphBuilder.Execute(), hence this separate function.
+	const int32 N = Step.Resolution;
+	RDG_EVENT_SCOPE(GraphBuilder, "OceanGpuCascade %dx%d", N, N);
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 
 	FRDGTextureRef Spectrum = GraphBuilder.RegisterExternalTexture(CreateRenderTarget(Step.Spectrum, TEXT("OceanGpu.Spectrum")));
@@ -172,6 +229,5 @@ void OceanGpuSimulateCascade(FRHICommandListImmediate& RHICmdList, const FOceanG
 		}
 		GraphBuilder.SetTextureAccessFinal(Output, ERHIAccess::SRVMask);
 	}
-
-	GraphBuilder.Execute();
+}
 }
