@@ -30,6 +30,7 @@ AOceanIslandFlora::AOceanIslandFlora()
 	BarkMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_Bark.M_Bark")));
 	FoliageMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_Foliage.M_Foliage")));
 	PalmFrondMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_PalmFrond.M_PalmFrond")));
+	PalmBarkMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_PalmBark.M_PalmBark")));
 	RockMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_Rock.M_Rock")));
 
 	auto Infinigen = [](TArray<TSoftObjectPtr<UStaticMesh>>& Out, const TCHAR* Category, const TCHAR* Factory, int32 Count)
@@ -116,13 +117,18 @@ void AOceanIslandFlora::Build()
 	{
 		PalmFrond = Foliage; // no frond textures yet (Scripts/create_flora_materials.py)
 	}
+	UMaterialInterface* PalmBark = PalmBarkMaterial.LoadSynchronous();
+	if (!PalmBark)
+	{
+		PalmBark = Bark;
+	}
 	UMaterialInterface* Stone = RockMaterial.LoadSynchronous();
 
 	// --- Meshes: a few variants of each, generated from the seed ---
 	TArray<UHierarchicalInstancedStaticMeshComponent*> Palms, Trees, Shrubs, Rocks;
 	for (int32 Variant = 0; Variant < NumPalmVariants; ++Variant)
 	{
-		UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeCoconutPalm(Seed * 100 + Variant), { Bark, PalmFrond });
+		UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeCoconutPalm(Seed * 100 + Variant), { PalmBark, PalmFrond, Bark });
 		Meshes.Add(Mesh);
 		Palms.Add(AddInstancer(Mesh, 3000.f));
 	}
@@ -203,21 +209,34 @@ void AOceanIslandFlora::Build()
 		return FVector(Position.X * 100.0, Position.Y * 100.0, HeightM * 100.0 - SinkCm);
 	};
 
-	// Coconut palms: the back of the beaches and the forest edge, in loose groves, leaning seawards.
-	Scatter(8.f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
+	// Coconut palms grow along the vegetation line, where the beach meets the coastal forest (Understory: the
+	// forest's bush mass, 0 on open sand): a band from the forest edge a few metres into the forest, plus a few
+	// on the last metres of sand in front of it, leaning out over the beach towards the light. None on open sand.
+	Scatter(5.f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
 	{
-		if (Terrain.Inland < 4.f || Terrain.Inland > 45.f || Terrain.Ground < 0.5f || Terrain.Rock > 0.3f)
-		{
-			return;
-		}
-		const float Grove = Smooth(0.3f, 0.7f, OceanValueNoise(Position / 60.f + 13.f));
-		const float Probability = 0.55f * PalmDensity * Grove * (1.f - Smooth(30.f, 45.f, Terrain.Inland));
-		if (Random.FRand() >= Probability)
+		if (Terrain.Ground < 0.5f || Terrain.Rock > 0.3f)
 		{
 			return;
 		}
 		const FVector2f Seaward = (Position - IslandCenter).GetSafeNormal();
-		const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Seaward.Y, Seaward.X)) + Random.FRandRange(-40.f, 40.f);
+		float Edge = 0.f;
+		if (Terrain.Understory > 0.02f)
+		{
+			// Inside the forest: only its outer fringe (thin understory), most at the very edge.
+			Edge = 1.f - Smooth(0.4f, 1.6f, Terrain.Understory);
+		}
+		else
+		{
+			// On the sand: only right in front of the forest (forest 5 m inland).
+			const FOceanTerrainSample Behind = Island->SampleTerrain(Position - Seaward * 5.f);
+			Edge = 0.45f * Smooth(0.1f, 0.6f, Behind.Understory);
+		}
+		const float Grove = Smooth(0.25f, 0.6f, OceanValueNoise(Position / 45.f + 13.f));
+		if (Random.FRand() >= 0.8f * PalmDensity * Edge * Grove)
+		{
+			return;
+		}
+		const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Seaward.Y, Seaward.X)) + Random.FRandRange(-35.f, 35.f);
 		PalmTransforms[Random.RandRange(0, NumPalmVariants - 1)].Add(
 			FTransform(FRotator(0.f, Yaw, 0.f), Ground(Position, Terrain.Ground, 0.f), FVector(Random.FRandRange(0.85f, 1.15f))));
 	});

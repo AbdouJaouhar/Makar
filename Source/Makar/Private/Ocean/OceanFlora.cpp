@@ -19,6 +19,8 @@ namespace
 {
 	constexpr int32 SectionBark = 0;
 	constexpr int32 SectionFoliage = 1;
+	// Palms only: their foliage material is a textured leaf card, so the coconuts get a vertex-coloured section.
+	constexpr int32 SectionNuts = 2;
 
 	// --- 3D value noise -------------------------------------------------------------------------------------
 
@@ -150,9 +152,60 @@ namespace
 		}
 	}
 
+	/**
+	 * A continuous tube along a curve (Curve(T), Radius(T), T in 0-1), for a procedural bark material. Consecutive
+	 * rings share their vertices and a frame carried along the curve, so the tube bends without cracks (separate
+	 * segments, each ring square to its own segment, open slits on the outside of a bend). U goes once around (0-1,
+	 * with a duplicated seam column so it does not wrap back), V is the distance along the curve in metres.
+	 */
+	template <typename CurveType, typename RadiusType>
+	void AddBarkTube(FOceanMeshData& Data, int32 Section, const CurveType& Curve, const RadiusType& Radius, int32 Rings, int32 Sides,
+		const FLinearColor& Color)
+	{
+		const int32 First = Data.Vertices.Num();
+		const int32 Row = Sides + 1;
+		FVector3f SideX = FVector3f::ZeroVector;
+		FVector3f Previous = Curve(0.f);
+		float Distance = 0.f;
+		for (int32 Ring = 0; Ring <= Rings; ++Ring)
+		{
+			const float T = float(Ring) / Rings;
+			const FVector3f Point = Curve(T);
+			Distance += FVector3f::Distance(Point, Previous);
+			Previous = Point;
+			const FVector3f Tangent = (Curve(FMath::Min(T + 0.01f, 1.f)) - Curve(FMath::Max(T - 0.01f, 0.f))).GetSafeNormal();
+			if (Ring == 0)
+			{
+				const FVector3f Helper = FMath::Abs(Tangent.Z) < 0.9f ? FVector3f::UpVector : FVector3f::ForwardVector;
+				SideX = FVector3f::CrossProduct(Tangent, Helper).GetSafeNormal();
+			}
+			else
+			{
+				SideX = (SideX - Tangent * FVector3f::DotProduct(SideX, Tangent)).GetSafeNormal(); // carried along the curve
+			}
+			const FVector3f SideY = FVector3f::CrossProduct(Tangent, SideX);
+			const float R = Radius(T);
+			for (int32 Side = 0; Side <= Sides; ++Side)
+			{
+				const float Angle = 2.f * UE_PI * Side / Sides;
+				const FVector3f Out = SideX * FMath::Cos(Angle) + SideY * FMath::Sin(Angle);
+				Data.AddVertex(Point + Out * R, Out, FVector2f(float(Side) / Sides, Distance * 0.01f), Color);
+			}
+			if (Ring > 0)
+			{
+				const int32 Below = First + (Ring - 1) * Row, Above = First + Ring * Row;
+				for (int32 Side = 0; Side < Sides; ++Side)
+				{
+					Data.AddTriangle(Section, Below + Side, Above + Side, Below + Side + 1);
+					Data.AddTriangle(Section, Below + Side + 1, Above + Side, Above + Side + 1);
+				}
+			}
+		}
+	}
+
 	/** A lumpy ball of leaves, flattened underneath: the leaf mass at a branch tip, seen from a distance. */
 	void AddLeafCluster(FOceanMeshData& Data, const FVector3f& Center, float Radius, FRandomStream& Random,
-		const FLinearColor& Green, const FLinearColor& Accent, float AccentAmount)
+		const FLinearColor& Green, const FLinearColor& Accent, float AccentAmount, int32 Section = SectionFoliage)
 	{
 		static TArray<FVector3f> Sphere;
 		static TArray<int32> SphereTriangles;
@@ -175,7 +228,7 @@ namespace
 		}
 		for (int32 I = 0; I < SphereTriangles.Num(); I += 3)
 		{
-			Data.AddTriangle(SectionFoliage, First + SphereTriangles[I], First + SphereTriangles[I + 2], First + SphereTriangles[I + 1]);
+			Data.AddTriangle(Section, First + SphereTriangles[I], First + SphereTriangles[I + 2], First + SphereTriangles[I + 1]);
 		}
 	}
 
@@ -319,27 +372,22 @@ namespace OceanFlora
 	FOceanMeshData MakeCoconutPalm(int32 Seed)
 	{
 		FRandomStream Random(Seed);
-		FOceanMeshData Data(2);
+		FOceanMeshData Data(3); // bark, frond cards, coconuts
 
 		// Trunk: leans (towards +X; instances are rotated to lean seawards) then curves back up, slimmer at the top,
 		// with the ring scars of fallen fronds.
 		const float Height = Random.FRandRange(750.f, 1150.f);
 		const float Lean = Random.FRandRange(0.12f, 0.4f);
-		const int32 Segments = 18;
 		auto TrunkPoint = [&](float T)
 		{
 			const float Out = Lean * Height * (1.f - (1.f - T) * (1.f - T)) * 0.8f;
 			return FVector3f(Out, 0.f, Height * T - 20.f); // base slightly sunk in the sand
 		};
+		// Bark: M_PalmBark draws the ring scars and fissures procedurally from the bark coordinates (V = metres along
+		// the trunk); the vertex colour stays neutral. Slimmer at the top, flared at the foot.
 		const FLinearColor TrunkColor(0.27f, 0.23f, 0.18f);
-		for (int32 Segment = 0; Segment < Segments; ++Segment)
-		{
-			const float T0 = float(Segment) / Segments, T1 = float(Segment + 1) / Segments;
-			const float Flare0 = 1.f + 0.6f * FMath::Exp(-T0 * 25.f), Flare1 = 1.f + 0.6f * FMath::Exp(-T1 * 25.f);
-			const float Ring = (Segment % 2 == 0) ? 0.85f : 1.f;
-			AddTube(Data, SectionBark, TrunkPoint(T0), TrunkPoint(T1), FMath::Lerp(22.f, 14.f, T0) * Flare0, FMath::Lerp(22.f, 14.f, T1) * Flare1,
-				8, TrunkColor * Ring, TrunkColor * (1.85f - Ring));
-		}
+		AddBarkTube(Data, SectionBark, TrunkPoint,
+			[](float T) { return FMath::Lerp(22.f, 14.f, T) * (1.f + 0.6f * FMath::Exp(-T * 25.f)); }, 24, 12, TrunkColor);
 		const FVector3f Top = TrunkPoint(1.f);
 
 		// Coconuts under the crown.
@@ -349,7 +397,7 @@ namespace OceanFlora
 			const float Angle = Random.FRandRange(0.f, 2.f * UE_PI);
 			const FVector3f Center = Top + FVector3f(FMath::Cos(Angle) * 18.f, FMath::Sin(Angle) * 18.f, -25.f);
 			FRandomStream NutRandom(Seed * 31 + Nut);
-			AddLeafCluster(Data, Center, 11.f, NutRandom, FLinearColor(0.16f, 0.15f, 0.04f), FLinearColor(0.25f, 0.17f, 0.06f), 0.6f);
+			AddLeafCluster(Data, Center, 11.f, NutRandom, FLinearColor(0.16f, 0.15f, 0.04f), FLinearColor(0.25f, 0.17f, 0.06f), 0.6f, SectionNuts);
 		}
 
 		// Fronds: an arching rachis with leaflets hanging on both sides; older, lower fronds droop and yellow.
@@ -358,11 +406,16 @@ namespace OceanFlora
 		{
 			const float Azimuth = 2.f * UE_PI * Frond / Fronds + Random.FRandRange(-0.2f, 0.2f);
 			const float Age = Random.FRand(); // 0 = young, upright; 1 = old, drooping
+			// The oldest fronds die back: brown, dry, hanging straight down along the trunk.
+			const bool bDead = Age > 0.88f;
 			const float Length = Random.FRandRange(380.f, 500.f);
-			const float StartPitch = FMath::DegreesToRadians(FMath::Lerp(55.f, -5.f, Age));
-			const float Droop = FMath::DegreesToRadians(FMath::Lerp(55.f, 95.f, Age));
+			const float StartPitch = FMath::DegreesToRadians(bDead ? -60.f : FMath::Lerp(55.f, -5.f, Age));
+			const float Droop = FMath::DegreesToRadians(bDead ? 40.f : FMath::Lerp(55.f, 95.f, Age));
 			const FVector3f Outward(FMath::Cos(Azimuth), FMath::Sin(Azimuth), 0.f);
-			const FLinearColor Green = FMath::Lerp(FLinearColor(0.09f, 0.2f, 0.03f), FLinearColor(0.24f, 0.25f, 0.07f), Age * Age);
+			// Vertex colour = tint over the rendered frond (M_PalmFrond divides by the young green (0.12, 0.2, 0.04)):
+			// young fronds a little yellower than the render, old ones yellow, dead ones straw-brown.
+			const FLinearColor Green = bDead ? FLinearColor(0.2f, 0.11f, 0.045f)
+				: FMath::Lerp(FLinearColor(0.17f, 0.18f, 0.03f), FLinearColor(0.22f, 0.18f, 0.035f), Age * Age);
 
 			// A leaf card along the arching rachis, textured with a frond rendered from Infinigen's coconut palm
 			// (Scripts/infinigen/render_frond_atlas.py: base at V = 1, tip at V = 0, the frond spanning

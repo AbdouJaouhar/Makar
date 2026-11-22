@@ -1,6 +1,6 @@
 """
 Builds the materials of the procedural flora and rocks (AOceanIslandFlora, Source/Makar/.../OceanFlora.cpp):
-/Game/Ocean/Flora/M_Bark, M_Foliage, M_Rock and M_PalmFrond (with its frond textures). Colours come from the
+/Game/Ocean/Flora/M_Bark, M_Foliage, M_Rock, M_PalmFrond (with its frond textures) and M_PalmBark. Colours come from the
 generated vertex colours.
 
 Run before create_ocean_map.py, from the editor (Tools > Execute Python Script...) or headless:
@@ -141,10 +141,11 @@ def palm_frond():
     normal.set_editor_property("texture", normal_texture)
     normal.set_editor_property("sampler_type", unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL)
 
-    # Slightly less saturated than the render, then tinted by age: vertex colour over the young frond green.
+    # Less saturated than the render (sunlit coconut fronds are a yellowish green), then tinted by age: vertex
+    # colour over the young frond green.
     desaturate = node(material, unreal.MaterialExpressionDesaturation, -650, 0)
     connect(color, desaturate, "", "RGB")  # first input, unnamed
-    connect(constant(material, 0.2, -800, 120), desaturate, "Fraction")
+    connect(constant(material, 0.5, -800, 120), desaturate, "Fraction")
     vertex = node(material, unreal.MaterialExpressionVertexColor, -900, 250)
     young = node(material, unreal.MaterialExpressionConstant3Vector, -900, 330)
     young.set_editor_property("constant", unreal.LinearColor(0.12, 0.2, 0.04, 1.0))
@@ -163,7 +164,7 @@ def palm_frond():
 
     # Light through the leaflets: a warmer, yellower green.
     transmit = node(material, unreal.MaterialExpressionConstant3Vector, -500, 450)
-    transmit.set_editor_property("constant", unreal.LinearColor(0.6, 0.8, 0.25, 1.0))
+    transmit.set_editor_property("constant", unreal.LinearColor(0.45, 0.55, 0.18, 1.0))
     transmitted = node(material, unreal.MaterialExpressionMultiply, -250, 400)
     connect(base, transmitted, "A")
     connect(transmit, transmitted, "B")
@@ -173,8 +174,70 @@ def palm_frond():
     save(material, "M_PalmFrond")
 
 
+PALM_BARK_CODE = """
+// Bark coordinates from OceanFlora's AddMappedTube: U once around the trunk (0-1), V metres up from the base.
+const float U = UV.x;
+const float V = UV.y;
+// Noise seamless around the trunk: the samples at U and at U - 1 blended by U agree at U = 0 and U = 1.
+#define PALM_BARK_NOISE(F, G, O) lerp(OceanValueNoise(float2(U * (F), V * (G)) + (O)), OceanValueNoise(float2((U - 1.0) * (F), V * (G)) + (O)), U)
+// Ring scars left by the fallen fronds, every ~9 cm but irregularly spaced (growth varies from year to year),
+// slightly wavy and of uneven depth around the trunk; worn almost smooth on the weathered lower trunk.
+const float C = V / 0.09 + 4.0 * OceanValueNoise(float2(3.3, V * 0.5)) + 0.3 * (PALM_BARK_NOISE(4.0, 0.6, float2(0.0, 0.0)) - 0.5);
+const float Ring = floor(C);
+const float Strength = (0.35 + 0.65 * PALM_BARK_NOISE(3.0, 0.0, float2(Ring * 1.37, Ring * 0.71))) * lerp(0.3, 1.0, smoothstep(0.3, 2.5, V));
+const float D = (frac(C) - 0.5) / 0.1;
+const float Scar = exp(-D * D) * Strength;
+// The scars fade to their average before they alias (fwidth: rings per pixel).
+const float Detail = saturate(2.0 - 5.0 * fwidth(C));
+// Fine vertical fissures, long and narrow, also faded with distance.
+const float Fissure = smoothstep(0.68, 0.9, PALM_BARK_NOISE(70.0, 1.3, float2(5.1, 1.7))) * saturate(2.0 - 5.0 * fwidth(U * 70.0));
+// Sun-bleached grey patches over browner bark.
+const float Weather = 0.65 * PALM_BARK_NOISE(5.0, 0.9, float2(9.3, 4.1)) + 0.35 * PALM_BARK_NOISE(17.0, 3.0, float2(2.7, 8.8));
+#undef PALM_BARK_NOISE
+float3 Bark = lerp(float3(0.22, 0.2, 0.17), float3(0.4, 0.39, 0.37), smoothstep(0.3, 0.75, Weather));
+Bark *= lerp(1.0, 0.45, lerp(0.13, Scar, Detail)) * lerp(1.0, 0.6, Fissure);
+// Darker and sand-stained at the foot.
+Bark = lerp(Bark * float3(0.85, 0.8, 0.7) + float3(0.04, 0.035, 0.025), Bark, smoothstep(0.0, 0.7, V));
+// Each scar is a shallow groove, 2.5 mm deep: tangent-space slope along V (Y = +V).
+const float Slope = 0.0025 * Strength * 2.0 * D * exp(-D * D) / (0.1 * 0.09) * Detail;
+Normal = normalize(float3(0.0, -Slope, 1.0));
+Roughness = lerp(0.8, 0.95, Scar * Detail);
+return Bark;
+"""
+
+
+def palm_bark():
+    """Coconut palm trunk, procedural: sun-bleached grey-brown bark ringed every ~9 cm by the scars of fallen fronds,
+    with fine vertical fissures. Infinigen builds its trunk inside geometry nodes, together with the crown: there
+    is no trunk mesh to render, so the bark is drawn here from the bark coordinates of OceanFlora's AddMappedTube."""
+    material = fresh_material("M_PalmBark")
+    uv = node(material, unreal.MaterialExpressionTextureCoordinate, -900, 0)
+    bark_node = node(material, unreal.MaterialExpressionCustom, -600, 0)
+    bark_node.set_editor_property("description", "Palm Bark")
+    bark_node.set_editor_property("include_file_paths", ["/Makar/Ocean.ush"])
+    bark_node.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
+    bark_node.set_editor_property("code", PALM_BARK_CODE)
+    custom_input = unreal.CustomInput()
+    custom_input.set_editor_property("input_name", "UV")
+    bark_node.set_editor_property("inputs", [custom_input])
+    outputs = []
+    for name, kind in (("Normal", unreal.CustomMaterialOutputType.CMOT_FLOAT3),
+                       ("Roughness", unreal.CustomMaterialOutputType.CMOT_FLOAT1)):
+        custom_output = unreal.CustomOutput()
+        custom_output.set_editor_property("output_name", name)
+        custom_output.set_editor_property("output_type", kind)
+        outputs.append(custom_output)
+    bark_node.set_editor_property("additional_outputs", outputs)
+    connect(uv, bark_node, "UV")
+    MEL.connect_material_property(bark_node, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    MEL.connect_material_property(bark_node, "Normal", unreal.MaterialProperty.MP_NORMAL)
+    MEL.connect_material_property(bark_node, "Roughness", unreal.MaterialProperty.MP_ROUGHNESS)
+    save(material, "M_PalmBark")
+
+
 bark()
 foliage()
 rock()
 palm_frond()
+palm_bark()
 unreal.log(f"Flora materials written to {DIRECTORY}")
