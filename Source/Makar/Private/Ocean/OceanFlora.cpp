@@ -343,6 +343,12 @@ namespace
 		FLinearColor Leaf = FLinearColor(0.06f, 0.14f, 0.03f);
 		FLinearColor LeafAccent = FLinearColor(0.16f, 0.2f, 0.05f);
 		float AccentAmount = 0.5f;
+		// No branch grows straight: each F grows in a few steps, its heading wandering by up to Wobble degrees per step
+		// (a random walk, pulled back up by phototropism); the whole plant leans by up to Lean degrees; the trunk's
+		// foot flares out by RootFlare.
+		float Wobble = 6.f;
+		float Lean = 0.f;
+		float RootFlare = 0.f;
 		// Leaf masses as textured cards (AddLeafCards) rather than lumpy balls.
 		bool bLeafCards = false;
 		float CardSize = 140.f;    // cm
@@ -365,8 +371,15 @@ namespace
 		FState State;
 		State.Length = Params.Length;
 		State.Radius = Params.Radius;
+		if (Params.Lean > 0.f)
+		{
+			const float Azimuth = Random.FRandRange(0.f, 2.f * UE_PI);
+			State.Orientation = FQuat4f(FVector3f(FMath::Cos(Azimuth), FMath::Sin(Azimuth), 0.f),
+				FMath::DegreesToRadians(Params.Lean * Random.FRandRange(0.4f, 1.f)));
+		}
+		bool bFoot = true; // the first segment drawn is the trunk's foot
 		TArray<FState> Stack;
-		auto Jittered = [&](float Degrees) { return FMath::DegreesToRadians(Degrees * (1.f + Random.FRandRange(-Params.Jitter, Params.Jitter))); };
+		auto Jittered =[&](float Degrees) { return FMath::DegreesToRadians(Degrees * (1.f + Random.FRandRange(-Params.Jitter, Params.Jitter))); };
 
 		for (const TCHAR Symbol : Program)
 		{
@@ -374,17 +387,39 @@ namespace
 			{
 			case TEXT('F'):
 			{
-				const FVector3f Heading = State.Orientation.RotateVector(FVector3f::UpVector);
-				const FVector3f End = State.Position + Heading * State.Length;
-				const float EndRadius = State.Radius * 0.85f;
-				AddTube(Data, SectionBark, State.Position, End, State.Radius, EndRadius, State.Radius > 8.f ? 7 : 5, Params.Bark, Params.Bark * 1.1f);
-				State.Position = End;
-				State.Radius = EndRadius;
-				// Phototropism: branches bend towards the light.
-				const FVector3f Axis = FVector3f::CrossProduct(Heading, FVector3f::UpVector);
-				if (Axis.SizeSquared() > 1e-6f)
+				// Grown in a few steps (more on thick limbs), the heading wandering at each step and bending towards the
+				// light. Each tube starts half a radius back along its own axis, so that consecutive tubes overlap at
+				// the bends instead of opening a slit on the outer side.
+				const int32 Steps = State.Radius > 8.f ? 4 : (State.Radius > 3.f ? 3 : 2);
+				const float StepRadiusScale = FMath::Pow(0.85f, 1.f / Steps);
+				for (int32 Step = 0; Step < Steps; ++Step)
 				{
-					State.Orientation = FQuat4f(Axis.GetSafeNormal(), Params.Phototropism * Axis.Size()) * State.Orientation;
+					const FVector3f Wander = FVector3f::CrossProduct(State.Orientation.RotateVector(FVector3f::UpVector), FVector3f(Random.GetUnitVector()));
+					if (Wander.SizeSquared() > 1e-6f)
+					{
+						State.Orientation = FQuat4f(Wander.GetSafeNormal(), FMath::DegreesToRadians(Params.Wobble * Random.FRandRange(0.2f, 1.f))) * State.Orientation;
+					}
+					const FVector3f Heading = State.Orientation.RotateVector(FVector3f::UpVector);
+					const FVector3f End = State.Position + Heading * (State.Length / Steps);
+					const float EndRadius = State.Radius * StepRadiusScale;
+					float StartRadius = State.Radius;
+					FVector3f Start = State.Position - Heading * (State.Radius * 0.5f);
+					if (bFoot)
+					{
+						// The trunk's foot: flared, and sunk a little into the ground.
+						StartRadius *= 1.f + Params.RootFlare;
+						Start = State.Position - FVector3f(0.f, 0.f, 30.f);
+						bFoot = false;
+					}
+					AddTube(Data, SectionBark, Start, End, StartRadius, EndRadius, State.Radius > 8.f ? 8 : 5, Params.Bark, Params.Bark * 1.1f);
+					State.Position = End;
+					State.Radius = EndRadius;
+					// Phototropism: branches bend towards the light.
+					const FVector3f Axis = FVector3f::CrossProduct(Heading, FVector3f::UpVector);
+					if (Axis.SizeSquared() > 1e-6f)
+					{
+						State.Orientation = FQuat4f(Axis.GetSafeNormal(), Params.Phototropism / Steps * Axis.Size()) * State.Orientation;
+					}
 				}
 				break;
 			}
@@ -439,12 +474,20 @@ namespace OceanFlora
 
 		// Trunk: leans (towards +X; instances are rotated to lean seawards) then curves back up, slimmer at the top,
 		// with the ring scars of fallen fronds.
+		// Coconut palms lean out towards the light over the beach, some strongly, the bend mostly near the foot (Bend);
+		// the trunk also snakes a little from side to side, never a straight pole.
 		const float Height = Random.FRandRange(750.f, 1150.f);
-		const float Lean = Random.FRandRange(0.12f, 0.4f);
+		const float Lean = Random.FRandRange(0.15f, 0.6f);
+		const float Bend = Random.FRandRange(1.6f, 3.f);
+		const float Sway = Random.FRandRange(-1.f, 1.f) * 0.05f * Height;
+		const float Waves = Random.FRandRange(1.f, 2.f);
+		const float Phase = Random.FRandRange(0.f, 2.f * UE_PI);
 		auto TrunkPoint = [&](float T)
 		{
-			const float Out = Lean * Height * (1.f - (1.f - T) * (1.f - T)) * 0.8f;
-			return FVector3f(Out, 0.f, Height * T - 20.f); // base slightly sunk in the sand
+			const float Out = Lean * Height * (1.f - FMath::Pow(1.f - T, Bend)) * 0.8f
+				+ 0.02f * Height * (FMath::Sin(2.f * UE_PI * T + Phase) - FMath::Sin(Phase));
+			const float Side = Sway * FMath::Sin(UE_PI * T * Waves);
+			return FVector3f(Out, Side, Height * T - 20.f); // base slightly sunk in the sand
 		};
 		// Bark: M_PalmBark draws the ring scars and fissures procedurally from the bark coordinates (V = metres along
 		// the trunk); the vertex colour stays neutral. Slimmer at the top, flared at the foot.
@@ -525,18 +568,25 @@ namespace OceanFlora
 	{
 		FRandomStream Random(Seed);
 		FOceanMeshData Data(2);
-		// Trunk, then apices branching in two or three, with leaves along the upper branches too, so the
-		// crown is one dense, lumpy mass rather than a few balls on sticks.
+		// The broadleaf trees behind Caribbean beaches (tropical almond, seaside mahoe, sea grape trees) fork low into
+		// a few crooked limbs that spread wide before turning up: a broad, umbrella-like crown on a short, leaning,
+		// thick trunk. Apices branch in two or three, with leaves along the upper limbs too, so the crown is one dense,
+		// lumpy mass rather than a few balls on sticks.
 		const TArray<FLSystemRule> Rules = {
 			{ TEXT('A'), 0.6f, TEXT("F!'[&FLA]/////[&FLA]///////[&FLA]") },
 			{ TEXT('A'), 0.3f, TEXT("F!'[&FLA]////////[&FLA]") },
 			{ TEXT('A'), 0.1f, TEXT("F!'L") },
 		};
-		const FString Program = RewriteLSystem(TEXT("FFA"), Rules, 3, Random);
+		const FString Program = RewriteLSystem(Random.FRand() < 0.5f ? TEXT("FA") : TEXT("F/[&A]////////[&A]"), Rules, 3, Random);
 		FTurtleParams Params;
 		Params.Length = Random.FRandRange(150.f, 210.f);
-		Params.Radius = Random.FRandRange(14.f, 20.f);
-		Params.BranchAngle = Random.FRandRange(30.f, 42.f);
+		Params.Radius = Random.FRandRange(18.f, 26.f);
+		Params.BranchAngle = Random.FRandRange(42.f, 58.f);
+		Params.Phototropism = 0.07f; // limbs spread before they turn up
+		// Trunks lean, wander and flare at the foot; limbs twist on their way out.
+		Params.Lean = 16.f;
+		Params.Wobble = 11.f;
+		Params.RootFlare = 0.8f;
 		Params.LeafRadius = Random.FRandRange(130.f, 170.f);
 		Params.Leaf = FLinearColor(0.03f, 0.08f, 0.018f);
 		Params.LeafAccent = FLinearColor(0.07f, 0.12f, 0.025f);
@@ -566,6 +616,7 @@ namespace OceanFlora
 		Params.BranchAngle = 55.f;
 		Params.RollAngle = 40.f;
 		Params.Phototropism = 0.05f;
+		Params.Wobble = 14.f; // the sea grape's stems twist and sprawl
 		Params.LeafRadius = Random.FRandRange(55.f, 80.f);
 		Params.Bark = FLinearColor(0.18f, 0.15f, 0.12f);
 		Params.Leaf = FLinearColor(0.08f, 0.15f, 0.04f);
@@ -598,6 +649,7 @@ namespace OceanFlora
 		Params.BranchAngle = 35.f;
 		Params.RollAngle = 24.f;
 		Params.Phototropism = 0.1f;
+		Params.Wobble = 11.f;
 		Params.LeafRadius = Random.FRandRange(65.f, 90.f);
 		Params.Bark = FLinearColor(0.17f, 0.15f, 0.12f);
 		Params.bLeafCards = true;
