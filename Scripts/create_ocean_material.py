@@ -116,6 +116,12 @@ def build():
     foam_map = texture(material, "FoamMap", placeholder, -1600, 1560)
     foam_map_origin = color(material, "FoamMapOrigin", (0.0, 0.0, 0.0), -1300, 1160)
     foam_map_size = scalar(material, "FoamMapSize", 0.0, -1300, 1240)
+    # Coastal data from AOceanBathymetry (depth, distance to shore, direction); ShoreMapSize 0 = open sea.
+    shore_map = texture(material, "ShoreMap", placeholder, -1600, 1700)
+    shore_map_origin = color(material, "ShoreMapOrigin", (0.0, 0.0, 0.0), -1300, 1320)
+    shore_map_size = scalar(material, "ShoreMapSize", 0.0, -1300, 1400)
+    # Per-cascade significant wave height, updated every frame: limits waves in shallow water.
+    sig_height = [scalar(material, f"SignificantHeight{i}", 1.0, -1300, 1480 + i * 80) for i in range(3)]
 
     patch = [scalar(material, f"PatchSize{i}", v, -1300, 260 + i * 80) for i, v in enumerate((500.0, 85.0, 10.0))]
     resolution = scalar(material, "Resolution", 128.0, -1300, 520)
@@ -130,12 +136,17 @@ def build():
     vertex = custom(
         material, -900, -200, "Ocean Vertex Offset",
         "return OceanVertexOffset(WorldPos, CameraPos, Disp0, Disp0Sampler, Disp1, Disp1Sampler, "
+        "ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, SignificantHeight0, SignificantHeight1, "
         "PatchSize0, PatchSize1, Resolution, GridSpacing, GridInnerHalfWidth, GridGrowth, FadeStart, FadeEnd);",
-        ["WorldPos", "CameraPos", "Disp0", "Disp1", "PatchSize0", "PatchSize1", "Resolution",
+        ["WorldPos", "CameraPos", "Disp0", "Disp1",
+         "ShoreMap", "ShoreMapOrigin", "ShoreMapSize", "SignificantHeight0", "SignificantHeight1",
+         "PatchSize0", "PatchSize1", "Resolution",
          "GridSpacing", "GridInnerHalfWidth", "GridGrowth", "FadeStart", "FadeEnd"],
         unreal.CustomMaterialOutputType.CMOT_FLOAT3)
     connect_inputs({
         "WorldPos": world_pos, "CameraPos": camera_pos, "Disp0": disp[0], "Disp1": disp[1],
+        "ShoreMap": shore_map, "ShoreMapOrigin": shore_map_origin, "ShoreMapSize": shore_map_size,
+        "SignificantHeight0": sig_height[0], "SignificantHeight1": sig_height[1],
         "PatchSize0": patch[0], "PatchSize1": patch[1], "Resolution": resolution,
         "GridSpacing": grid_spacing, "GridInnerHalfWidth": grid_inner, "GridGrowth": grid_growth,
         "FadeStart": fade_start, "FadeEnd": fade_end,
@@ -152,9 +163,13 @@ def build():
         "Deriv0, Deriv0Sampler, Deriv1, Deriv1Sampler, Deriv2, Deriv2Sampler, "
         "Moments0, Moments0Sampler, Moments1, Moments1Sampler, Moments2, Moments2Sampler, "
         "FoamMap, FoamMapSampler, FoamMapOrigin, FoamMapSize, "
+        "ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, "
+        "SignificantHeight0, SignificantHeight1, SignificantHeight2, "
         "PatchSize0, PatchSize1, PatchSize2, CrestHeight, BaseRoughness, Foam, Crest, Roughness);",
         ["WorldPos", "Disp0", "Disp1", "Disp2", "Deriv0", "Deriv1", "Deriv2", "Moments0", "Moments1", "Moments2",
          "FoamMap", "FoamMapOrigin", "FoamMapSize",
+         "ShoreMap", "ShoreMapOrigin", "ShoreMapSize",
+         "SignificantHeight0", "SignificantHeight1", "SignificantHeight2",
          "PatchSize0", "PatchSize1", "PatchSize2", "CrestHeight", "BaseRoughness"],
         unreal.CustomMaterialOutputType.CMOT_FLOAT3,
         extra_outputs=[("Foam", unreal.CustomMaterialOutputType.CMOT_FLOAT1),
@@ -165,6 +180,9 @@ def build():
         "Deriv0": deriv[0], "Deriv1": deriv[1], "Deriv2": deriv[2],
         "Moments0": moments[0], "Moments1": moments[1], "Moments2": moments[2],
         "FoamMap": foam_map, "FoamMapOrigin": foam_map_origin, "FoamMapSize": foam_map_size,
+        "ShoreMap": shore_map, "ShoreMapOrigin": shore_map_origin, "ShoreMapSize": shore_map_size,
+        "SignificantHeight0": sig_height[0], "SignificantHeight1": sig_height[1],
+        "SignificantHeight2": sig_height[2],
         "PatchSize0": patch[0], "PatchSize1": patch[1], "PatchSize2": patch[2], "CrestHeight": crest_height,
         "BaseRoughness": roughness_water,
     }, pixel)

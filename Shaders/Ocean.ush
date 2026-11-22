@@ -14,15 +14,43 @@ float OceanMipLevel(float SpacingM, float PatchSizeM, float Resolution)
 	return max(0.0, log2(max(SpacingM / TexelM, 1.0)));
 }
 
+// Coastal data (AOceanBathymetry / FOceanShoreData): RGBA = depth (m, negative on land),
+// signed distance to the shore (m, positive at sea), seaward direction XY. ShoreMapSize 0 = no coast.
+static const float OceanDeepWaterM = 1000.0;
+
+float4 OceanShoreSample(float2 PosM, Texture2D ShoreMap, SamplerState ShoreMapSampler, float3 ShoreMapOrigin, float ShoreMapSize)
+{
+	if (ShoreMapSize <= 0.0)
+	{
+		return float4(OceanDeepWaterM, OceanDeepWaterM, 0.0, 0.0);
+	}
+	const float2 Uv = (PosM - ShoreMapOrigin.xy) / ShoreMapSize;
+	if (any(Uv < 0.0) || any(Uv > 1.0))
+	{
+		return float4(OceanDeepWaterM, OceanDeepWaterM, 0.0, 0.0);
+	}
+	return ShoreMap.SampleLevel(ShoreMapSampler, Uv, 0.0);
+}
+
+// Waves break once higher than ~0.78 x the depth (McCowan): each cascade is scaled so its significant height
+// stays below that. Must match OceanDepthAttenuation in OceanShoreData.h (CPU water queries).
+float OceanDepthAttenuation(float DepthM, float SignificantHeightM)
+{
+	return saturate(0.78 * DepthM / max(SignificantHeightM, 0.01));
+}
+
 // World Position Offset, cm. Only the geometry cascades: finer ones are smaller than a vertex.
 float3 OceanVertexOffset(float3 WorldPos, float3 CameraPos,
 	Texture2D Disp0, SamplerState Disp0Sampler,
 	Texture2D Disp1, SamplerState Disp1Sampler,
+	Texture2D ShoreMap, SamplerState ShoreMapSampler, float3 ShoreMapOrigin, float ShoreMapSize,
+	float SignificantHeight0, float SignificantHeight1,
 	float PatchSize0, float PatchSize1, float Resolution,
 	float GridSpacing, float GridInnerHalfWidth, float GridGrowth,
 	float FadeStart, float FadeEnd)
 {
 	const float2 PosM = WorldPos.xy * 0.01;
+	const float Depth = OceanShoreSample(PosM, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize).x;
 
 	// Square grid centred on the camera: Chebyshev distance gives the local vertex spacing exactly.
 	const float2 Delta = abs(WorldPos.xy - CameraPos.xy) * 0.01;
@@ -31,7 +59,9 @@ float3 OceanVertexOffset(float3 WorldPos, float3 CameraPos,
 
 	// Pick the mip matching the vertex spacing, otherwise distant vertices alias and shimmer.
 	float3 D = Disp0.SampleLevel(Disp0Sampler, PosM / PatchSize0, OceanMipLevel(SpacingM, PatchSize0, Resolution)).xyz
-	         + Disp1.SampleLevel(Disp1Sampler, PosM / PatchSize1, OceanMipLevel(SpacingM, PatchSize1, Resolution)).xyz;
+	           * OceanDepthAttenuation(Depth, SignificantHeight0)
+	         + Disp1.SampleLevel(Disp1Sampler, PosM / PatchSize1, OceanMipLevel(SpacingM, PatchSize1, Resolution)).xyz
+	           * OceanDepthAttenuation(Depth, SignificantHeight1);
 
 	const float Fade = 1.0 - saturate((DistM - FadeStart) / max(FadeEnd - FadeStart, 1.0));
 	return D * Fade * 100.0;
@@ -153,6 +183,8 @@ float3 OceanPixel(float3 WorldPos,
 	Texture2D Moments1, SamplerState Moments1Sampler,
 	Texture2D Moments2, SamplerState Moments2Sampler,
 	Texture2D FoamMap, SamplerState FoamMapSampler, float3 FoamMapOrigin, float FoamMapSize,
+	Texture2D ShoreMap, SamplerState ShoreMapSampler, float3 ShoreMapOrigin, float ShoreMapSize,
+	float SignificantHeight0, float SignificantHeight1, float SignificantHeight2,
 	float PatchSize0, float PatchSize1, float PatchSize2, float CrestHeight, float BaseRoughness,
 	out float Foam, out float Crest, out float Roughness)
 {
@@ -161,16 +193,23 @@ float3 OceanPixel(float3 WorldPos,
 	const float2 Uv1 = PosM / PatchSize1;
 	const float2 Uv2 = PosM / PatchSize2;
 
-	const float4 D0 = Deriv0.Sample(Deriv0Sampler, Uv0);
-	const float4 D1 = Deriv1.Sample(Deriv1Sampler, Uv1);
-	const float4 D2 = Deriv2.Sample(Deriv2Sampler, Uv2);
+	// Shallow water calms each cascade (same factors as the vertex offset and the CPU queries).
+	const float Depth = OceanShoreSample(PosM, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize).x;
+	const float A0 = OceanDepthAttenuation(Depth, SignificantHeight0);
+	const float A1 = OceanDepthAttenuation(Depth, SignificantHeight1);
+	const float A2 = OceanDepthAttenuation(Depth, SignificantHeight2);
+
+	const float4 D0 = Deriv0.Sample(Deriv0Sampler, Uv0) * A0;
+	const float4 D1 = Deriv1.Sample(Deriv1Sampler, Uv1) * A1;
+	const float4 D2 = Deriv2.Sample(Deriv2Sampler, Uv2) * A2;
 	const float4 Deriv = D0 + D1 + D2;
 
 	// LEAN mapping: filtered second moments minus the squared filtered slope is the slope variance of the
 	// waves averaged away inside this pixel. Cascades are independent, so their variances add up.
-	const float3 M0 = Moments0.Sample(Moments0Sampler, Uv0).xyz;
-	const float3 M1 = Moments1.Sample(Moments1Sampler, Uv1).xyz;
-	const float3 M2 = Moments2.Sample(Moments2Sampler, Uv2).xyz;
+	// Moments are quadratic in the slopes, so they scale with the square of the attenuation.
+	const float3 M0 = Moments0.Sample(Moments0Sampler, Uv0).xyz * (A0 * A0);
+	const float3 M1 = Moments1.Sample(Moments1Sampler, Uv1).xyz * (A1 * A1);
+	const float3 M2 = Moments2.Sample(Moments2Sampler, Uv2).xyz * (A2 * A2);
 	const float2 Variance = max(M0.xy - D0.xy * D0.xy, 0.0)
 	                      + max(M1.xy - D1.xy * D1.xy, 0.0)
 	                      + max(M2.xy - D2.xy * D2.xy, 0.0);
@@ -190,7 +229,7 @@ float3 OceanPixel(float3 WorldPos,
 
 	// Far away: foam from each cascade's own tile. Whitecaps break on the crests of the larger waves,
 	// so the 10 m ripple cascade only adds a little, otherwise foam is sprinkled evenly over the sea.
-	float FoamAmount = saturate(S0.w + S1.w * 0.8 + S2.w * 0.15);
+	float FoamAmount = saturate(S0.w * A0 + S1.w * 0.8 * A1 + S2.w * 0.15 * A2);
 
 	// Around the camera: the simulated foam map (whitecaps of the whole surface, drifting streaks),
 	// faded into the tile foam over the outer 10 % of the map.
@@ -203,7 +242,7 @@ float3 OceanPixel(float3 WorldPos,
 		FoamAmount = lerp(FoamAmount, saturate(MapFoam), Inside);
 	}
 	Foam = OceanFoamCoverage(PosM, FoamAmount);
-	Crest = saturate((S0.z + S1.z) / max(CrestHeight, 0.01));
+	Crest = saturate((S0.z * A0 + S1.z * A1) / max(CrestHeight, 0.01));
 
 	return normalize(float3(-Slope, 1.0));
 }

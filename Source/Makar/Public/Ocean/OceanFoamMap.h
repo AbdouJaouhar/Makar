@@ -5,6 +5,7 @@
 #include "OceanSettings.h"
 
 struct FOceanFrame;
+struct FOceanShoreData;
 
 /**
  * Persistent foam in world space around the camera, simulated on the CPU after each wave step.
@@ -22,8 +23,11 @@ public:
 	static constexpr float TexelSizeM = 0.75f;
 	static constexpr int32 NumMips = 10; // 512 -> 1
 
-	/** Advances the foam by DeltaTime around CenterM (metres) and writes the map into Frame. Worker-thread safe. */
-	void Simulate(FOceanFrame& Frame, const FOceanSettings& Settings, const FVector2f& CenterM, float DeltaTime);
+	/**
+	 * Advances the foam by DeltaTime around CenterM (metres) and writes the map into Frame. Worker-thread safe.
+	 * Shore (optional) calms the waves in shallow water, exactly like the rendered surface.
+	 */
+	void Simulate(FOceanFrame& Frame, const FOceanSettings& Settings, const FOceanShoreData* Shore, const FVector2f& CenterM, float DeltaTime);
 
 private:
 	void Recenter(const FIntPoint& NewOrigin);

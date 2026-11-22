@@ -6,6 +6,8 @@
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
+#include "EngineUtils.h"
+#include "Ocean/OceanBathymetry.h"
 #include "Ocean/OceanMeshComponent.h"
 #include "Rendering/Texture2DResource.h"
 #include "TextureResource.h"
@@ -18,6 +20,10 @@ namespace OceanParams
 	const FName FoamMap(TEXT("FoamMap"));
 	const FName FoamMapOrigin(TEXT("FoamMapOrigin"));
 	const FName FoamMapSize(TEXT("FoamMapSize"));
+	const FName ShoreMap(TEXT("ShoreMap"));
+	const FName ShoreMapOrigin(TEXT("ShoreMapOrigin"));
+	const FName ShoreMapSize(TEXT("ShoreMapSize"));
+	const FName SignificantHeight[] = { TEXT("SignificantHeight0"), TEXT("SignificantHeight1"), TEXT("SignificantHeight2") };
 	const FName PatchSize[] = { TEXT("PatchSize0"), TEXT("PatchSize1"), TEXT("PatchSize2") };
 	const FName Resolution(TEXT("Resolution"));
 	const FName GridSpacing(TEXT("GridSpacing"));
@@ -202,6 +208,20 @@ void AOceanActor::InitializeSimulation()
 	// New sea state: start the foam from scratch (the worker is idle, see WaitForSimulation above).
 	FoamMap = MakeUnique<FOceanFoamMap>();
 
+	// Coastline, if the level has one.
+	ShoreData.Reset();
+	ShoreTexture = nullptr;
+	if (UWorld* World = GetWorld())
+	{
+		for (TActorIterator<AOceanBathymetry> It(World); It; ++It)
+		{
+			It->EnsureBuilt();
+			ShoreData = It->GetShoreData();
+			ShoreTexture = It->GetShoreTexture();
+			break;
+		}
+	}
+
 	UpdateMaterialParameters();
 	bNeedsInitialization = false;
 }
@@ -225,6 +245,17 @@ void AOceanActor::UpdateMaterialParameters()
 	if (FoamMapTexture)
 	{
 		MaterialInstance->SetTextureParameterValue(OceanParams::FoamMap, FoamMapTexture);
+	}
+	// ShoreMapSize 0 tells the shader there is no coast: deep water everywhere.
+	if (ShoreData && ShoreTexture)
+	{
+		MaterialInstance->SetTextureParameterValue(OceanParams::ShoreMap, ShoreTexture);
+		MaterialInstance->SetVectorParameterValue(OceanParams::ShoreMapOrigin, FLinearColor(ShoreData->OriginM.X, ShoreData->OriginM.Y, 0.f, 0.f));
+		MaterialInstance->SetScalarParameterValue(OceanParams::ShoreMapSize, ShoreData->SizeM);
+	}
+	else
+	{
+		MaterialInstance->SetScalarParameterValue(OceanParams::ShoreMapSize, 0.f);
 	}
 
 	const float Sizes[] = { Settings.Cascade0Size, Settings.Cascade1Size, Settings.Cascade2Size };
@@ -381,14 +412,15 @@ void AOceanActor::Tick(float DeltaSeconds)
 		FOceanFrame* Target = BackFrame.Get();
 		FOceanFoamMap* Foam = FoamMap.Get();
 		const FOceanSettings FoamSettings = Settings;
+		const TSharedPtr<const FOceanShoreData> Shore = ShoreData; // keeps the data alive for the task
 		// The ocean mesh is centred on the camera (or on the actor in the editor).
 		const FVector2f CenterM = FVector2f(FVector2D(OceanMesh->GetComponentLocation()) * 0.01);
-		PendingTask = UE::Tasks::Launch(UE_SOURCE_LOCATION, [Sim, Target, Foam, FoamSettings, CenterM, Time, Delta]()
+		PendingTask = UE::Tasks::Launch(UE_SOURCE_LOCATION, [Sim, Target, Foam, FoamSettings, Shore, CenterM, Time, Delta]()
 		{
 			Sim->Simulate(Time, Delta, *Target);
 			if (Foam)
 			{
-				Foam->Simulate(*Target, FoamSettings, CenterM, Delta);
+				Foam->Simulate(*Target, FoamSettings, Shore.Get(), CenterM, Delta);
 			}
 		});
 	}
@@ -404,6 +436,11 @@ void AOceanActor::UploadFrame(const FOceanFrame& Frame)
 	}
 	for (int32 Index = 0; Index < Frame.Cascades.Num() && Index < DisplacementTextures.Num(); ++Index)
 	{
+		// Same value as SampleDisplacement uses for the CPU queries this frame.
+		if (MaterialInstance)
+		{
+			MaterialInstance->SetScalarParameterValue(OceanParams::SignificantHeight[Index], Frame.Cascades[Index].SignificantHeight);
+		}
 		UploadMips(DisplacementTextures[Index], Frame.Cascades[Index].DisplacementMips);
 		UploadMips(DerivativeTextures[Index], Frame.Cascades[Index].DerivativeMips);
 		if (MomentTextures.IsValidIndex(Index))
@@ -425,10 +462,17 @@ void AOceanActor::UploadFrame(const FOceanFrame& Frame)
 FVector3f AOceanActor::SampleDisplacement(const FVector2f& PositionMeters) const
 {
 	FVector3f Result = FVector3f::ZeroVector;
+	// Shallow water calms the waves: same attenuation as OceanVertexOffset in Shaders/Ocean.ush.
+	const float Depth = ShoreData ? ShoreData->DepthAt(PositionMeters) : FOceanShoreData::DeepWaterM;
 	const int32 NumCascades = FMath::Min(NumGeometryCascades, FrontFrame->Cascades.Num());
 	for (int32 Index = 0; Index < NumCascades; ++Index)
 	{
 		const FOceanCascadeFrame& Cascade = FrontFrame->Cascades[Index];
+		const float Attenuation = OceanDepthAttenuation(Depth, Cascade.SignificantHeight);
+		if (Attenuation <= 0.f)
+		{
+			continue;
+		}
 		const int32 N = Cascade.Resolution;
 
 		// Same convention as GPU bilinear filtering: texel i is centred on uv = (i + 0.5) / N.
@@ -447,7 +491,7 @@ FVector3f AOceanActor::SampleDisplacement(const FVector2f& PositionMeters) const
 		const FVector3f& B = Cascade.Displacement[Y0 * N + X1];
 		const FVector3f& C = Cascade.Displacement[Y1 * N + X0];
 		const FVector3f& D = Cascade.Displacement[Y1 * N + X1];
-		Result += FMath::Lerp(FMath::Lerp(A, B, FracU), FMath::Lerp(C, D, FracU), FracV);
+		Result += FMath::Lerp(FMath::Lerp(A, B, FracU), FMath::Lerp(C, D, FracU), FracV) * Attenuation;
 	}
 	return Result;
 }

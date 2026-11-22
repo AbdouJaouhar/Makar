@@ -1,28 +1,21 @@
 """
-Builds /Game/Maps/Ocean: a Caribbean sea showcase (clear water over a white sand shelf, tropical sun,
-trade-wind sea state) explored with a free-flying camera.
+Builds /Game/Maps/Ocean: a Caribbean sea showcase (a sandy island, clear water over a white sand shelf,
+a reef drop-off, tropical sun, trade-wind sea state) explored with a free-flying camera.
 
 Run after create_ocean_material.py, from the editor (Tools > Execute Python Script...) or headless:
     UnrealEditor-Cmd.exe Makar.uproject -run=pythonscript -script=Scripts/create_ocean_map.py
 Running it again rebuilds the level from scratch.
 """
 
-import math
-
 import unreal
 
 MAP_PATH = "/Game/Maps/Ocean"
 SEABED_MATERIAL_PATH = "/Game/Ocean/M_Seabed"
 
-# Seabed: a shallow sand shelf (turquoise water) ending in a reef drop-off a few hundred metres
-# offshore (+X), beyond which there is no floor and the water turns deep blue.
-SHELF_BACK_M = -4000.0         # shelf extends this far behind the start
-SHELF_EDGE_M = 300.0           # drop-off distance in front of the start
-SHELF_WIDTH_M = 8000.0
-SHELF_DEPTH_BACK_M = 2.0
-SHELF_DEPTH_EDGE_M = 6.0
-DROP_OFF_LENGTH_M = 700.0      # length of the slope down from the edge
-DROP_OFF_ANGLE_DEG = 25.0      # ~300 m deep at its foot
+# Island (AOceanBathymetry) west of the start: its beach faces the trade-wind waves, which travel towards -X.
+# The shelf around it is ~7 m deep and drops into deep water ~450 m from the shore (behind the start).
+ISLAND_CENTRE_M = (-500.0, 0.0)
+ISLAND_RADIUS_M = 250.0
 
 actors = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
 levels = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
@@ -71,7 +64,8 @@ def seabed_material():
 
     sand = expression(unreal.MaterialExpressionVectorParameter, -400, 0)
     sand.set_editor_property("parameter_name", "SandColor")
-    sand.set_editor_property("default_value", unreal.LinearColor(0.78, 0.7, 0.52, 1.0))
+    # Linear albedo ~0.55: bright coral sand, but not so white that the sunlit beach blows out.
+    sand.set_editor_property("default_value", unreal.LinearColor(0.6, 0.53, 0.4, 1.0))
     MEL.connect_material_property(sand, "", unreal.MaterialProperty.MP_BASE_COLOR)
 
     roughness = expression(unreal.MaterialExpressionConstant, -400, 200)
@@ -171,31 +165,16 @@ def build():
     ocean = spawn(load_class("/Script/Makar.OceanActor"), (0.0, 0.0, 0.0), label="Ocean")
     caribbean_sea_state(ocean)
 
-    # --- Sand shelf and reef drop-off seen through the water ---
-    sand = seabed_material()
-    plane = unreal.load_asset("/Engine/BasicShapes/Plane.Plane")  # 1 m wide, pivot at its centre
+    # --- Island, beach, shallow shelf and reef drop-off (AOceanBathymetry). Its coastal data also calms
+    # the waves in shallow water, for rendering and water queries alike. Must sit at Z = 0. ---
+    seabed_material()  # the terrain's material (sand + caustics)
+    island = spawn(load_class("/Script/Makar.OceanBathymetry"), (ISLAND_CENTRE_M[0] * 100.0, ISLAND_CENTRE_M[1] * 100.0, 0.0),
+                   label="Island")
+    island.set_editor_property("island_radius", ISLAND_RADIUS_M)
 
-    def seabed_plane(label, centre_x, centre_depth_m, length_m, pitch_deg):
-        actor = spawn(unreal.StaticMeshActor, (centre_x * 100.0, 0.0, -centre_depth_m * 100.0),
-                      (0.0, pitch_deg, 0.0), label)
-        mesh = actor.static_mesh_component
-        mesh.set_mobility(unreal.ComponentMobility.MOVABLE)  # lit by Lumen, no baked lighting
-        mesh.set_static_mesh(plane)
-        mesh.set_material(0, sand)
-        actor.set_actor_scale3d(unreal.Vector(length_m, SHELF_WIDTH_M, 1.0))
-
-    shelf_length = SHELF_EDGE_M - SHELF_BACK_M
-    shelf_pitch = -math.degrees(math.atan2(SHELF_DEPTH_EDGE_M - SHELF_DEPTH_BACK_M, shelf_length))
-    seabed_plane("Seabed_Shelf", (SHELF_BACK_M + SHELF_EDGE_M) * 0.5,
-                 (SHELF_DEPTH_BACK_M + SHELF_DEPTH_EDGE_M) * 0.5, shelf_length, shelf_pitch)
-
-    drop = math.radians(DROP_OFF_ANGLE_DEG)
-    seabed_plane("Seabed_DropOff", SHELF_EDGE_M + math.cos(drop) * DROP_OFF_LENGTH_M * 0.5,
-                 SHELF_DEPTH_EDGE_M + math.sin(drop) * DROP_OFF_LENGTH_M * 0.5,
-                 DROP_OFF_LENGTH_M, -DROP_OFF_ANGLE_DEG)
-
-    # --- Camera start: a few metres above the water, looking offshore ---
-    spawn(unreal.PlayerStart, (0.0, 0.0, 400.0), label="PlayerStart")
+    # --- Camera start: on the shelf a few metres above the water, facing the beach; the trade-wind
+    # waves roll in from behind towards the island ---
+    spawn(unreal.PlayerStart, (0.0, 0.0, 400.0), (0.0, 0.0, 180.0), label="PlayerStart")
 
     if not levels.save_current_level():
         raise RuntimeError(f"Could not save {MAP_PATH}")

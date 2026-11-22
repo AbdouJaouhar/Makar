@@ -262,6 +262,13 @@ void FOceanSimulation::SimulateCascade(FCascade& Cascade, float Time, float Delt
 		}
 	});
 
+	double SumOfSquares = 0.0;
+	for (const FVector3f& Displacement : Out.Displacement)
+	{
+		SumOfSquares += double(Displacement.Z) * Displacement.Z;
+	}
+	Out.SignificantHeight = 4.f * float(FMath::Sqrt(SumOfSquares / FMath::Max(Out.Displacement.Num(), 1)));
+
 	BuildMips(DisplacementBase, Out.DisplacementMips);
 	BuildMips(DerivativeBase, Out.DerivativeMips);
 	BuildMips(MomentBase, Out.MomentMips);

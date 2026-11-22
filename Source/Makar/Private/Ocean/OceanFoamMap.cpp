@@ -1,6 +1,7 @@
 #include "Ocean/OceanFoamMap.h"
 
 #include "Async/ParallelFor.h"
+#include "Ocean/OceanShoreData.h"
 #include "Ocean/OceanSimulation.h"
 
 namespace
@@ -45,19 +46,22 @@ namespace
 	}
 
 	/** Jacobian of the whole surface: 1 = undisturbed, < 1 compressed, < 0 folding over. */
-	float CombinedJacobian(const FOceanFrame& Frame, const FVector2f& PositionM)
+	float CombinedJacobian(const FOceanFrame& Frame, const FOceanShoreData* Shore, const FVector2f& PositionM)
 	{
+		const float Depth = Shore ? Shore->DepthAt(PositionM) : FOceanShoreData::DeepWaterM;
 		FVector3f Terms = FVector3f::ZeroVector;
 		const int32 NumCascades = FMath::Min(Frame.Cascades.Num(), FOceanSimulation::NumCascades);
 		for (int32 Index = 0; Index < NumCascades; ++Index)
 		{
-			Terms += SampleJacobianTerms(Frame.Cascades[Index], PositionM) * CascadeWeights[Index];
+			const FOceanCascadeFrame& Cascade = Frame.Cascades[Index];
+			const float Attenuation = OceanDepthAttenuation(Depth, Cascade.SignificantHeight);
+			Terms += SampleJacobianTerms(Cascade, PositionM) * (CascadeWeights[Index] * Attenuation);
 		}
 		return (1.f + Terms.X) * (1.f + Terms.Y) - Terms.Z * Terms.Z;
 	}
 }
 
-void FOceanFoamMap::Simulate(FOceanFrame& Frame, const FOceanSettings& Settings, const FVector2f& CenterM, float DeltaTime)
+void FOceanFoamMap::Simulate(FOceanFrame& Frame, const FOceanSettings& Settings, const FOceanShoreData* Shore, const FVector2f& CenterM, float DeltaTime)
 {
 	if (!Frame.bValid || Frame.Cascades.Num() == 0)
 	{
@@ -98,7 +102,7 @@ void FOceanFoamMap::Simulate(FOceanFrame& Frame, const FOceanSettings& Settings,
 			const float Advected = SampleFoam(float(X) - Drift.X, float(Y) - Drift.Y);
 
 			const FVector2f PositionM((float(OriginTexel.X + X) + 0.5f) * TexelSizeM, (float(OriginTexel.Y + Y) + 0.5f) * TexelSizeM);
-			const float Jacobian = CombinedJacobian(Frame, PositionM);
+			const float Jacobian = CombinedJacobian(Frame, Shore, PositionM);
 			const float Created = FMath::Clamp((Settings.FoamThreshold - Jacobian) * Settings.FoamIntensity * CreationGain, 0.f, 1.f);
 
 			Next[Y * Size + X] = FMath::Max(Created, Advected * Fade);

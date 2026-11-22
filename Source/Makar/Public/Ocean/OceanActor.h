@@ -4,6 +4,7 @@
 #include "GameFramework/Actor.h"
 #include "Ocean/OceanFoamMap.h"
 #include "Ocean/OceanSettings.h"
+#include "Ocean/OceanShoreData.h"
 #include "Ocean/OceanSimulation.h"
 #include "Tasks/Task.h"
 #include "OceanActor.generated.h"
@@ -105,6 +106,9 @@ private:
 	TUniquePtr<FOceanFrame> FrontFrame; // published: rendered and queried
 	TUniquePtr<FOceanFrame> BackFrame;  // being written by the worker task
 	TUniquePtr<FOceanFoamMap> FoamMap;  // advanced by the worker task, after the waves
+
+	/** Coastal data from the level's AOceanBathymetry, if any: calms the waves in shallow water. */
+	TSharedPtr<const FOceanShoreData> ShoreData;
 	UE::Tasks::FTask PendingTask;
 
 	UPROPERTY(Transient)
@@ -120,6 +124,10 @@ private:
 	/** World-space foam around the camera, see FOceanFoamMap. */
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> FoamMapTexture;
+
+	/** Owned by the AOceanBathymetry; see FOceanShoreData. */
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> ShoreTexture;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> MaterialInstance;

@@ -10,6 +10,9 @@ struct FOceanCascadeFrame
 	float PatchSize = 0.f;
 	int32 Resolution = 0;
 
+	/** Significant wave height of this cascade alone (4 x RMS height), m. Drives the shallow-water limit. */
+	float SignificantHeight = 0.f;
+
 	/** Full-precision displacement (X, Y horizontal, Z height), metres. Used for CPU water queries. */
 	TArray<FVector3f> Displacement;
 
