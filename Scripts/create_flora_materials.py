@@ -102,6 +102,13 @@ FROND_SOURCE = os.path.join(unreal.Paths.project_saved_dir(), "Infinigen", "fron
 
 
 def import_texture(path, name, normal_map, alpha_coverage=None):
+    # Already imported from this very file: keep the asset (re-importing rewrites it, and git sees a change).
+    stamp = f"{os.path.getmtime(path):.0f}:{os.path.getsize(path)}"
+    asset_path = f"{DIRECTORY}/{name}"
+    if unreal.EditorAssetLibrary.does_asset_exist(asset_path):
+        existing = unreal.EditorAssetLibrary.load_asset(asset_path)
+        if unreal.EditorAssetLibrary.get_metadata_tag(existing, "SourceStamp") == stamp:
+            return existing
     task = unreal.AssetImportTask()
     task.set_editor_property("filename", path)
     task.set_editor_property("destination_path", DIRECTORY)
@@ -120,6 +127,7 @@ def import_texture(path, name, normal_map, alpha_coverage=None):
         # Cut-out foliage: keep the alpha-tested coverage through the mips, or distant leaves thin out and vanish.
         texture.set_editor_property("do_scale_mips_for_alpha_coverage", True)
         texture.set_editor_property("alpha_coverage_thresholds", unreal.Vector4(0.0, 0.0, 0.0, alpha_coverage))
+    unreal.EditorAssetLibrary.set_metadata_tag(texture, "SourceStamp", stamp)
     unreal.EditorAssetLibrary.save_asset(f"{DIRECTORY}/{name}")
     return texture
 

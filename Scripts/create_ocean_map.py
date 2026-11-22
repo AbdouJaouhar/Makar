@@ -96,6 +96,13 @@ def import_ground_textures():
                 unreal.log_warning(f"No ground tile {path}: the terrain uses a flat placeholder")
                 continue
             name = f"T_Ground_{kind.capitalize()}_{suffix}"
+            # Already imported from this very file: keep the asset (re-importing rewrites it, and git sees a change).
+            stamp = f"{os.path.getmtime(path):.0f}:{os.path.getsize(path)}"
+            if unreal.EditorAssetLibrary.does_asset_exist(f"{GROUND_DIRECTORY}/{name}"):
+                existing = unreal.EditorAssetLibrary.load_asset(f"{GROUND_DIRECTORY}/{name}")
+                if unreal.EditorAssetLibrary.get_metadata_tag(existing, "SourceStamp") == stamp:
+                    textures[(kind, suffix)] = existing
+                    continue
             task = unreal.AssetImportTask()
             task.set_editor_property("filename", path)
             task.set_editor_property("destination_path", GROUND_DIRECTORY)
@@ -109,6 +116,7 @@ def import_ground_textures():
                 # Normals in the tile's frame, decoded by the shader (OceanGroundPlane): no green flip here.
                 texture.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_NORMALMAP)
                 texture.set_editor_property("srgb", False)
+            unreal.EditorAssetLibrary.set_metadata_tag(texture, "SourceStamp", stamp)
             unreal.EditorAssetLibrary.save_asset(f"{GROUND_DIRECTORY}/{name}")
             textures[(kind, suffix)] = texture
     return textures

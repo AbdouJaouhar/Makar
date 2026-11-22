@@ -477,8 +477,14 @@ FOceanTerrainSample AOceanBathymetry::SampleShape(const FVector2f& PositionM) co
 		// low headland that joins the massif: the cliff fades out where the hills are already higher. Added over the
 		// whole land, the rock mask raised 4 m terraces along its contours far inland.
 		const float Rock = Rockiness * FMath::SmoothStep(0.45f, 0.7f, OceanGradientNoise(Seeded / 70.f + 3.1f));
-		const float Cliff = Rock * 8.f * FMath::SmoothStep(0.f, 8.f, Inland) * (1.f - FMath::SmoothStep(2.f, 8.f, Hills));
-		const float Ground = Beach + Hills + Cliff;
+		const float CliffMask = Rock * FMath::SmoothStep(0.f, 8.f, Inland) * (1.f - FMath::SmoothStep(2.f, 8.f, Hills));
+		const float Cliff = 8.f * CliffMask;
+		// Coral limestone weathers into a jagged, pitted surface (ironshore): sharp ridges and hollows a few metres
+		// across on the rocky points (ridged noise: creases where the noise crosses its middle), not smooth lumps.
+		const float Ridges = 1.f - FMath::Abs(2.f * OceanGradientNoise(Seeded / 4.f + 7.7f) - 1.f);
+		const float Pits = 1.f - FMath::Abs(2.f * OceanGradientNoise(Seeded / 1.6f + 3.3f) - 1.f);
+		const float Jagged = CliffMask * (1.4f * Ridges + 0.5f * Pits - 0.9f);
+		const float Ground = Beach + Hills + Cliff + Jagged;
 		// Understory: 1.5-3 m of lumpy bush mass behind the beach, under the trees of AOceanIslandFlora, which covers
 		// it with shrubs (only UnderstoryRelief of it is terrain).
 		// Thinner on the rocky points. Uses the same vegetation line as OceanTerrainSurface (Shaders/Ocean.ush),
