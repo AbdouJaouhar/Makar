@@ -415,6 +415,120 @@ float2 OceanWindRipples(float2 PosM, float Footprint)
 	return Detail * float2(OceanWindRippleHeight(PosM + float2(E, 0.0)) - H, OceanWindRippleHeight(PosM + float2(0.0, E)) - H) / E;
 }
 
+// Fractal sum of OceanGradientNoise, centred on 0. Identical to OceanFractalNoise in OceanShoreData.cpp.
+float OceanFractalNoise(float2 P, float WavelengthM, int Octaves, float Persistence)
+{
+	float Sum = 0.0;
+	float Amplitude = 1.0;
+	float Wavelength = WavelengthM;
+	for (int Octave = 0; Octave < Octaves; ++Octave)
+	{
+		Sum += Amplitude * (OceanGradientNoise(P / Wavelength + float2(17.3, 41.9) * Octave) - 0.5);
+		Amplitude *= Persistence;
+		Wavelength *= 0.5;
+	}
+	return Sum;
+}
+
+// ------------------------------------------------------------------------------------------------------------
+// Sea floor under the waves (docs/StrategieSableProcedural.md, layer 2, after Finn, Li & Apte 2016).
+// ------------------------------------------------------------------------------------------------------------
+
+// Wave number (1/m) of a wave of angular frequency Omega in water DepthM deep: Fenton & McKee's explicit
+// approximation of the dispersion relation Omega^2 = g k tanh(k h).
+float OceanWaveNumber(float Omega, float DepthM)
+{
+	const float X = pow(Omega * sqrt(max(DepthM, 0.01) / 9.81), 1.5);
+	return Omega * Omega / 9.81 * pow(1.0 / tanh(X), 2.0 / 3.0);
+}
+
+// Height (m) of the shore swell at a depth: Green's law shoaling capped by breaking, as in OceanShoreWave.
+// BreakRatio = shoaled height / breaking height (> 1 in the surf zone).
+float OceanShoaledHeight(float SwellHeight, float SwellMaxDepth, float DepthM, out float BreakRatio)
+{
+	const float Depth = max(DepthM, 0.05);
+	const float Shoaled = SwellHeight * pow(0.5 * SwellMaxDepth / Depth, 0.25);
+	BreakRatio = Shoaled / (0.78 * Depth);
+	return min(Shoaled, 0.78 * Depth);
+}
+
+// Vortex ripple profile: sharp crests, broad rounded troughs; 1 = crest.
+float OceanVortexRippleProfile(float F)
+{
+	const float C = 0.5 + 0.5 * cos(6.2831853 * F);
+	return C * C;
+}
+
+// Ripple height (m) at a distance from the shore. The wavelength is picked among fixed bands (10-80 cm, blended
+// in log space) so that its smooth variation over the floor never multiplies the phase (no moiré); the bands
+// blending in and out read as the defects of real ripple fields.
+float OceanWaveRippleHeightAt(float Distance, float2 PosM, float Wavelength)
+{
+	const float Band = clamp(log2(Wavelength / 0.1), 0.0, 2.999);
+	const float Band0 = floor(Band);
+	const float Short = 0.1 * exp2(Band0);
+	const float Warp = Wavelength * (1.5 * (OceanGradientNoise(PosM / 2.5 + 41.0) - 0.5) + 0.5 * (OceanGradientNoise(PosM / 0.7 + 7.0) - 0.5));
+	const float H0 = OceanVortexRippleProfile(frac((Distance + Warp) / Short)) * Short;
+	const float H1 = OceanVortexRippleProfile(frac((Distance + Warp) / (2.0 * Short) + 0.37)) * 2.0 * Short;
+	return lerp(H0, H1, Band - Band0) * 0.16; // ripple steepness ~0.16
+}
+
+// Wave ripples on the sandy floor: crests parallel to the wave fronts (here the shore contours, which the waves
+// refract towards), spaced ~0.65 x the orbital diameter of the water at the bed. Low and rounded (relict) where
+// the bed is barely stirred, washed flat by sheet flow under the breaking waves. Returns the height gradient;
+// Trough = 0..1 in the troughs, where the coarse, darker shell hash collects.
+float2 OceanWaveRipples(float2 PosM, float DepthM, float Footprint, Texture2D ShoreMap, SamplerState ShoreMapSampler,
+	float3 ShoreMapOrigin, float ShoreMapSize, float SwellHeight, float SwellPeriod, float SwellMaxDepth, out float Trough)
+{
+	Trough = 0.0;
+	if (ShoreMapSize <= 0.0 || SwellPeriod <= 0.0 || DepthM <= 0.0)
+	{
+		return 0.0;
+	}
+	float BreakRatio;
+	const float Height = OceanShoaledHeight(max(SwellHeight, 0.05), SwellMaxDepth, DepthM, BreakRatio);
+	const float Omega = 6.2831853 / SwellPeriod;
+	const float Orbit = Height / max(sinh(OceanWaveNumber(Omega, DepthM) * DepthM), 1e-3); // orbital diameter at the bed
+	const float Velocity = PI * Orbit / SwellPeriod;                                         // peak orbital velocity
+	const float Wavelength = clamp(0.65 * Orbit, 0.1, 0.8);
+	const float Detail = saturate((Wavelength / Footprint - 4.0) / 6.0);
+	// Sand moves from ~0.12 m/s (0.5 mm grains); sheet flow flattens the bed from ~1 m/s and in the surf zone.
+	const float Amplitude = lerp(0.35, 1.0, smoothstep(0.08, 0.16, Velocity)) * (1.0 - smoothstep(0.8, 1.3, Velocity))
+		* (1.0 - smoothstep(0.7, 1.0, BreakRatio)) * Detail;
+	if (Amplitude <= 0.0)
+	{
+		return 0.0;
+	}
+	const float E = 0.02;
+	const float Here = OceanWaveRippleHeightAt(OceanShoreSample(PosM, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize).y, PosM, Wavelength);
+	const float2 PX = PosM + float2(E, 0.0);
+	const float2 PY = PosM + float2(0.0, E);
+	const float AlongX = OceanWaveRippleHeightAt(OceanShoreSample(PX, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize).y, PX, Wavelength);
+	const float AlongY = OceanWaveRippleHeightAt(OceanShoreSample(PY, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize).y, PY, Wavelength);
+	Trough = (1.0 - saturate(Here / (0.16 * Wavelength))) * Amplitude;
+	return float2(AlongX - Here, AlongY - Here) / E * Amplitude;
+}
+
+// Sand stirred up where the waves break makes the surf zone milky (Finn et al.). 0..1, drifting in patches.
+float OceanSurfTurbidity(float3 WorldPos, float Time, Texture2D ShoreMap, SamplerState ShoreMapSampler,
+	float3 ShoreMapOrigin, float ShoreMapSize, float SwellHeight, float SwellMaxDepth)
+{
+	if (ShoreMapSize <= 0.0 || SwellHeight <= 0.0)
+	{
+		return 0.0;
+	}
+	const float2 PosM = WorldPos.xy * 0.01;
+	const float Depth = OceanShoreSample(PosM, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize).x;
+	if (Depth > SwellMaxDepth || Depth < -1.0)
+	{
+		return 0.0;
+	}
+	float BreakRatio;
+	OceanShoaledHeight(SwellHeight, SwellMaxDepth, Depth, BreakRatio);
+	const float Plumes = smoothstep(0.3, 0.7, OceanGradientNoise(PosM / 12.0 + float2(0.05, 0.02) * Time));
+	return smoothstep(0.5, 1.0, BreakRatio) * lerp(0.35, 1.0, Plumes);
+}
+
 // Footprints simulated in sand (OceanSimulateSandFootprints, Sumner et al. 1999): a periodic tile, RG = height
 // offset (m) and disturbance. Laid twice with different orientations and offsets, picked in patches, so the tile
 // does not show; more trails in the busy stretches. Returns the height gradient; Disturbance = trampled (0..1).
@@ -465,7 +579,8 @@ float2 OceanSandFootprints(float2 PosM, float Footprint, Texture2D Map, SamplerS
 // Returns the base colour; Glint = sand sparkles, radiance relative to the sun (added as emissive).
 float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, float SwellHeight, float3 SandColor,
 	float3 ToSun, float3 ToCamera, Texture2D Footprints, SamplerState FootprintsSampler, float FootprintTileSize,
-	out float Roughness, out float3 Normal, out float Glint)
+	Texture2D ShoreMap, SamplerState ShoreMapSampler, float3 ShoreMapOrigin, float ShoreMapSize, float SwellPeriod,
+	float SwellMaxDepth, out float Roughness, out float3 Normal, out float Glint)
 {
 	const float2 PosM = WorldPos.xy * 0.01;
 	const float HeightM = WorldPos.z * 0.01;
@@ -482,6 +597,7 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 	// --- Sand: colour patches (shell and coral fragments), wind ripples above water, wave ripples below ---
 	float3 Color = SandColor * (0.88 + 0.18 * Large + 0.08 * Medium);
 	float2 Bump = 0.0;
+	float2 WaveRipples = 0.0;
 	if (HeightM > 0.0)
 	{
 		// Footprints break the ripples where people walked; the turned-over sand is a little darker (moister).
@@ -492,12 +608,12 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 	}
 	else
 	{
-		const float2 Warp = 0.6 * float2(Medium, Small);
-		const float2 Direction = normalize(float2(0.8, 0.6));
-		const float Wavelength = 0.7;
-		const float Phase = dot(PosM + Warp, Direction) * (2.0 * PI / Wavelength);
-		const float Amplitude = 0.03 * FineDetail * (0.5 + Large);
-		Bump += Direction * (Amplitude * (2.0 * PI / Wavelength) * cos(Phase));
+		// Wave ripples; the coarse shell hash left in their troughs is darker (Finn et al.: coarse armouring).
+		float Trough;
+		WaveRipples = OceanWaveRipples(PosM, -HeightM, Footprint, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize,
+			SwellHeight, SwellPeriod, SwellMaxDepth, Trough);
+		Bump += WaveRipples;
+		Color *= 1.0 - 0.18 * Trough;
 	}
 	Bump += OceanNoiseGradient(PosM, 3.0) * 0.08 * MediumDetail; // soft undulations
 	float2 GrainSlope;
@@ -524,23 +640,39 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 	// --- Coral heads and seagrass on the shallow floor: the dark patches seen through clear lagoon water ---
 	if (HeightM < -0.8)
 	{
-		// Clusters of heads with fuzzy edges, broken up by a finer noise, rather than solid blobs. Rotated and
-		// two-octave so the value-noise lattice does not show as an axis-aligned "camouflage" pattern.
-		const float2 Rotated = float2(0.8 * PosM.x - 0.6 * PosM.y, 0.6 * PosM.x + 0.8 * PosM.y);
-		const float2 Warp = 6.0 * float2(OceanValueNoise(Rotated / 23.0 + 5.0), OceanValueNoise(Rotated / 23.0 + 9.0)) - 3.0;
-		const float ClusterNoise = 0.65 * OceanValueNoise((Rotated + Warp) / 11.0 + 23.0)
-			+ 0.35 * OceanValueNoise((PosM - Warp) / 4.3 + 31.0);
-		const float Cluster = smoothstep(0.52, 0.72, ClusterNoise);
-		const float Heads = smoothstep(0.3, 0.65, OceanValueNoise(PosM / 2.2 + 61.0));
-		const float Patch = Cluster * lerp(0.35, 1.0, Heads) * smoothstep(-0.8, -2.2, HeightM);
-		// Seagrass (dark green), coral rubble and heads (brown to ochre), some paler patches.
-		const float3 Seagrass = float3(0.05, 0.075, 0.03);
-		const float3 Coral = lerp(float3(0.1, 0.08, 0.05), float3(0.2, 0.16, 0.1), Small);
-		const float3 Floor = lerp(Seagrass, Coral, smoothstep(0.35, 0.65, OceanValueNoise(PosM / 30.0 + 77.0)));
-		Color = lerp(Color, Floor * (0.75 + 0.5 * Medium), Patch);
-		SandMask *= 1.0 - Patch;
-		Roughness = lerp(Roughness, 0.95, Patch);
-		Bump += OceanNoiseGradient(PosM, 0.8) * 0.3 * Patch * MediumDetail;
+		// Patch reefs and seagrass meadows: warped fractal gradient noise, so their outlines are irregular at every
+		// scale, without the blobs and grid-aligned "leopard" spots of a thresholded value noise.
+		const float Deep = smoothstep(-0.8, -2.2, HeightM);
+		const float2 Warp = 8.0 * float2(OceanGradientNoise(PosM / 31.0 + 5.0), OceanGradientNoise(PosM / 31.0 + 9.0)) - 4.0;
+		const float Reef = OceanFractalNoise(PosM + Warp, 22.0, 5, 0.55) + 0.5;
+		const float Meadow = OceanFractalNoise(PosM - Warp, 45.0, 5, 0.5) + 0.5;
+		const float ReefMask = smoothstep(0.66, 0.72, Reef) * Deep;
+		// Grazing halos: fish crop the seagrass around each patch reef, leaving a ring of bare, pale sand.
+		const float Halo = smoothstep(0.52, 0.6, Reef) * (1.0 - ReefMask);
+		// Caribbean lagoons are mostly white sand: meadows cover ~15% of the floor, in scattered beds.
+		const float GrassMask = smoothstep(0.62, 0.68, Meadow) * (1.0 - smoothstep(0.5, 0.58, Reef)) * Deep;
+
+		// Seagrass (turtle grass): dense dark blades with sand showing between them.
+		const float Blades = lerp(0.5, OceanGradientNoise(PosM / 0.06 + 3.7), FineDetail);
+		const float3 Grass = float3(0.035, 0.06, 0.025) * lerp(0.7, 1.3, OceanGradientNoise(PosM / 4.0 + 1.3));
+		const float GrassCover = GrassMask * lerp(0.7, 1.0, Blades);
+		// Coral heads: rounded crowns of mixed sizes, shadowed gaps between them, brown to ochre.
+		const float Heads = max(OceanCrownHeight(PosM / 1.6 + 3.0), 0.75 * OceanCrownHeight(PosM / 0.65 + 9.0));
+		const float3 Coral = lerp(float3(0.08, 0.065, 0.045), float3(0.22, 0.17, 0.1), OceanGradientNoise(PosM / 3.0 + 2.0))
+			* lerp(0.4, 1.0, Heads);
+
+		Color *= 1.0 + 0.08 * Halo;
+		Color = lerp(Color, Grass, GrassCover);
+		Color = lerp(Color, Coral, ReefMask);
+		const float Cover = max(ReefMask, GrassCover);
+		SandMask *= 1.0 - Cover;
+		Roughness = lerp(Roughness, 0.95, Cover);
+		// Seagrass and coral hold the sand: no ripples under them.
+		Bump -= WaveRipples * Cover;
+		const float E = 0.08;
+		const float2 HeadSlope = float2(OceanCrownHeight((PosM + float2(E, 0.0)) / 1.6 + 3.0) - Heads,
+			OceanCrownHeight((PosM + float2(0.0, E)) / 1.6 + 3.0) - Heads) / E;
+		Bump += (HeadSlope * 0.6 * ReefMask + OceanNoiseGradient(PosM, 0.3) * 0.2 * GrassCover) * MediumDetail;
 	}
 
 	// --- Dark limestone rock on steep ground and rocky points ---

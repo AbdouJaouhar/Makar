@@ -242,11 +242,39 @@ def build():
     connect(scattering, scattering_final, "A")
     connect(crest_factor, scattering_final, "B")
 
+    # Sand stirred up by the breaking waves makes the surf zone milky (OceanSurfTurbidity): strong, neutral to
+    # cream scattering and a little absorption of blue by the grains, per cm like the coefficients above.
+    turbidity = custom(
+        material, -500, 1320, "Surf Turbidity",
+        "return OceanSurfTurbidity(WorldPos, Time, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, "
+        "SwellHeight, SwellMaxDepth);",
+        ["WorldPos", "Time", "ShoreMap", "ShoreMapOrigin", "ShoreMapSize", "SwellHeight", "SwellMaxDepth"],
+        unreal.CustomMaterialOutputType.CMOT_FLOAT1)
+    connect_inputs({
+        "WorldPos": world_pos, "Time": swell_inputs["Time"], "ShoreMap": shore_map, "ShoreMapOrigin": shore_map_origin,
+        "ShoreMapSize": shore_map_size, "SwellHeight": swell_inputs["SwellHeight"],
+        "SwellMaxDepth": swell_inputs["SwellMaxDepth"],
+    }, turbidity)
+    sand_scattering = color(material, "SurfSandScattering", (0.006, 0.0058, 0.005), -500, 1440)
+    sand_absorption = color(material, "SurfSandAbsorption", (0.0003, 0.0005, 0.0009), -500, 1520)
+    milky_scatter = node(material, unreal.MaterialExpressionMultiply, -300, 1440)
+    connect(sand_scattering, milky_scatter, "A")
+    connect(turbidity, milky_scatter, "B")
+    scattering_total = node(material, unreal.MaterialExpressionAdd, -100, 1000)
+    connect(scattering_final, scattering_total, "A")
+    connect(milky_scatter, scattering_total, "B")
+    milky_absorb = node(material, unreal.MaterialExpressionMultiply, -300, 1520)
+    connect(sand_absorption, milky_absorb, "A")
+    connect(turbidity, milky_absorb, "B")
+    absorption_total = node(material, unreal.MaterialExpressionAdd, -100, 820)
+    connect(absorption, absorption_total, "A")
+    connect(milky_absorb, absorption_total, "B")
+
     phase_g = scalar(material, "PhaseG", 0.3, -500, 1160)
 
     water_output = node(material, unreal.MaterialExpressionSingleLayerWaterMaterialOutput, 0, 900)
-    connect(scattering_final, water_output, "ScatteringCoefficients")
-    connect(absorption, water_output, "AbsorptionCoefficients")
+    connect(scattering_total, water_output, "ScatteringCoefficients")
+    connect(absorption_total, water_output, "AbsorptionCoefficients")
     connect(phase_g, water_output, "PhaseG")
     # Explicit 1: what lies under the water (the seabed) is seen through it, only tinted by the volume.
     behind = scalar(material, "ColorScaleBehindWater", 1.0, -500, 1240)

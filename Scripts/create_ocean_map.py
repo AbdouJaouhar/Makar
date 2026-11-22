@@ -26,6 +26,8 @@ SKY_FOG_DENSITY = 0.0003
 
 # Swell lapping on the beaches of the lagoon (ocean settings and the wet sand band of M_Seabed).
 SHORE_SWELL_HEIGHT_M = 0.4
+SHORE_SWELL_PERIOD_S = 7.0
+SHORE_SWELL_MAX_DEPTH_M = 12.0
 
 # Post-process overrides (FPostProcessSettings property names), tuned on screenshots of the beach from the sea:
 # without them the sand clips to ~236/230/218; highlight compression alone also darkened the water by half,
@@ -110,11 +112,13 @@ def seabed_material():
     surface = expression(unreal.MaterialExpressionCustom, -700, -100)
     surface.set_editor_property("description", "Terrain Surface")
     surface.set_editor_property(
-        "code", "return OceanTerrainSurface(WorldPos, VertexNormal, Time, SwellHeight, SandColor, ToSun, ToCamera, Footprints, FootprintsSampler, FootprintTileSize, Roughness, Normal, Glint);")
+        "code", "return OceanTerrainSurface(WorldPos, VertexNormal, Time, SwellHeight, SandColor, ToSun, ToCamera, Footprints, FootprintsSampler, FootprintTileSize, "
+        "ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, SwellPeriod, SwellMaxDepth, Roughness, Normal, Glint);")
     surface.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
     surface.set_editor_property("include_file_paths", ["/Makar/Ocean.ush"])
     surface_inputs = []
-    for name in ("WorldPos", "VertexNormal", "Time", "SwellHeight", "SandColor", "ToSun", "ToCamera", "Footprints", "FootprintTileSize"):
+    for name in ("WorldPos", "VertexNormal", "Time", "SwellHeight", "SandColor", "ToSun", "ToCamera", "Footprints", "FootprintTileSize",
+                 "ShoreMap", "ShoreMapOrigin", "ShoreMapSize", "SwellPeriod", "SwellMaxDepth"):
         custom_input = unreal.CustomInput()
         custom_input.set_editor_property("input_name", name)
         surface_inputs.append(custom_input)
@@ -145,6 +149,17 @@ def seabed_material():
     footprints.set_editor_property("texture", unreal.load_asset("/Engine/EngineResources/Black.Black"))
     connect(footprints, surface, "Footprints")
     connect(scalar("SandFootprintTileSize", 0.0, -1000, 900), surface, "FootprintTileSize")
+    # Coastal data (AOceanBathymetry, set on its dynamic instance) and the shore swell, for the wave ripples.
+    shore_map = expression(unreal.MaterialExpressionTextureObjectParameter, -1300, 1000)
+    shore_map.set_editor_property("parameter_name", "ShoreMap")
+    shore_map.set_editor_property("texture", unreal.load_asset("/Engine/EngineResources/Black.Black"))
+    connect(shore_map, surface, "ShoreMap")
+    shore_origin = expression(unreal.MaterialExpressionVectorParameter, -1300, 1100)
+    shore_origin.set_editor_property("parameter_name", "ShoreMapOrigin")
+    connect(shore_origin, surface, "ShoreMapOrigin")
+    connect(scalar("ShoreMapSize", 0.0, -1300, 1200), surface, "ShoreMapSize")
+    connect(scalar("ShoreSwellPeriod", SHORE_SWELL_PERIOD_S, -1300, 1280), surface, "SwellPeriod")
+    connect(scalar("ShoreSwellMaxDepth", SHORE_SWELL_MAX_DEPTH_M, -1300, 1360), surface, "SwellMaxDepth")
     MEL.connect_material_property(surface, "", unreal.MaterialProperty.MP_BASE_COLOR)
     MEL.connect_material_property(surface, "Roughness", unreal.MaterialProperty.MP_ROUGHNESS)
     MEL.connect_material_property(surface, "Normal", unreal.MaterialProperty.MP_NORMAL)
@@ -205,7 +220,8 @@ def caribbean_sea_state(ocean):
     settings.set_editor_property("foam_intensity", 1.5)
     settings.set_editor_property("foam_decay", 0.25)
     settings.set_editor_property("shore_swell_height", SHORE_SWELL_HEIGHT_M)
-    settings.set_editor_property("shore_swell_period", 7.0)
+    settings.set_editor_property("shore_swell_period", SHORE_SWELL_PERIOD_S)
+    settings.set_editor_property("shore_swell_max_depth", SHORE_SWELL_MAX_DEPTH_M)
     settings.set_editor_property("resolution", 256)
     ocean.set_editor_property("settings", settings)
 

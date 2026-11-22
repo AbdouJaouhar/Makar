@@ -433,10 +433,12 @@ void AOceanBathymetry::Build()
 		}
 	}
 	Terrain->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, TArray<FVector2D>(), TArray<FLinearColor>(), Tangents, false);
+	BuildShoreTexture(*Data);
+	ShoreData = Data;
 	BuildFootprintTexture();
 	if (UMaterialInterface* Material = TerrainMaterial.LoadSynchronous())
 	{
-		// A dynamic instance carries the simulated footprints to the sand shader.
+		// A dynamic instance carries the simulated footprints and the coastal data (wave ripples) to the sand shader.
 		if (!TerrainMaterialInstance || TerrainMaterialInstance->Parent != Material)
 		{
 			TerrainMaterialInstance = UMaterialInstanceDynamic::Create(Material, this);
@@ -446,11 +448,14 @@ void AOceanBathymetry::Build()
 			TerrainMaterialInstance->SetTextureParameterValue(TEXT("SandFootprints"), FootprintTexture);
 			TerrainMaterialInstance->SetScalarParameterValue(TEXT("SandFootprintTileSize"), FootprintTileSize);
 		}
+		if (ShoreTexture)
+		{
+			TerrainMaterialInstance->SetTextureParameterValue(TEXT("ShoreMap"), ShoreTexture);
+			TerrainMaterialInstance->SetVectorParameterValue(TEXT("ShoreMapOrigin"), FLinearColor(Data->OriginM.X, Data->OriginM.Y, 0.f, 0.f));
+			TerrainMaterialInstance->SetScalarParameterValue(TEXT("ShoreMapSize"), Data->SizeM);
+		}
 		Terrain->SetMaterial(0, TerrainMaterialInstance);
 	}
-
-	BuildShoreTexture(*Data);
-	ShoreData = Data;
 	bBuilt = true;
 }
 
