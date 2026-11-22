@@ -46,6 +46,62 @@ float OceanValueNoise(const FVector2f& P)
 	return ValueNoiseImpl(P);
 }
 
+namespace
+{
+	/** Height in [0, 1] and slope in [-1, 1]^2 at a lattice node. */
+	void LatticeNode(int32 X, int32 Y, float& OutValue, FVector2f& OutSlope)
+	{
+		const uint32 Hash = ShoreHash(uint32(X) * 1597334677u ^ ShoreHash(uint32(Y)));
+		OutValue = float(Hash) / 4294967295.f;
+		OutSlope.X = float(ShoreHash(Hash ^ 0x68bc21ebu)) / 4294967295.f * 2.f - 1.f;
+		OutSlope.Y = float(ShoreHash(Hash ^ 0x02e5be93u)) / 4294967295.f * 2.f - 1.f;
+	}
+}
+
+float OceanGradientNoise(const FVector2f& P)
+{
+	const float FloorX = FMath::FloorToFloat(P.X);
+	const float FloorY = FMath::FloorToFloat(P.Y);
+	const int32 X = int32(FloorX);
+	const int32 Y = int32(FloorY);
+	const float TX = P.X - FloorX;
+	const float TY = P.Y - FloorY;
+
+	// Cubic Hermite basis: value weights H and slope weights T of the cell's corner 0 and corner 1.
+	const float HX[2] = { 1.f - TX * TX * (3.f - 2.f * TX), TX * TX * (3.f - 2.f * TX) };
+	const float HY[2] = { 1.f - TY * TY * (3.f - 2.f * TY), TY * TY * (3.f - 2.f * TY) };
+	const float SX[2] = { TX * (1.f - TX) * (1.f - TX), TX * TX * (TX - 1.f) };
+	const float SY[2] = { TY * (1.f - TY) * (1.f - TY), TY * TY * (TY - 1.f) };
+
+	float Sum = 0.f;
+	for (int32 J = 0; J < 2; ++J)
+	{
+		for (int32 I = 0; I < 2; ++I)
+		{
+			float Value;
+			FVector2f Slope;
+			LatticeNode(X + I, Y + J, Value, Slope);
+			Sum += Value * HX[I] * HY[J] + Slope.X * SX[I] * HY[J] + Slope.Y * HX[I] * SY[J];
+		}
+	}
+	return Sum;
+}
+
+float OceanFractalNoise(const FVector2f& P, float WavelengthM, int32 Octaves, float Persistence)
+{
+	float Sum = 0.f;
+	float Amplitude = 1.f;
+	float Wavelength = WavelengthM;
+	for (int32 Octave = 0; Octave < Octaves; ++Octave)
+	{
+		// A different offset per octave so the octaves' lattices never line up.
+		Sum += Amplitude * (OceanGradientNoise(P / Wavelength + FVector2f(17.3f, 41.9f) * float(Octave)) - 0.5f);
+		Amplitude *= Persistence;
+		Wavelength *= 0.5f;
+	}
+	return Sum;
+}
+
 FOceanShoreWaveSample OceanShoreWave(const FOceanShoreData& Shore, const FVector2f& PositionM, float TimeS, const FOceanShoreSwell& Swell)
 {
 	FOceanShoreWaveSample Out;

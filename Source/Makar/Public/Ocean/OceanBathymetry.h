@@ -62,9 +62,29 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "10", Units = "Meters"))
 	float IslandRadius = 250.f;
 
-	/** How far the coastline wanders in and out of the circle. */
+	/** How far the coastline wanders in and out of the circle (large bays and headlands). */
 	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0", Units = "Meters"))
 	float CoastlineVariation = 45.f;
+
+	/** Amplitude of the fractal detail of the coastline (coves, points), from 120 m wavelength down. */
+	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0", Units = "Meters"))
+	float CoastlineDetail = 45.f;
+
+	/**
+	 * Amplitude ratio between successive octaves of the coastline detail. In theory a contour of a fractal surface
+	 * with Hurst exponent H has dimension 2 - H with Persistence = 2^-H (0.57 for D = 1.2), but on a 250 m island
+	 * sampled at 2.5 m the large circle dominates. Measured (box counting, detail 45 m): 0.57 -> 1.08,
+	 * 0.65 -> 1.12, 0.72 -> 1.18, 0.8 -> 1.27; 0.75 gives ~1.2, like real coasts.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0.1", ClampMax = "0.9"))
+	float CoastlinePersistence = 0.75f;
+
+	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "1", ClampMax = "10"))
+	int32 CoastlineOctaves = 6;
+
+	/** Box-counting dimension of the coastline measured on the last build (real coasts: ~1.15-1.25). */
+	UPROPERTY(VisibleAnywhere, Category = "Island")
+	float CoastlineFractalDimension = 0.f;
 
 	/** Height of the beach berm, the sand bank the swash builds above the waterline. */
 	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0.1", Units = "Meters"))

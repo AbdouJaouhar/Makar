@@ -156,6 +156,66 @@ namespace
 	}
 }
 
+namespace
+{
+	/**
+	 * Box-counting dimension of a curve drawn on the grid: number of boxes of side S (in cells) that touch it,
+	 * for S = 2..64, and D = -slope of log N against log S (least squares). Box sizes start at 2 cells because
+	 * the shoreline mask is two cells thick.
+	 */
+	float BoxCountingDimension(const TArray<bool>& Mask, int32 N)
+	{
+		TArray<float> LogSize, LogCount;
+		for (int32 Size = 2; Size <= 64; Size *= 2)
+		{
+			int32 Count = 0;
+			for (int32 BY = 0; BY < N; BY += Size)
+			{
+				for (int32 BX = 0; BX < N; BX += Size)
+				{
+					bool bTouches = false;
+					for (int32 Y = BY; Y < FMath::Min(BY + Size, N) && !bTouches; ++Y)
+					{
+						for (int32 X = BX; X < FMath::Min(BX + Size, N); ++X)
+						{
+							if (Mask[Y * N + X])
+							{
+								bTouches = true;
+								break;
+							}
+						}
+					}
+					Count += bTouches ? 1 : 0;
+				}
+			}
+			if (Count > 0)
+			{
+				LogSize.Add(FMath::Loge(float(Size)));
+				LogCount.Add(FMath::Loge(float(Count)));
+			}
+		}
+		if (LogSize.Num() < 2)
+		{
+			return 0.f;
+		}
+		float MeanX = 0.f, MeanY = 0.f;
+		for (int32 I = 0; I < LogSize.Num(); ++I)
+		{
+			MeanX += LogSize[I];
+			MeanY += LogCount[I];
+		}
+		MeanX /= LogSize.Num();
+		MeanY /= LogSize.Num();
+		float Covariance = 0.f, Variance = 0.f;
+		for (int32 I = 0; I < LogSize.Num(); ++I)
+		{
+			Covariance += (LogSize[I] - MeanX) * (LogCount[I] - MeanY);
+			Variance += (LogSize[I] - MeanX) * (LogSize[I] - MeanX);
+		}
+		return Variance > 0.f ? -Covariance / Variance : 0.f;
+	}
+}
+
 AOceanBathymetry::AOceanBathymetry()
 {
 	PrimaryActorTick.bCanEverTick = false;
@@ -220,10 +280,11 @@ FOceanTerrainSample AOceanBathymetry::SampleTerrain(const FVector2f& PositionM) 
 	}
 
 	// Signed distance-like coordinate across the coast: negative inland, positive at sea.
-	// Two octaves of noise add coves and small points to the large bays of the harmonics.
+	// Fractal gradient noise adds coves and points at every scale to the large bays of the harmonics
+	// (its dimension is measured on build, see CoastlineFractalDimension).
 	const FVector2f Seeded = PositionM + FVector2f(Seed * 37.1f, Seed * 11.3f);
 	const float Across = Delta.Size() - (IslandRadius + CoastlineVariation * Coast)
-		+ 18.f * (OceanValueNoise(Seeded / 80.f) - 0.5f) + 5.f * (OceanValueNoise(Seeded / 22.f) - 0.5f);
+		+ CoastlineDetail * OceanFractalNoise(Seeded, 120.f, CoastlineOctaves, CoastlinePersistence);
 	Out.Inland = -Across;
 	if (Across < 0.f)
 	{
@@ -232,12 +293,12 @@ FOceanTerrainSample AOceanBathymetry::SampleTerrain(const FVector2f& PositionM) 
 		const float Berm = FMath::Max(BermHeight, 0.1f);
 		const float Beach = Berm * (1.f - FMath::Exp(-Inland * LandSlope / Berm));
 		// Wooded hills behind beaches of varying width.
-		const float BeachWidth = 15.f + 35.f * OceanValueNoise(Seeded / 90.f + 5.3f);
+		const float BeachWidth = 15.f + 35.f * OceanGradientNoise(Seeded / 90.f + 5.3f);
 		const float HillMask = FMath::SmoothStep(BeachWidth, BeachWidth + 70.f, Inland);
-		const float Hills = HillMask * (HillHeight * (0.45f + 0.55f * OceanValueNoise(Seeded / 110.f + 1.7f))
-			+ 7.f * (OceanValueNoise(Seeded / 35.f + 9.2f) - 0.5f) + 3.f * (OceanValueNoise(Seeded / 14.f + 4.4f) - 0.5f));
+		const float Hills = HillMask * (HillHeight * (0.45f + 0.55f * OceanGradientNoise(Seeded / 110.f + 1.7f))
+			+ 7.f * (OceanGradientNoise(Seeded / 35.f + 9.2f) - 0.5f) + 3.f * (OceanGradientNoise(Seeded / 14.f + 4.4f) - 0.5f));
 		// Rocky points: the ground rises steeply right from the water (~45 degrees, shaded as rock by slope).
-		const float Rock = Rockiness * FMath::SmoothStep(0.45f, 0.7f, OceanValueNoise(Seeded / 70.f + 3.1f));
+		const float Rock = Rockiness * FMath::SmoothStep(0.45f, 0.7f, OceanGradientNoise(Seeded / 70.f + 3.1f));
 		const float Cliff = Rock * 8.f * FMath::SmoothStep(0.f, 8.f, Inland);
 		const float Ground = Beach + Hills + Cliff;
 		// Understory: 1.5-3 m of lumpy bush mass behind the beach, under the trees of AOceanIslandFlora.
@@ -246,7 +307,7 @@ FOceanTerrainSample AOceanBathymetry::SampleTerrain(const FVector2f& PositionM) 
 		const float ForestRamp = FMath::SmoothStep(2.f, 6.f, Ground + 1.5f * (OceanValueNoise(PositionM / 40.f) - 0.5f));
 		const float Forest = ForestRamp * ForestRamp * (1.f - 0.7f * Rock);
 		Out.Ground = Ground;
-		Out.Understory = Forest * (1.5f + 1.f * OceanValueNoise(Seeded / 12.f + 2.2f) + 0.5f * OceanValueNoise(Seeded / 5.f + 8.1f));
+		Out.Understory = Forest * (1.5f + 1.f * OceanGradientNoise(Seeded / 12.f + 2.2f) + 0.5f * OceanGradientNoise(Seeded / 5.f + 8.1f));
 		Out.Rock = Rock;
 		return Out;
 	}
@@ -257,7 +318,7 @@ FOceanTerrainSample AOceanBathymetry::SampleTerrain(const FVector2f& PositionM) 
 		+ DropOffDepth * FMath::SmoothStep(ShelfWidth, ShelfWidth + DropOffWidth, Across);
 	Out.Ground = -Depth;
 	// Rocky points continue a little under water: boulders on the rocky shores.
-	Out.Rock = Rockiness * FMath::SmoothStep(0.45f, 0.7f, OceanValueNoise(Seeded / 70.f + 3.1f)) * (1.f - FMath::SmoothStep(5.f, 25.f, Across));
+	Out.Rock = Rockiness * FMath::SmoothStep(0.45f, 0.7f, OceanGradientNoise(Seeded / 70.f + 3.1f)) * (1.f - FMath::SmoothStep(5.f, 25.f, Across));
 	return Out;
 }
 
@@ -307,6 +368,9 @@ void AOceanBathymetry::Build()
 			}
 		}
 	}
+
+	CoastlineFractalDimension = BoxCountingDimension(IsShore, N);
+	UE_LOG(LogTemp, Display, TEXT("OceanBathymetry: coastline fractal dimension %.3f (real coasts ~1.15-1.25)"), CoastlineFractalDimension);
 
 	// Signed distance to the shore, positive at sea.
 	const TArray<int32> Nearest = NearestSeeds(IsShore, N);

@@ -43,6 +43,18 @@ inline float OceanDepthAttenuation(float DepthM, float SignificantHeightM)
 /** Smooth lattice value noise in [0, 1], one lattice cell per unit. Identical to OceanValueNoise in Shaders/Ocean.ush. */
 MAKAR_API float OceanValueNoise(const FVector2f& P);
 
+/**
+ * Value-gradient noise, ~[0, 1] (slightly beyond at the extremes), one lattice cell per unit.
+ * Bicubic Hermite cell constrained in height *and slope* at its corners (Thorimbert & Chopard, "Polynomial
+ * methods for fast procedural terrain generation", configuration D2M1N3). OceanValueNoise is the zero-slope
+ * case, whose flat spots at the lattice nodes show as grid-aligned patterns; random slopes remove them.
+ * Identical to OceanGradientNoise in Shaders/Ocean.ush.
+ */
+MAKAR_API float OceanGradientNoise(const FVector2f& P);
+
+/** Fractal sum of OceanGradientNoise, centred on 0: octaves halve the wavelength, Persistence scales the amplitude. */
+MAKAR_API float OceanFractalNoise(const FVector2f& P, float WavelengthM, int32 Octaves, float Persistence);
+
 /** Highest point of the beach the swash can reach is well below this, m above sea level. */
 constexpr float OceanSwashMaxHeightM = 1.5f;
 

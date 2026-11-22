@@ -67,6 +67,46 @@ float OceanValueNoise(float2 P)
 	return lerp(Bottom, Top, U.y);
 }
 
+// Value-gradient noise (Thorimbert & Chopard D2M1N3): bicubic Hermite cell constrained in height and slope at its
+// corners, ~[0, 1]. OceanValueNoise is its zero-slope case, which shows grid-aligned flat spots. Identical to
+// OceanGradientNoise in OceanShoreData.cpp.
+void OceanLatticeNode(int X, int Y, out float Value, out float2 Slope)
+{
+	const uint Hash = OceanShoreHash(uint(X) * 1597334677u ^ OceanShoreHash(uint(Y)));
+	Value = float(Hash) / 4294967295.0;
+	Slope.x = float(OceanShoreHash(Hash ^ 0x68bc21ebu)) / 4294967295.0 * 2.0 - 1.0;
+	Slope.y = float(OceanShoreHash(Hash ^ 0x02e5be93u)) / 4294967295.0 * 2.0 - 1.0;
+}
+
+float OceanGradientNoise(float2 P)
+{
+	const float2 Cell = floor(P);
+	const int X = int(Cell.x);
+	const int Y = int(Cell.y);
+	const float2 T = P - Cell;
+	const float2 H1 = T * T * (3.0 - 2.0 * T);
+	const float2 H0 = 1.0 - H1;
+	const float2 S0 = T * (1.0 - T) * (1.0 - T);
+	const float2 S1 = T * T * (T - 1.0);
+
+	float Sum = 0.0;
+	[unroll] for (int J = 0; J < 2; ++J)
+	{
+		[unroll] for (int I = 0; I < 2; ++I)
+		{
+			float Value;
+			float2 Slope;
+			OceanLatticeNode(X + I, Y + J, Value, Slope);
+			const float HX = I == 0 ? H0.x : H1.x;
+			const float HY = J == 0 ? H0.y : H1.y;
+			const float SX = I == 0 ? S0.x : S1.x;
+			const float SY = J == 0 ? S0.y : S1.y;
+			Sum += Value * HX * HY + Slope.x * SX * HY + Slope.y * HX * SY;
+		}
+	}
+	return Sum;
+}
+
 // Swash on the beach, identical to OceanShoreData.h.
 static const float OceanSwashMaxHeightM = 1.5;
 
