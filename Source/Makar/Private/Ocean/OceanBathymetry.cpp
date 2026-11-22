@@ -2,8 +2,12 @@
 
 #include "Async/ParallelFor.h"
 #include "Engine/Texture2D.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "Materials/MaterialInterface.h"
 #include "Ocean/OceanMeshComponent.h"
+#include "Ocean/OceanSandFootprints.h"
 #include "TextureResource.h"
 
 namespace
@@ -429,14 +433,89 @@ void AOceanBathymetry::Build()
 		}
 	}
 	Terrain->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, TArray<FVector2D>(), TArray<FLinearColor>(), Tangents, false);
+	BuildFootprintTexture();
 	if (UMaterialInterface* Material = TerrainMaterial.LoadSynchronous())
 	{
-		Terrain->SetMaterial(0, Material);
+		// A dynamic instance carries the simulated footprints to the sand shader.
+		if (!TerrainMaterialInstance || TerrainMaterialInstance->Parent != Material)
+		{
+			TerrainMaterialInstance = UMaterialInstanceDynamic::Create(Material, this);
+		}
+		if (FootprintTexture)
+		{
+			TerrainMaterialInstance->SetTextureParameterValue(TEXT("SandFootprints"), FootprintTexture);
+			TerrainMaterialInstance->SetScalarParameterValue(TEXT("SandFootprintTileSize"), FootprintTileSize);
+		}
+		Terrain->SetMaterial(0, TerrainMaterialInstance);
 	}
 
 	BuildShoreTexture(*Data);
 	ShoreData = Data;
 	bBuilt = true;
+}
+
+void AOceanBathymetry::BuildFootprintTexture()
+{
+	if (FootprintTexture && BuiltFootprintTrails == FootprintTrails && BuiltFootprintTileSize == FootprintTileSize)
+	{
+		return; // ~1 s of simulation: only redone when its settings change
+	}
+	FOceanSandFootprintSettings Settings;
+	Settings.Trails = FootprintTrails;
+	Settings.TileSizeM = FootprintTileSize;
+	Settings.Seed = Seed;
+	const double Start = FPlatformTime::Seconds();
+	const TArray<FVector2f> Texels = OceanSimulateSandFootprints(Settings);
+	const int32 N = Settings.Resolution;
+	float MinHeight = 0.f, MaxHeight = 0.f, Trampled = 0.f;
+	for (const FVector2f& Texel : Texels)
+	{
+		MinHeight = FMath::Min(MinHeight, Texel.X);
+		MaxHeight = FMath::Max(MaxHeight, Texel.X);
+		Trampled += Texel.Y > 0.5f ? 1.f : 0.f;
+	}
+	UE_LOG(LogTemp, Display, TEXT("OceanBathymetry: %d footprint trails in %.2f s, height %.1f..%.1f cm, %.1f%% trampled"),
+		FootprintTrails, FPlatformTime::Seconds() - Start, MinHeight * 100.f, MaxHeight * 100.f, 100.f * Trampled / FMath::Max(Texels.Num(), 1));
+#if WITH_EDITOR
+	// Shaded relief of the tile (Saved/SandFootprints.pgm), to judge the simulation without rendering the beach.
+	{
+		TArray<uint8> Image;
+		const FString Header = FString::Printf(TEXT("P5 %d %d 255\n"), N, N);
+		Image.Append(reinterpret_cast<const uint8*>(TCHAR_TO_ANSI(*Header)), Header.Len());
+		const float Cell = FootprintTileSize / N;
+		for (int32 Y = 0; Y < N; ++Y)
+		{
+			for (int32 X = 0; X < N; ++X)
+			{
+				const float DX = (Texels[Y * N + (X + 1) % N].X - Texels[Y * N + X].X) / Cell;
+				const float DY = (Texels[((Y + 1) % N) * N + X].X - Texels[Y * N + X].X) / Cell;
+				const FVector3f Normal = FVector3f(-DX, -DY, 1.f).GetSafeNormal();
+				const float Light = FMath::Max(FVector3f::DotProduct(Normal, FVector3f(-0.6f, -0.3f, 0.75f).GetSafeNormal()), 0.f);
+				Image.Add(uint8(FMath::Clamp(Light * 255.f, 0.f, 255.f)));
+			}
+		}
+		FFileHelper::SaveArrayToFile(Image, *(FPaths::ProjectSavedDir() / TEXT("SandFootprints.pgm")));
+	}
+#endif
+
+	UTexture2D* Texture = UTexture2D::CreateTransient(N, N, PF_G32R32F);
+	if (!Texture)
+	{
+		return;
+	}
+	Texture->SRGB = false;
+	Texture->Filter = TF_Bilinear;
+	Texture->AddressX = TA_Wrap; // periodic tile
+	Texture->AddressY = TA_Wrap;
+	Texture->CompressionSettings = TC_HDR;
+	FTexture2DMipMap& Mip = Texture->GetPlatformData()->Mips[0];
+	void* Destination = Mip.BulkData.Lock(LOCK_READ_WRITE);
+	FMemory::Memcpy(Destination, Texels.GetData(), int64(Texels.Num()) * sizeof(FVector2f));
+	Mip.BulkData.Unlock();
+	Texture->UpdateResource();
+	FootprintTexture = Texture;
+	BuiltFootprintTrails = FootprintTrails;
+	BuiltFootprintTileSize = FootprintTileSize;
 }
 
 void AOceanBathymetry::BuildShoreTexture(const FOceanShoreData& Data)

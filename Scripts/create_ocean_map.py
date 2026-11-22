@@ -110,11 +110,11 @@ def seabed_material():
     surface = expression(unreal.MaterialExpressionCustom, -700, -100)
     surface.set_editor_property("description", "Terrain Surface")
     surface.set_editor_property(
-        "code", "return OceanTerrainSurface(WorldPos, VertexNormal, Time, SwellHeight, SandColor, ToSun, ToCamera, Roughness, Normal, Glint);")
+        "code", "return OceanTerrainSurface(WorldPos, VertexNormal, Time, SwellHeight, SandColor, ToSun, ToCamera, Footprints, FootprintsSampler, FootprintTileSize, Roughness, Normal, Glint);")
     surface.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
     surface.set_editor_property("include_file_paths", ["/Makar/Ocean.ush"])
     surface_inputs = []
-    for name in ("WorldPos", "VertexNormal", "Time", "SwellHeight", "SandColor", "ToSun", "ToCamera"):
+    for name in ("WorldPos", "VertexNormal", "Time", "SwellHeight", "SandColor", "ToSun", "ToCamera", "Footprints", "FootprintTileSize"):
         custom_input = unreal.CustomInput()
         custom_input.set_editor_property("input_name", name)
         surface_inputs.append(custom_input)
@@ -139,6 +139,12 @@ def seabed_material():
     to_sun.set_editor_property("default_value", unreal.LinearColor(*sun_direction(), 0.0))
     connect(to_sun, surface, "ToSun")
     connect(expression(unreal.MaterialExpressionCameraVectorWS, -1000, 700), surface, "ToCamera")
+    # Footprints simulated by AOceanBathymetry (set on its dynamic instance); black = untouched sand.
+    footprints = expression(unreal.MaterialExpressionTextureObjectParameter, -1000, 800)
+    footprints.set_editor_property("parameter_name", "SandFootprints")
+    footprints.set_editor_property("texture", unreal.load_asset("/Engine/EngineResources/Black.Black"))
+    connect(footprints, surface, "Footprints")
+    connect(scalar("SandFootprintTileSize", 0.0, -1000, 900), surface, "FootprintTileSize")
     MEL.connect_material_property(surface, "", unreal.MaterialProperty.MP_BASE_COLOR)
     MEL.connect_material_property(surface, "Roughness", unreal.MaterialProperty.MP_ROUGHNESS)
     MEL.connect_material_property(surface, "Normal", unreal.MaterialProperty.MP_NORMAL)
