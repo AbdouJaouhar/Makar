@@ -164,27 +164,39 @@ def seabed_material():
     MEL.connect_material_property(surface, "Roughness", unreal.MaterialProperty.MP_ROUGHNESS)
     MEL.connect_material_property(surface, "Normal", unreal.MaterialProperty.MP_NORMAL)
 
-    # Caustics (Shaders/Ocean.ush): light focused by the waves, added on top of the sunlit sand.
-    cell_size = scalar("CausticCellSize", 1.2, -1000, 480)
+    # Caustics (Shaders/Ocean.ush): sunlight focused by the simulated waves, from the curvature of the two finer
+    # cascades. AOceanActor sets their slope textures (Deriv1, Deriv2) on the terrain's material instance.
     fade_depth = scalar("CausticFadeDepth", 12.0, -1000, 560)
+    placeholder = unreal.load_asset("/Engine/EngineResources/Black.Black")
+    derivs = []
+    for index, y in ((1, 1500), (2, 1600)):
+        deriv = expression(unreal.MaterialExpressionTextureObjectParameter, -1300, y)
+        deriv.set_editor_property("parameter_name", f"Deriv{index}")
+        deriv.set_editor_property("texture", placeholder)
+        derivs.append(deriv)
     caustics = expression(unreal.MaterialExpressionCustom, -700, 400)
     caustics.set_editor_property("description", "Ocean Caustics")
-    caustics.set_editor_property("code", "return OceanCaustics(WorldPos, Time, CellSize, FadeDepth);")
+    caustics.set_editor_property(
+        "code", "return OceanCaustics(WorldPos, ToSun, Deriv1, Deriv1Sampler, Deriv2, Deriv2Sampler, "
+                "PatchSize1, PatchSize2, FadeDepth);")
     caustics.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT1)
     caustics.set_editor_property("include_file_paths", ["/Makar/Ocean.ush"])
     inputs = []
-    for name in ("WorldPos", "Time", "CellSize", "FadeDepth"):
+    for name in ("WorldPos", "ToSun", "Deriv1", "Deriv2", "PatchSize1", "PatchSize2", "FadeDepth"):
         custom_input = unreal.CustomInput()
         custom_input.set_editor_property("input_name", name)
         inputs.append(custom_input)
     caustics.set_editor_property("inputs", inputs)
     connect(world_pos, caustics, "WorldPos")
-    connect(time, caustics, "Time")
-    connect(cell_size, caustics, "CellSize")
+    connect(to_sun, caustics, "ToSun")
+    connect(derivs[0], caustics, "Deriv1")
+    connect(derivs[1], caustics, "Deriv2")
+    connect(scalar("PatchSize1", 0.0, -1300, 1700), caustics, "PatchSize1")  # 0 until the ocean sets them
+    connect(scalar("PatchSize2", 0.0, -1300, 1780), caustics, "PatchSize2")
     connect(fade_depth, caustics, "FadeDepth")
 
-    # Emissive in the same range as the sunlit sand (~albedo * sun lux / pi).
-    strength = scalar("CausticStrength", 3.0, -700, 560)
+    # Emissive in the same range as the sunlit sand (~albedo * sun lux / pi), times the focus above the mean.
+    strength = scalar("CausticStrength", 1.0, -700, 560)
     scaled = expression(unreal.MaterialExpressionMultiply, -450, 450)
     connect(caustics, scaled, "A")
     connect(strength, scaled, "B")

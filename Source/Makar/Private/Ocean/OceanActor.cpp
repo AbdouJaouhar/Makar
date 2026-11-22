@@ -231,6 +231,7 @@ void AOceanActor::InitializeSimulation()
 			It->EnsureBuilt();
 			ShoreData = It->GetShoreData();
 			ShoreTexture = It->GetShoreTexture();
+			Bathymetry = *It;
 			break;
 		}
 	}
@@ -285,6 +286,18 @@ void AOceanActor::UpdateMaterialParameters()
 			MaterialInstance->SetTextureParameterValue(OceanParams::Moments[Index], MomentTextures[Index]);
 		}
 		MaterialInstance->SetScalarParameterValue(OceanParams::PatchSize[Index], Sizes[Index]);
+	}
+	// Caustics on the sea floor come from the curvature of the same waves: the two finer cascades' slopes.
+	if (UMaterialInstanceDynamic* Floor = Bathymetry.IsValid() ? Bathymetry->GetTerrainMaterialInstance() : nullptr)
+	{
+		for (int32 Index = 1; Index < FOceanSimulation::NumCascades; ++Index)
+		{
+			if (bHasTextures)
+			{
+				Floor->SetTextureParameterValue(OceanParams::Derivatives[Index], DerivativeTextures[Index]);
+			}
+			Floor->SetScalarParameterValue(OceanParams::PatchSize[Index], bHasTextures ? Sizes[Index] : 0.f);
+		}
 	}
 	MaterialInstance->SetScalarParameterValue(OceanParams::Resolution, float(Simulation ? Simulation->GetResolution() : Settings.Resolution));
 	MaterialInstance->SetScalarParameterValue(OceanParams::GridSpacing, GridSpacing);

@@ -109,6 +109,9 @@ private:
 
 	/** Coastal data from the level's AOceanBathymetry, if any: calms the waves in shallow water. */
 	TSharedPtr<const FOceanShoreData> ShoreData;
+
+	/** The level's island, whose sea floor material receives the wave slopes for its caustics. */
+	TWeakObjectPtr<class AOceanBathymetry> Bathymetry;
 	UE::Tasks::FTask PendingTask;
 
 	UPROPERTY(Transient)

@@ -5,6 +5,7 @@
 #include "Ocean/OceanShoreData.h"
 #include "OceanBathymetry.generated.h"
 
+class UMaterialInstanceDynamic;
 class UMaterialInterface;
 class UOceanMeshComponent;
 class UTexture2D;
@@ -43,6 +44,9 @@ public:
 
 	/** RGBA = depth, signed distance to shore, wave travel time to shore, unused (see FOceanShoreData). */
 	UTexture2D* GetShoreTexture() const { return ShoreTexture; }
+
+	/** The terrain's material instance (sand, sea floor), for the ocean to pass its wave slopes (caustics). */
+	UMaterialInstanceDynamic* GetTerrainMaterialInstance() const { return TerrainMaterialInstance; }
 
 	/** Terrain height above sea level (m) from the analytic island shape: ground plus understory. */
 	float GetTerrainHeight(const FVector2f& PositionM) const;
