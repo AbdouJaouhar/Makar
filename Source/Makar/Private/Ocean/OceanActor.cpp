@@ -443,7 +443,22 @@ void AOceanActor::Tick(float DeltaSeconds)
 	{
 		PendingTask = UE::Tasks::FTask();
 		Swap(FrontFrame, BackFrame);
+		const double UploadStart = FPlatformTime::Seconds();
 		UploadFrame(*FrontFrame);
+
+		// Cost report every 5 s: worker time (waves + foam, off the game thread) and upload (game thread).
+		CostWorkerMs += FrontFrame->WorkerMs;
+		CostUploadMs += float((FPlatformTime::Seconds() - UploadStart) * 1000.0);
+		++CostFrames;
+		if (SimulationTime - CostReportTime > 5.f)
+		{
+			UE_LOG(LogTemp, Display, TEXT("OceanActor: %dx%d x %d cascades, worker %.2f ms, upload %.2f ms per frame (%d frames)"),
+				Simulation->GetResolution(), Simulation->GetResolution(), FOceanSimulation::NumCascades,
+				CostWorkerMs / CostFrames, CostUploadMs / CostFrames, CostFrames);
+			CostWorkerMs = CostUploadMs = 0.f;
+			CostFrames = 0;
+			CostReportTime = SimulationTime;
+		}
 	}
 
 	// Start the next one.
@@ -461,11 +476,13 @@ void AOceanActor::Tick(float DeltaSeconds)
 		const FVector2f CenterM = FVector2f(FVector2D(OceanMesh->GetComponentLocation()) * 0.01);
 		PendingTask = UE::Tasks::Launch(UE_SOURCE_LOCATION, [Sim, Target, Foam, FoamSettings, Shore, CenterM, Time, Delta]()
 		{
+			const double Start = FPlatformTime::Seconds();
 			Sim->Simulate(Time, Delta, *Target);
 			if (Foam)
 			{
 				Foam->Simulate(*Target, FoamSettings, Shore.Get(), CenterM, Delta);
 			}
+			Target->WorkerMs = float((FPlatformTime::Seconds() - Start) * 1000.0);
 		});
 	}
 

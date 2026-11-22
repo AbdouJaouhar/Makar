@@ -136,6 +136,12 @@ private:
 	TObjectPtr<UMaterialInstanceDynamic> MaterialInstance;
 
 	float SimulationTime = 0.f;
+
+	/** Running cost of the simulation, logged every few seconds. */
+	float CostWorkerMs = 0.f;
+	float CostUploadMs = 0.f;
+	int32 CostFrames = 0;
+	float CostReportTime = 0.f;
 	float LastLaunchTime = 0.f;
 	float GridGrowth = 0.f;
 	bool bNeedsInitialization = true;

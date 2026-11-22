@@ -44,6 +44,9 @@ struct FOceanFrame
 	/** World position (m) of the foam map's lower corner, and its width (m). */
 	FVector2f FoamMapOrigin = FVector2f::ZeroVector;
 	float FoamMapSize = 0.f;
+
+	/** Time the worker spent computing this frame (waves + foam), ms. */
+	float WorkerMs = 0.f;
 };
 
 /**
