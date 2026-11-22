@@ -63,11 +63,11 @@ public:
 
 	/** Vertex spacing around the camera, metres. */
 	UPROPERTY(EditAnywhere, Category = "Ocean|Rendering", meta = (ClampMin = "0.1"))
-	float GridSpacing = 0.5f;
+	float GridSpacing = 0.25f; // fine enough for the face and lip of a breaking wave of ~0.5 m
 
 	/** Quads from the centre to the edge of the uniform inner area. */
 	UPROPERTY(EditAnywhere, Category = "Ocean|Rendering", meta = (ClampMin = "8"))
-	int32 GridInnerQuads = 128;
+	int32 GridInnerQuads = 256; // with GridSpacing: a uniform area of +-64 m around the camera
 
 	/** Quads in the outer area, whose spacing grows geometrically up to the horizon. */
 	UPROPERTY(EditAnywhere, Category = "Ocean|Rendering", meta = (ClampMin = "8"))

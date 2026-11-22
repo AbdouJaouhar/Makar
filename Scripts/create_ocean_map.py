@@ -25,7 +25,7 @@ SKY_MIE_ABSORPTION = 0.00015
 SKY_FOG_DENSITY = 0.0003
 
 # Swell lapping on the beaches of the lagoon (ocean settings and the wet sand band of M_Seabed).
-SHORE_SWELL_HEIGHT_M = 0.4
+SHORE_SWELL_HEIGHT_M = 0.6  # a trade-wind beach: shore break of ~0.6 m
 SHORE_SWELL_PERIOD_S = 7.0
 SHORE_SWELL_MAX_DEPTH_M = 12.0
 

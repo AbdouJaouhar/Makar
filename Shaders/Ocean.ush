@@ -965,7 +965,10 @@ float OceanCellWalls(float2 P)
 		for (int X = -1; X <= 1; ++X)
 		{
 			const float2 Offset = float2(X, Y);
-			const float Distance = length(Offset + OceanHash22(Cell + Offset) - Local);
+			// Integer hash: the float hash degrades into blocky patterns at large coordinates.
+			const uint H = OceanCellHash(int2(Cell + Offset), 0x5b1u);
+			const float2 Feature = float2(OceanHash01(H), OceanHash01(OceanShoreHash(H ^ 0x68e31da4u)));
+			const float Distance = length(Offset + Feature - Local);
 			F2 = Distance < F1 ? F1 : min(F2, Distance);
 			F1 = min(F1, Distance);
 		}
