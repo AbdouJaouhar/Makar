@@ -30,6 +30,20 @@ AOceanIslandFlora::AOceanIslandFlora()
 	BarkMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_Bark.M_Bark")));
 	FoliageMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_Foliage.M_Foliage")));
 	RockMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_Rock.M_Rock")));
+
+	auto Infinigen = [](TArray<TSoftObjectPtr<UStaticMesh>>& Out, const TCHAR* Category, const TCHAR* Factory, int32 Count)
+	{
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			const FString Name = FString::Printf(TEXT("%s_%03d"), Factory, Index);
+			Out.Add(TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(FString::Printf(TEXT("/Game/Ocean/Infinigen/%s/%s.%s"), Category, *Name, *Name))));
+		}
+	};
+	Infinigen(RockMeshes, TEXT("rocks"), TEXT("BoulderFactory"), 4);
+	Infinigen(CoralMeshes, TEXT("corals"), TEXT("ElkhornCoralFactory"), 2);
+	Infinigen(CoralMeshes, TEXT("corals"), TEXT("StarCoralFactory"), 2);
+	Infinigen(UrchinMeshes, TEXT("shells"), TEXT("UrchinFactory"), 2);
+	Infinigen(ShellMeshes, TEXT("shells"), TEXT("ConchFactory"), 2);
 }
 
 void AOceanIslandFlora::OnConstruction(const FTransform& Transform)
@@ -118,21 +132,47 @@ void AOceanIslandFlora::Build()
 		Meshes.Add(Mesh);
 		Shrubs.Add(AddInstancer(Mesh, 1500.f));
 	}
-	for (int32 Variant = 0; Variant < NumRockVariants; ++Variant)
+	// Infinigen assets that are present; each instancer remembers its mesh's size, to scale instances to metres.
+	TArray<float> RockSizes, CoralSizes, UrchinSizes, ShellSizes;
+	TArray<UHierarchicalInstancedStaticMeshComponent*> Corals, Urchins, Shells;
+	auto LoadSet = [&](const TArray<TSoftObjectPtr<UStaticMesh>>& Soft, float CullDistanceM,
+		TArray<UHierarchicalInstancedStaticMeshComponent*>& Instancers, TArray<float>& SizesM)
 	{
-		UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeRock(Seed * 400 + Variant), { Stone });
-		Meshes.Add(Mesh);
-		Rocks.Add(AddInstancer(Mesh, 2000.f));
+		for (const TSoftObjectPtr<UStaticMesh>& Entry : Soft)
+		{
+			if (UStaticMesh* Mesh = Entry.LoadSynchronous())
+			{
+				Instancers.Add(AddInstancer(Mesh, CullDistanceM));
+				SizesM.Add(FMath::Max(float(Mesh->GetBounds().BoxExtent.GetMax()) * 2.f * 0.01f, 0.01f));
+			}
+		}
+	};
+	LoadSet(RockMeshes, 2000.f, Rocks, RockSizes);
+	LoadSet(CoralMeshes, 400.f, Corals, CoralSizes);
+	LoadSet(UrchinMeshes, 80.f, Urchins, UrchinSizes);
+	LoadSet(ShellMeshes, 60.f, Shells, ShellSizes);
+	if (Rocks.Num() == 0)
+	{
+		for (int32 Variant = 0; Variant < NumRockVariants; ++Variant)
+		{
+			UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeRock(Seed * 400 + Variant), { Stone });
+			Meshes.Add(Mesh);
+			Rocks.Add(AddInstancer(Mesh, 2000.f));
+			RockSizes.Add(2.f); // MakeRock: unit radius
+		}
 	}
 
 	// --- Scatter on the island, on jittered grids, with rules per species ---
 	FRandomStream Random(Seed);
 	const FVector2f IslandCenter(float(Island->GetActorLocation().X * 0.01), float(Island->GetActorLocation().Y * 0.01));
-	TArray<TArray<FTransform>> PalmTransforms, TreeTransforms, ShrubTransforms, RockTransforms;
+	TArray<TArray<FTransform>> PalmTransforms, TreeTransforms, ShrubTransforms, RockTransforms, CoralTransforms, UrchinTransforms, ShellTransforms;
 	PalmTransforms.SetNum(NumPalmVariants);
 	TreeTransforms.SetNum(NumTreeVariants);
 	ShrubTransforms.SetNum(NumShrubVariants);
-	RockTransforms.SetNum(NumRockVariants);
+	RockTransforms.SetNum(Rocks.Num());
+	CoralTransforms.SetNum(Corals.Num());
+	UrchinTransforms.SetNum(Urchins.Num());
+	ShellTransforms.SetNum(Shells.Num());
 
 	auto Scatter = [&](float CellM, TFunctionRef<void(const FVector2f&, const FOceanTerrainSample&)> Place)
 	{
@@ -219,11 +259,83 @@ void AOceanIslandFlora::Build()
 		{
 			return;
 		}
-		const float Size = FMath::Lerp(0.6f, 2.8f, FMath::Square(Random.FRand())) * (0.7f + Terrain.Rock);
-		RockTransforms[Random.RandRange(0, NumRockVariants - 1)].Add(FTransform(
+		const float SizeM = FMath::Lerp(1.2f, 5.6f, FMath::Square(Random.FRand())) * (0.7f + Terrain.Rock);
+		const int32 Variant = Random.RandRange(0, Rocks.Num() - 1);
+		const float Scale = SizeM / RockSizes[Variant];
+		RockTransforms[Variant].Add(FTransform(
 			FRotator(Random.FRandRange(-12.f, 12.f), Random.FRandRange(0.f, 360.f), Random.FRandRange(-12.f, 12.f)),
-			Ground(Position, Terrain.Ground, 20.f * Size), FVector(Size)));
+			Ground(Position, Terrain.Ground, 10.f * SizeM), FVector(Scale)));
 	});
+
+	// Patch reefs, exactly where the sea floor material draws them (OceanTerrainSurface in Shaders/Ocean.ush:
+	// same warped fractal gradient noise, evaluated on the CPU with the identical functions).
+	auto ReefCover = [](const FVector2f& PosM, float GroundM)
+	{
+		const FVector2f Warp = 8.f * FVector2f(OceanGradientNoise(PosM / 31.f + FVector2f(5.f)), OceanGradientNoise(PosM / 31.f + FVector2f(9.f))) - FVector2f(4.f);
+		const float Reef = OceanFractalNoise(PosM + Warp, 22.f, 5, 0.55f) + 0.5f;
+		const float Deep = Smooth(-0.8f, -2.2f, GroundM);
+		return Smooth(0.66f, 0.72f, Reef) * Deep;
+	};
+	if (Corals.Num() > 0)
+	{
+		// Coral heads on the reefs, ~2 m apart, from 2 to 15 m deep.
+		Scatter(2.f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
+		{
+			if (Terrain.Ground > -1.5f || Terrain.Ground < -15.f)
+			{
+				return;
+			}
+			if (Random.FRand() >= 0.75f * CoralDensity * ReefCover(Position, Terrain.Ground))
+			{
+				return;
+			}
+			const int32 Variant = Random.RandRange(0, Corals.Num() - 1);
+			const float SizeM = FMath::Lerp(0.6f, 2.f, Random.FRand());
+			CoralTransforms[Variant].Add(FTransform(FRotator(Random.FRandRange(-8.f, 8.f), Random.FRandRange(0.f, 360.f), Random.FRandRange(-8.f, 8.f)),
+				Ground(Position, Terrain.Ground, 10.f), FVector(SizeM / CoralSizes[Variant])));
+		});
+	}
+	if (Urchins.Num() > 0)
+	{
+		// Long-spined urchins: in the shelter of the reef edges and of submerged rocks.
+		Scatter(1.5f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
+		{
+			if (Terrain.Ground > -0.8f || Terrain.Ground < -8.f)
+			{
+				return;
+			}
+			const float Cover = ReefCover(Position, Terrain.Ground);
+			const float Edge = Cover * (1.f - Cover) * 4.f; // most where the reef meets the sand
+			if (Random.FRand() >= 0.12f * CoralDensity * FMath::Max(Edge, Terrain.Rock))
+			{
+				return;
+			}
+			const int32 Variant = Random.RandRange(0, Urchins.Num() - 1);
+			const float SizeM = FMath::Lerp(0.15f, 0.3f, Random.FRand());
+			UrchinTransforms[Variant].Add(FTransform(FRotator(0.f, Random.FRandRange(0.f, 360.f), 0.f),
+				Ground(Position, Terrain.Ground, 3.f), FVector(SizeM / UrchinSizes[Variant])));
+		});
+	}
+	if (Shells.Num() > 0)
+	{
+		// Shells washed up on the beach, most of them near the wrack line.
+		Scatter(2.5f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
+		{
+			if (Terrain.Ground < 0.15f || Terrain.Ground > 1.5f || Terrain.Rock > 0.3f)
+			{
+				return;
+			}
+			if (Random.FRand() >= 0.04f)
+			{
+				return;
+			}
+			const int32 Variant = Random.RandRange(0, Shells.Num() - 1);
+			const float SizeM = FMath::Lerp(0.08f, 0.2f, Random.FRand());
+			// Lying on their side, half sunk in the sand.
+			ShellTransforms[Variant].Add(FTransform(FRotator(Random.FRandRange(60.f, 100.f), Random.FRandRange(0.f, 360.f), 0.f),
+				Ground(Position, Terrain.Ground, 30.f * SizeM), FVector(SizeM / ShellSizes[Variant])));
+		});
+	}
 
 	auto AddAll = [](TArray<UHierarchicalInstancedStaticMeshComponent*>& Targets, const TArray<TArray<FTransform>>& Transforms)
 	{
@@ -236,5 +348,19 @@ void AOceanIslandFlora::Build()
 	AddAll(Trees, TreeTransforms);
 	AddAll(Shrubs, ShrubTransforms);
 	AddAll(Rocks, RockTransforms);
+	AddAll(Corals, CoralTransforms);
+	AddAll(Urchins, UrchinTransforms);
+	AddAll(Shells, ShellTransforms);
+	auto Count = [](const TArray<TArray<FTransform>>& Sets)
+	{
+		int32 Total = 0;
+		for (const TArray<FTransform>& Set : Sets)
+		{
+			Total += Set.Num();
+		}
+		return Total;
+	};
+	UE_LOG(LogTemp, Display, TEXT("OceanIslandFlora: %d rock, %d coral, %d urchin, %d shell instances"),
+		Count(RockTransforms), Count(CoralTransforms), Count(UrchinTransforms), Count(ShellTransforms));
 	bBuilt = true;
 }
