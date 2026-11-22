@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Ocean/OceanShoreData.h"
 #include "OceanSettings.generated.h"
 
 /**
@@ -67,6 +68,21 @@ struct FOceanSettings
 	/** How fast foam fades, 1/s. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foam", meta = (ClampMin = "0"))
 	float FoamDecay = 0.6f;
+
+	// --- Shore (needs an AOceanBathymetry in the level) ---
+
+	/** Height of the swell rolling onto the coast, over the shelf. It grows and breaks in shallow water. 0 = none. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shore", meta = (ClampMin = "0", Units = "Meters"))
+	float ShoreSwellHeight = 0.8f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shore", meta = (ClampMin = "2", Units = "Seconds"))
+	float ShoreSwellPeriod = 8.f;
+
+	/** The swell fades out in deeper water (off the shelf). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shore", meta = (ClampMin = "1", Units = "Meters"))
+	float ShoreSwellMaxDepth = 12.f;
+
+	FOceanShoreSwell GetShoreSwell() const { return { ShoreSwellHeight, ShoreSwellPeriod, ShoreSwellMaxDepth }; }
 
 	// --- Simulation ---
 

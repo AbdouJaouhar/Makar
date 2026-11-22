@@ -122,6 +122,13 @@ def build():
     shore_map_size = scalar(material, "ShoreMapSize", 0.0, -1300, 1400)
     # Per-cascade significant wave height, updated every frame: limits waves in shallow water.
     sig_height = [scalar(material, f"SignificantHeight{i}", 1.0, -1300, 1480 + i * 80) for i in range(3)]
+    # Swell breaking on the beach: simulation time (set every frame, so it matches the CPU queries) and swell.
+    ocean_time = scalar(material, "OceanTime", 0.0, -1300, 1720)
+    swell_height = scalar(material, "ShoreSwellHeight", 0.8, -1300, 1800)
+    swell_period = scalar(material, "ShoreSwellPeriod", 8.0, -1300, 1880)
+    swell_max_depth = scalar(material, "ShoreSwellMaxDepth", 12.0, -1300, 1960)
+    swell_inputs = {"Time": ocean_time, "SwellHeight": swell_height, "SwellPeriod": swell_period,
+                    "SwellMaxDepth": swell_max_depth}
 
     patch = [scalar(material, f"PatchSize{i}", v, -1300, 260 + i * 80) for i, v in enumerate((500.0, 85.0, 10.0))]
     resolution = scalar(material, "Resolution", 128.0, -1300, 520)
@@ -137,16 +144,18 @@ def build():
         material, -900, -200, "Ocean Vertex Offset",
         "return OceanVertexOffset(WorldPos, CameraPos, Disp0, Disp0Sampler, Disp1, Disp1Sampler, "
         "ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, SignificantHeight0, SignificantHeight1, "
+        "Time, SwellHeight, SwellPeriod, SwellMaxDepth, "
         "PatchSize0, PatchSize1, Resolution, GridSpacing, GridInnerHalfWidth, GridGrowth, FadeStart, FadeEnd);",
         ["WorldPos", "CameraPos", "Disp0", "Disp1",
          "ShoreMap", "ShoreMapOrigin", "ShoreMapSize", "SignificantHeight0", "SignificantHeight1",
+         "Time", "SwellHeight", "SwellPeriod", "SwellMaxDepth",
          "PatchSize0", "PatchSize1", "Resolution",
          "GridSpacing", "GridInnerHalfWidth", "GridGrowth", "FadeStart", "FadeEnd"],
         unreal.CustomMaterialOutputType.CMOT_FLOAT3)
     connect_inputs({
         "WorldPos": world_pos, "CameraPos": camera_pos, "Disp0": disp[0], "Disp1": disp[1],
         "ShoreMap": shore_map, "ShoreMapOrigin": shore_map_origin, "ShoreMapSize": shore_map_size,
-        "SignificantHeight0": sig_height[0], "SignificantHeight1": sig_height[1],
+        "SignificantHeight0": sig_height[0], "SignificantHeight1": sig_height[1], **swell_inputs,
         "PatchSize0": patch[0], "PatchSize1": patch[1], "Resolution": resolution,
         "GridSpacing": grid_spacing, "GridInnerHalfWidth": grid_inner, "GridGrowth": grid_growth,
         "FadeStart": fade_start, "FadeEnd": fade_end,
@@ -165,11 +174,13 @@ def build():
         "FoamMap, FoamMapSampler, FoamMapOrigin, FoamMapSize, "
         "ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, "
         "SignificantHeight0, SignificantHeight1, SignificantHeight2, "
+        "Time, SwellHeight, SwellPeriod, SwellMaxDepth, "
         "PatchSize0, PatchSize1, PatchSize2, CrestHeight, BaseRoughness, Foam, Crest, Roughness);",
         ["WorldPos", "Disp0", "Disp1", "Disp2", "Deriv0", "Deriv1", "Deriv2", "Moments0", "Moments1", "Moments2",
          "FoamMap", "FoamMapOrigin", "FoamMapSize",
          "ShoreMap", "ShoreMapOrigin", "ShoreMapSize",
          "SignificantHeight0", "SignificantHeight1", "SignificantHeight2",
+         "Time", "SwellHeight", "SwellPeriod", "SwellMaxDepth",
          "PatchSize0", "PatchSize1", "PatchSize2", "CrestHeight", "BaseRoughness"],
         unreal.CustomMaterialOutputType.CMOT_FLOAT3,
         extra_outputs=[("Foam", unreal.CustomMaterialOutputType.CMOT_FLOAT1),
@@ -182,7 +193,7 @@ def build():
         "FoamMap": foam_map, "FoamMapOrigin": foam_map_origin, "FoamMapSize": foam_map_size,
         "ShoreMap": shore_map, "ShoreMapOrigin": shore_map_origin, "ShoreMapSize": shore_map_size,
         "SignificantHeight0": sig_height[0], "SignificantHeight1": sig_height[1],
-        "SignificantHeight2": sig_height[2],
+        "SignificantHeight2": sig_height[2], **swell_inputs,
         "PatchSize0": patch[0], "PatchSize1": patch[1], "PatchSize2": patch[2], "CrestHeight": crest_height,
         "BaseRoughness": roughness_water,
     }, pixel)

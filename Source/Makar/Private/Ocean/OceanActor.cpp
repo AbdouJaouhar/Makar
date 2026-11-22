@@ -24,6 +24,10 @@ namespace OceanParams
 	const FName ShoreMapOrigin(TEXT("ShoreMapOrigin"));
 	const FName ShoreMapSize(TEXT("ShoreMapSize"));
 	const FName SignificantHeight[] = { TEXT("SignificantHeight0"), TEXT("SignificantHeight1"), TEXT("SignificantHeight2") };
+	const FName OceanTime(TEXT("OceanTime"));
+	const FName ShoreSwellHeight(TEXT("ShoreSwellHeight"));
+	const FName ShoreSwellPeriod(TEXT("ShoreSwellPeriod"));
+	const FName ShoreSwellMaxDepth(TEXT("ShoreSwellMaxDepth"));
 	const FName PatchSize[] = { TEXT("PatchSize0"), TEXT("PatchSize1"), TEXT("PatchSize2") };
 	const FName Resolution(TEXT("Resolution"));
 	const FName GridSpacing(TEXT("GridSpacing"));
@@ -257,6 +261,9 @@ void AOceanActor::UpdateMaterialParameters()
 	{
 		MaterialInstance->SetScalarParameterValue(OceanParams::ShoreMapSize, 0.f);
 	}
+	MaterialInstance->SetScalarParameterValue(OceanParams::ShoreSwellHeight, Settings.ShoreSwellHeight);
+	MaterialInstance->SetScalarParameterValue(OceanParams::ShoreSwellPeriod, Settings.ShoreSwellPeriod);
+	MaterialInstance->SetScalarParameterValue(OceanParams::ShoreSwellMaxDepth, Settings.ShoreSwellMaxDepth);
 
 	const float Sizes[] = { Settings.Cascade0Size, Settings.Cascade1Size, Settings.Cascade2Size };
 	const bool bHasTextures = DisplacementTextures.Num() == FOceanSimulation::NumCascades;
@@ -434,6 +441,11 @@ void AOceanActor::UploadFrame(const FOceanFrame& Frame)
 	{
 		return;
 	}
+	// The breaking waves are evaluated on the GPU at the simulation's time, so they match the CPU queries.
+	if (MaterialInstance)
+	{
+		MaterialInstance->SetScalarParameterValue(OceanParams::OceanTime, Frame.Time);
+	}
 	for (int32 Index = 0; Index < Frame.Cascades.Num() && Index < DisplacementTextures.Num(); ++Index)
 	{
 		// Same value as SampleDisplacement uses for the CPU queries this frame.
@@ -492,6 +504,12 @@ FVector3f AOceanActor::SampleDisplacement(const FVector2f& PositionMeters) const
 		const FVector3f& C = Cascade.Displacement[Y1 * N + X0];
 		const FVector3f& D = Cascade.Displacement[Y1 * N + X1];
 		Result += FMath::Lerp(FMath::Lerp(A, B, FracU), FMath::Lerp(C, D, FracU), FracV) * Attenuation;
+	}
+
+	// Swell breaking on the beach (same function as OceanShoreWave in Shaders/Ocean.ush).
+	if (ShoreData)
+	{
+		Result += OceanShoreWave(*ShoreData, PositionMeters, FrontFrame->Time, Settings.GetShoreSwell()).Displacement;
 	}
 	return Result;
 }

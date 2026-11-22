@@ -83,6 +83,79 @@ namespace
 	}
 }
 
+namespace
+{
+	/**
+	 * Time a shallow-water wave takes to reach the shore from each cell: solves the eikonal equation
+	 * |grad T| = 1 / sqrt(g h) by fast sweeping (Zhao 2005), with T = 0 on land. Crests placed on its
+	 * isolines slow down, bunch up and bend with the sea floor like real refracting swell.
+	 */
+	TArray<float> WaveTravelTime(const TArray<float>& Heights, int32 N, float TexelM)
+	{
+		constexpr float Gravity = 9.81f;
+		constexpr float MinDepthM = 0.3f; // keeps the speed finite at the waterline
+		TArray<float> Time;
+		TArray<float> Slowness; // s per metre
+		Time.SetNumUninitialized(N * N);
+		Slowness.SetNumUninitialized(N * N);
+		for (int32 Index = 0; Index < N * N; ++Index)
+		{
+			const float Depth = -Heights[Index];
+			Time[Index] = Depth > 0.f ? MAX_flt : 0.f;
+			Slowness[Index] = 1.f / FMath::Sqrt(Gravity * FMath::Max(Depth, MinDepthM));
+		}
+
+		auto At = [&](int32 X, int32 Y) { return (X < 0 || X >= N || Y < 0 || Y >= N) ? MAX_flt : Time[Y * N + X]; };
+		for (int32 Iteration = 0; Iteration < 3; ++Iteration)
+		{
+			for (int32 Sweep = 0; Sweep < 4; ++Sweep)
+			{
+				const bool bReverseX = (Sweep & 1) != 0;
+				const bool bReverseY = (Sweep & 2) != 0;
+				for (int32 J = 0; J < N; ++J)
+				{
+					const int32 Y = bReverseY ? N - 1 - J : J;
+					for (int32 I = 0; I < N; ++I)
+					{
+						const int32 X = bReverseX ? N - 1 - I : I;
+						const int32 Index = Y * N + X;
+						if (Time[Index] == 0.f)
+						{
+							continue; // land
+						}
+						const float A = FMath::Min(At(X - 1, Y), At(X + 1, Y));
+						const float B = FMath::Min(At(X, Y - 1), At(X, Y + 1));
+						if (A == MAX_flt && B == MAX_flt)
+						{
+							continue;
+						}
+						// Godunov upwind update.
+						const float F = Slowness[Index] * TexelM;
+						float Candidate;
+						if (FMath::Abs(A - B) >= F)
+						{
+							Candidate = FMath::Min(A, B) + F;
+						}
+						else
+						{
+							Candidate = 0.5f * (A + B + FMath::Sqrt(2.f * F * F - (A - B) * (A - B)));
+						}
+						Time[Index] = FMath::Min(Time[Index], Candidate);
+					}
+				}
+			}
+		}
+		for (float& Value : Time)
+		{
+			if (Value == MAX_flt)
+			{
+				Value = FOceanShoreData::DeepWaterM; // no shore anywhere in the grid
+			}
+		}
+		return Time;
+	}
+}
+
 AOceanBathymetry::AOceanBathymetry()
 {
 	PrimaryActorTick.bCanEverTick = false;
@@ -219,18 +292,11 @@ void AOceanBathymetry::Build()
 		Distance[Index] = Sign * FMath::Sqrt(DX * DX + DY * DY) * Texel;
 	}
 
-	// Seaward direction: gradient of the distance.
-	ParallelFor(N, [&](int32 Y)
+	const TArray<float> TravelTime = WaveTravelTime(Heights, N, Texel);
+	for (int32 Index = 0; Index < N * N; ++Index)
 	{
-		for (int32 X = 0; X < N; ++X)
-		{
-			const int32 Index = Y * N + X;
-			const float GX = Distance[Y * N + FMath::Min(X + 1, N - 1)] - Distance[Y * N + FMath::Max(X - 1, 0)];
-			const float GY = Distance[FMath::Min(Y + 1, N - 1) * N + X] - Distance[FMath::Max(Y - 1, 0) * N + X];
-			const FVector2f Direction = FVector2f(GX, GY).GetSafeNormal();
-			Data->Texels[Index] = FVector4f(-Heights[Index], Distance[Index], Direction.X, Direction.Y);
-		}
-	});
+		Data->Texels[Index] = FVector4f(-Heights[Index], Distance[Index], TravelTime[Index], 0.f);
+	}
 
 	// Terrain mesh, one vertex per texel, local to the actor (sea level is world Z = 0).
 	TArray<FVector> Vertices;

@@ -103,7 +103,12 @@ void FOceanFoamMap::Simulate(FOceanFrame& Frame, const FOceanSettings& Settings,
 
 			const FVector2f PositionM((float(OriginTexel.X + X) + 0.5f) * TexelSizeM, (float(OriginTexel.Y + Y) + 0.5f) * TexelSizeM);
 			const float Jacobian = CombinedJacobian(Frame, Shore, PositionM);
-			const float Created = FMath::Clamp((Settings.FoamThreshold - Jacobian) * Settings.FoamIntensity * CreationGain, 0.f, 1.f);
+			float Created = FMath::Clamp((Settings.FoamThreshold - Jacobian) * Settings.FoamIntensity * CreationGain, 0.f, 1.f);
+			if (Shore)
+			{
+				// Whitewater of the waves breaking on the beach; it lingers and drifts like the whitecaps.
+				Created = FMath::Max(Created, OceanShoreWave(*Shore, PositionM, Frame.Time, Settings.GetShoreSwell()).Foam);
+			}
 
 			Next[Y * Size + X] = FMath::Max(Created, Advected * Fade);
 		}

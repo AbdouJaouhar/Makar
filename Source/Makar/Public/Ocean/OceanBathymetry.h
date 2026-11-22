@@ -13,8 +13,9 @@ class UTexture2D;
  * A procedural island and its sea floor, centred on the actor: land rising from a sandy beach,
  * a shallow shelf (clear turquoise water) and a reef drop-off into deep water.
  *
- * Builds the terrain mesh and the coastal data (depth, distance to shore, seaward direction) that the ocean
- * uses to calm its waves in shallow water, consistently on the GPU and in UOceanSubsystem queries.
+ * Builds the terrain mesh and the coastal data (depth, distance to shore, wave travel time to shore) that the
+ * ocean uses to calm its waves in shallow water and to break swell on the beach, consistently on the GPU and in
+ * UOceanSubsystem queries.
  * Sea level is Z = 0.
  */
 UCLASS()
@@ -31,7 +32,7 @@ public:
 	/** Immutable once built; safe to read from worker threads. Null before the first build. */
 	TSharedPtr<const FOceanShoreData> GetShoreData() const { return ShoreData; }
 
-	/** RGBA = depth, signed distance to shore, seaward direction XY (see FOceanShoreData). */
+	/** RGBA = depth, signed distance to shore, wave travel time to shore, unused (see FOceanShoreData). */
 	UTexture2D* GetShoreTexture() const { return ShoreTexture; }
 
 	/** Terrain height above sea level (m) from the analytic island shape. */

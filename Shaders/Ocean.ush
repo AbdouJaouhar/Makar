@@ -39,12 +39,96 @@ float OceanDepthAttenuation(float DepthM, float SignificantHeightM)
 	return saturate(0.78 * DepthM / max(SignificantHeightM, 0.01));
 }
 
+// Integer hash and lattice value noise, identical to OceanShoreData.cpp (CPU water queries).
+uint OceanShoreHash(uint X)
+{
+	X ^= X >> 16;
+	X *= 0x7feb352du;
+	X ^= X >> 15;
+	X *= 0x846ca68bu;
+	X ^= X >> 16;
+	return X;
+}
+
+float OceanLatticeValue(int X, int Y)
+{
+	return float(OceanShoreHash(uint(X) * 1597334677u ^ OceanShoreHash(uint(Y)))) / 4294967295.0;
+}
+
+float OceanValueNoise(float2 P)
+{
+	const float2 Cell = floor(P);
+	const int X = int(Cell.x);
+	const int Y = int(Cell.y);
+	const float2 F = P - Cell;
+	const float2 U = F * F * (3.0 - 2.0 * F);
+	const float Bottom = lerp(OceanLatticeValue(X, Y), OceanLatticeValue(X + 1, Y), U.x);
+	const float Top = lerp(OceanLatticeValue(X, Y + 1), OceanLatticeValue(X + 1, Y + 1), U.x);
+	return lerp(Bottom, Top, U.y);
+}
+
+// Swell breaking on the beach, metres; Foam = whitewater 0..1. Mirrors OceanShoreWave in OceanShoreData.cpp
+// (see there for the model): crests follow the shore's wave travel time (ShoreMap.z), grow in shallow water,
+// pitch forward near the breaking depth and collapse into a bore in the surf zone.
+float3 OceanShoreWave(float2 PosM, float Time,
+	Texture2D ShoreMap, SamplerState ShoreMapSampler, float3 ShoreMapOrigin, float ShoreMapSize,
+	float SwellHeight, float SwellPeriod, float SwellMaxDepth, out float Foam)
+{
+	Foam = 0.0;
+	if (ShoreMapSize <= 0.0 || SwellHeight <= 0.0 || SwellPeriod <= 0.0)
+	{
+		return 0.0;
+	}
+	const float4 Here = OceanShoreSample(PosM, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize);
+	const float Depth = Here.x;
+	if (Depth <= 0.02 || Depth >= SwellMaxDepth)
+	{
+		return 0.0;
+	}
+
+	uint Width, Height;
+	ShoreMap.GetDimensions(Width, Height);
+	const float Step = ShoreMapSize / float(Width);
+	const float GradX = (OceanShoreSample(PosM + float2(Step, 0.0), ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize).z - Here.z) / Step;
+	const float GradY = (OceanShoreSample(PosM + float2(0.0, Step), ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize).z - Here.z) / Step;
+	const float GradLength = sqrt(GradX * GradX + GradY * GradY);
+	if (GradLength < 1e-5)
+	{
+		return 0.0;
+	}
+	const float2 TowardShore = float2(-GradX, -GradY) / GradLength;
+	const float Phase = 2.0 * PI * (Time + Here.z) / SwellPeriod;
+	const float WaveNumber = 2.0 * PI * GradLength / SwellPeriod;
+
+	const float ReferenceDepth = 0.5 * SwellMaxDepth;
+	const float Shoaled = SwellHeight * pow(ReferenceDepth / max(Depth, 0.05), 0.25);
+	const float Ratio = Shoaled / (0.78 * Depth);
+	const float Pitch = smoothstep(0.7, 1.0, Ratio);
+	const float Surf = saturate((Ratio - 1.0) / 1.5);
+	const float WaveHeight = min(Shoaled, 0.78 * Depth * (1.0 - 0.5 * Surf));
+
+	const float Gaps = smoothstep(0.35, 0.6, OceanValueNoise(PosM / 60.0 + float2(0.01, 0.007) * Time));
+	const float FadeDeep = 1.0 - smoothstep(0.7 * SwellMaxDepth, SwellMaxDepth, Depth);
+	const float Amplitude = 0.5 * WaveHeight * FadeDeep * Gaps;
+
+	const float Steepness = lerp(0.5, 1.0, Pitch);
+	const float Orbit = min(Steepness / max(WaveNumber, 1e-4), 1.5 * Amplitude);
+	const float Crest = 0.5 * (1.0 + cos(Phase));
+	const float Lip = Amplitude * Crest * Crest * Crest * (1.2 * Pitch * (1.0 - Surf) + 0.6 * Surf);
+	const float Forward = Orbit * sin(Phase) + Lip;
+
+	Foam = FadeDeep * Gaps * max(0.75 * saturate(2.0 * Surf) * smoothstep(0.55, 0.95, Crest),
+		0.6 * Pitch * (1.0 - Surf) * smoothstep(0.9, 1.0, Crest));
+	return float3(TowardShore * Forward, Amplitude * cos(Phase));
+}
+
 // World Position Offset, cm. Only the geometry cascades: finer ones are smaller than a vertex.
 float3 OceanVertexOffset(float3 WorldPos, float3 CameraPos,
 	Texture2D Disp0, SamplerState Disp0Sampler,
 	Texture2D Disp1, SamplerState Disp1Sampler,
 	Texture2D ShoreMap, SamplerState ShoreMapSampler, float3 ShoreMapOrigin, float ShoreMapSize,
 	float SignificantHeight0, float SignificantHeight1,
+	float Time, float SwellHeight, float SwellPeriod, float SwellMaxDepth,
 	float PatchSize0, float PatchSize1, float Resolution,
 	float GridSpacing, float GridInnerHalfWidth, float GridGrowth,
 	float FadeStart, float FadeEnd)
@@ -62,6 +146,10 @@ float3 OceanVertexOffset(float3 WorldPos, float3 CameraPos,
 	           * OceanDepthAttenuation(Depth, SignificantHeight0)
 	         + Disp1.SampleLevel(Disp1Sampler, PosM / PatchSize1, OceanMipLevel(SpacingM, PatchSize1, Resolution)).xyz
 	           * OceanDepthAttenuation(Depth, SignificantHeight1);
+
+	float ShoreFoam;
+	D += OceanShoreWave(PosM, Time, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize,
+		SwellHeight, SwellPeriod, SwellMaxDepth, ShoreFoam);
 
 	const float Fade = 1.0 - saturate((DistM - FadeStart) / max(FadeEnd - FadeStart, 1.0));
 	return D * Fade * 100.0;
@@ -185,6 +273,7 @@ float3 OceanPixel(float3 WorldPos,
 	Texture2D FoamMap, SamplerState FoamMapSampler, float3 FoamMapOrigin, float FoamMapSize,
 	Texture2D ShoreMap, SamplerState ShoreMapSampler, float3 ShoreMapOrigin, float ShoreMapSize,
 	float SignificantHeight0, float SignificantHeight1, float SignificantHeight2,
+	float Time, float SwellHeight, float SwellPeriod, float SwellMaxDepth,
 	float PatchSize0, float PatchSize1, float PatchSize2, float CrestHeight, float BaseRoughness,
 	out float Foam, out float Crest, out float Roughness)
 {
@@ -241,8 +330,27 @@ float3 OceanPixel(float3 WorldPos,
 		const float MapFoam = FoamMap.Sample(FoamMapSampler, MapUv).r;
 		FoamAmount = lerp(FoamAmount, saturate(MapFoam), Inside);
 	}
-	Foam = OceanFoamCoverage(PosM, FoamAmount);
-	Crest = saturate((S0.z * A0 + S1.z * A1) / max(CrestHeight, 0.01));
+	// Swell breaking on the beach: its normal comes from finite differences of the displaced surface
+	// (it can overhang, so slopes alone are not enough); the FFT slopes are added on top.
+	float ShoreFoam;
+	const float3 W0 = OceanShoreWave(PosM, Time, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize,
+		SwellHeight, SwellPeriod, SwellMaxDepth, ShoreFoam);
+	float3 ShoreNormal = float3(0.0, 0.0, 1.0);
+	if (any(W0 != 0.0))
+	{
+		const float Delta = 0.25;
+		float Unused;
+		const float3 WX = OceanShoreWave(PosM + float2(Delta, 0.0), Time, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize,
+			SwellHeight, SwellPeriod, SwellMaxDepth, Unused);
+		const float3 WY = OceanShoreWave(PosM + float2(0.0, Delta), Time, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize,
+			SwellHeight, SwellPeriod, SwellMaxDepth, Unused);
+		const float3 TangentX = float3(Delta, 0.0, 0.0) + WX - W0;
+		const float3 TangentY = float3(0.0, Delta, 0.0) + WY - W0;
+		ShoreNormal = normalize(cross(TangentX, TangentY));
+	}
 
-	return normalize(float3(-Slope, 1.0));
+	Foam = OceanFoamCoverage(PosM, max(FoamAmount, ShoreFoam));
+	Crest = saturate((S0.z * A0 + S1.z * A1 + W0.z) / max(CrestHeight, 0.01));
+
+	return normalize(ShoreNormal + float3(-Slope, 0.0));
 }
