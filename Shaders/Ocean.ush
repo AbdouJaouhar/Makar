@@ -366,6 +366,55 @@ float OceanSandGlint(float2 PosM, float Footprint, float3 SurfaceNormal, float3 
 	return Sum * saturate(dot(SurfaceNormal, ToSun) * 4.0);
 }
 
+// ------------------------------------------------------------------------------------------------------------
+// Wind ripples on dry sand (docs/StrategieSableProcedural.md, layer 2): crests across the trade wind, 7-12 cm apart,
+// ~1/15 as high as they are long, with an asymmetric profile (gentle windward slope, steep lee face). The crests
+// wander (phase warped by gradient noise), and two trains of slightly different direction and wavelength meet in
+// Y-junctions and dead ends where they blend. Height varies in patches (wind shadows, older and fresher sand).
+// ------------------------------------------------------------------------------------------------------------
+
+// Ripple profile over one wavelength, F in [0, 1): rises over the windward 72%, drops over the lee 28%. In [0, 1].
+float OceanRippleProfile(float F)
+{
+	const float Windward = 0.72;
+	const float T = F < Windward ? F / Windward : 1.0 - (F - Windward) / (1.0 - Windward);
+	return T * T * (3.0 - 2.0 * T);
+}
+
+// One train of ripples, height in [0, 1]: wind along Direction, Wavelength in m, crests wandering by Warp cycles.
+float OceanRippleTrain(float2 PosM, float2 Direction, float Wavelength, float Seed)
+{
+	// The direction and wavelength must stay constant inside the phase: at ~300 m from the origin, any spatial
+	// variation of them is multiplied by thousands of cycles (moiré rings). Curvature comes from the warp only.
+	const float Warp = 2.0 * (OceanGradientNoise(PosM / 1.6 + Seed) - 0.5) + 0.6 * (OceanGradientNoise(PosM / 0.35 + Seed * 3.1) - 0.5)
+		+ 0.15 * (OceanGradientNoise(PosM / 0.1 + Seed * 7.3) - 0.5);
+	return OceanRippleProfile(frac(dot(PosM, Direction) / Wavelength + Warp));
+}
+
+float OceanWindRippleHeight(float2 PosM)
+{
+	// Trade wind from the east-north-east; two trains, 8.5 and 11 cm, about 14 degrees apart.
+	const float Mix = smoothstep(0.4, 0.6, OceanGradientNoise(PosM / 0.9 + 21.0));
+	const float Fine = OceanRippleTrain(PosM, float2(cos(3.6), sin(3.6)), 0.085, 1.7);
+	const float Coarse = OceanRippleTrain(PosM, float2(cos(3.85), sin(3.85)), 0.11, 5.9);
+	const float Height = lerp(0.085 * Fine, 0.11 * Coarse, Mix) / 15.0;
+	const float Patches = lerp(0.25, 1.0, smoothstep(0.3, 0.7, OceanGradientNoise(PosM / 2.5 + 14.0)));
+	return Height * Patches;
+}
+
+// Height gradient of the wind ripples, faded out where a wavelength covers fewer than ~4 pixels.
+float2 OceanWindRipples(float2 PosM, float Footprint)
+{
+	const float Detail = saturate((0.09 / Footprint - 4.0) / 6.0);
+	if (Detail <= 0.0)
+	{
+		return 0.0;
+	}
+	const float E = 0.004;
+	const float H = OceanWindRippleHeight(PosM);
+	return Detail * float2(OceanWindRippleHeight(PosM + float2(E, 0.0)) - H, OceanWindRippleHeight(PosM + float2(0.0, E)) - H) / E;
+}
+
 // Island terrain and sea floor (M_Seabed): coral sand with wind ripples, wet sand below the swash, dark rock on
 // steep ground, low tropical vegetation inland, coral heads and seagrass patches on the shallow floor.
 // WorldPos in cm, sea level at Z = 0, VertexNormal in world space, ToSun and ToCamera unit vectors.
@@ -388,15 +437,20 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 	// --- Sand: colour patches (shell and coral fragments), wind ripples above water, wave ripples below ---
 	float3 Color = SandColor * (0.88 + 0.18 * Large + 0.08 * Medium);
 	float2 Bump = 0.0;
+	if (HeightM > 0.0)
+	{
+		Bump += OceanWindRipples(PosM, Footprint);
+	}
+	else
 	{
 		const float2 Warp = 0.6 * float2(Medium, Small);
 		const float2 Direction = normalize(float2(0.8, 0.6));
-		const float Wavelength = HeightM > 0.0 ? 0.35 : 0.7;
+		const float Wavelength = 0.7;
 		const float Phase = dot(PosM + Warp, Direction) * (2.0 * PI / Wavelength);
-		const float Amplitude = (HeightM > 0.0 ? 0.012 : 0.03) * FineDetail * (0.5 + Large);
+		const float Amplitude = 0.03 * FineDetail * (0.5 + Large);
 		Bump += Direction * (Amplitude * (2.0 * PI / Wavelength) * cos(Phase));
-		Bump += OceanNoiseGradient(PosM, 3.0) * 0.08 * MediumDetail; // soft undulations
 	}
+	Bump += OceanNoiseGradient(PosM, 3.0) * 0.08 * MediumDetail; // soft undulations
 	float2 GrainSlope;
 	Color *= OceanSandGrains(PosM, Footprint, GrainSlope);
 	Bump += GrainSlope;
