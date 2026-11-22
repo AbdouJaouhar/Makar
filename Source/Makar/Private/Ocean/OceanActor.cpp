@@ -15,6 +15,9 @@ namespace OceanParams
 	const FName Displacement[] = { TEXT("Disp0"), TEXT("Disp1"), TEXT("Disp2") };
 	const FName Derivatives[] = { TEXT("Deriv0"), TEXT("Deriv1"), TEXT("Deriv2") };
 	const FName Moments[] = { TEXT("Moments0"), TEXT("Moments1"), TEXT("Moments2") };
+	const FName FoamMap(TEXT("FoamMap"));
+	const FName FoamMapOrigin(TEXT("FoamMapOrigin"));
+	const FName FoamMapSize(TEXT("FoamMapSize"));
 	const FName PatchSize[] = { TEXT("PatchSize0"), TEXT("PatchSize1"), TEXT("PatchSize2") };
 	const FName Resolution(TEXT("Resolution"));
 	const FName GridSpacing(TEXT("GridSpacing"));
@@ -192,6 +195,12 @@ void AOceanActor::InitializeSimulation()
 			MomentTextures.Add(CreateOceanTexture(Size, NumMips));
 		}
 	}
+	if (!FoamMapTexture)
+	{
+		FoamMapTexture = CreateOceanTexture(FOceanFoamMap::Size, FOceanFoamMap::NumMips);
+	}
+	// New sea state: start the foam from scratch (the worker is idle, see WaitForSimulation above).
+	FoamMap = MakeUnique<FOceanFoamMap>();
 
 	UpdateMaterialParameters();
 	bNeedsInitialization = false;
@@ -211,6 +220,11 @@ void AOceanActor::UpdateMaterialParameters()
 	{
 		MaterialInstance = UMaterialInstanceDynamic::Create(BaseMaterial, this);
 		OceanMesh->SetMaterial(0, MaterialInstance);
+	}
+
+	if (FoamMapTexture)
+	{
+		MaterialInstance->SetTextureParameterValue(OceanParams::FoamMap, FoamMapTexture);
 	}
 
 	const float Sizes[] = { Settings.Cascade0Size, Settings.Cascade1Size, Settings.Cascade2Size };
@@ -365,9 +379,17 @@ void AOceanActor::Tick(float DeltaSeconds)
 		LastLaunchTime = Time;
 		FOceanSimulation* Sim = Simulation.Get();
 		FOceanFrame* Target = BackFrame.Get();
-		PendingTask = UE::Tasks::Launch(UE_SOURCE_LOCATION, [Sim, Target, Time, Delta]()
+		FOceanFoamMap* Foam = FoamMap.Get();
+		const FOceanSettings FoamSettings = Settings;
+		// The ocean mesh is centred on the camera (or on the actor in the editor).
+		const FVector2f CenterM = FVector2f(FVector2D(OceanMesh->GetComponentLocation()) * 0.01);
+		PendingTask = UE::Tasks::Launch(UE_SOURCE_LOCATION, [Sim, Target, Foam, FoamSettings, CenterM, Time, Delta]()
 		{
 			Sim->Simulate(Time, Delta, *Target);
+			if (Foam)
+			{
+				Foam->Simulate(*Target, FoamSettings, CenterM, Delta);
+			}
 		});
 	}
 
@@ -388,6 +410,14 @@ void AOceanActor::UploadFrame(const FOceanFrame& Frame)
 		{
 			UploadMips(MomentTextures[Index], Frame.Cascades[Index].MomentMips);
 		}
+	}
+
+	// The origin must change together with the texture contents, or the foam would jump when the map recentres.
+	if (FoamMapTexture && MaterialInstance && Frame.FoamMapMips.Num() > 0)
+	{
+		UploadMips(FoamMapTexture, Frame.FoamMapMips);
+		MaterialInstance->SetVectorParameterValue(OceanParams::FoamMapOrigin, FLinearColor(Frame.FoamMapOrigin.X, Frame.FoamMapOrigin.Y, 0.f, 0.f));
+		MaterialInstance->SetScalarParameterValue(OceanParams::FoamMapSize, Frame.FoamMapSize);
 	}
 	OceanMesh->SetVisibility(true);
 }

@@ -233,6 +233,7 @@ void FOceanSimulation::SimulateCascade(FCascade& Cascade, float Time, float Delt
 	Out.PatchSize = Cascade.PatchSize;
 	Out.Resolution = N;
 	Out.Displacement.SetNumUninitialized(N * N);
+	Out.JacobianTerms.SetNumUninitialized(N * N);
 
 	ParallelFor(N, [&](int32 Y)
 	{
@@ -252,6 +253,7 @@ void FOceanSimulation::SimulateCascade(FCascade& Cascade, float Time, float Delt
 			Foam = FMath::Max(NewFoam, Foam * FoamFade);
 
 			Out.Displacement[Index] = FVector3f(DispX, DispY, Height);
+			Out.JacobianTerms[Index] = FVector3f(DDispXDX, DDispYDY, DDispXDY);
 			DisplacementBase[Index] = FVector4f(DispX, DispY, Height, Foam);
 			const float SlopeX = Work[2][Index].Re;
 			const float SlopeY = Work[2][Index].Im;

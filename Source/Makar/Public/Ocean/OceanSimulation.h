@@ -13,6 +13,9 @@ struct FOceanCascadeFrame
 	/** Full-precision displacement (X, Y horizontal, Z height), metres. Used for CPU water queries. */
 	TArray<FVector3f> Displacement;
 
+	/** Horizontal displacement gradient (dDispX/dX, dDispY/dY, dDispX/dY), choppiness applied. Feeds the foam map. */
+	TArray<FVector3f> JacobianTerms;
+
 	/** GPU data, one array per mip. RGBA = displacement X, Y, Z (m), foam. */
 	TArray<TArray<FFloat16Color>> DisplacementMips;
 
@@ -32,6 +35,12 @@ struct FOceanFrame
 	bool bValid = false;
 	float Time = 0.f;
 	TArray<FOceanCascadeFrame> Cascades;
+
+	/** World-space foam around the camera (see FOceanFoamMap), one array per mip. R = foam amount. */
+	TArray<TArray<FFloat16Color>> FoamMapMips;
+	/** World position (m) of the foam map's lower corner, and its width (m). */
+	FVector2f FoamMapOrigin = FVector2f::ZeroVector;
+	float FoamMapSize = 0.f;
 };
 
 /**

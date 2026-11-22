@@ -152,6 +152,7 @@ float3 OceanPixel(float3 WorldPos,
 	Texture2D Moments0, SamplerState Moments0Sampler,
 	Texture2D Moments1, SamplerState Moments1Sampler,
 	Texture2D Moments2, SamplerState Moments2Sampler,
+	Texture2D FoamMap, SamplerState FoamMapSampler, float3 FoamMapOrigin, float FoamMapSize,
 	float PatchSize0, float PatchSize1, float PatchSize2, float CrestHeight, float BaseRoughness,
 	out float Foam, out float Crest, out float Roughness)
 {
@@ -187,9 +188,21 @@ float3 OceanPixel(float3 WorldPos,
 	const float4 S1 = Disp1.Sample(Disp1Sampler, Uv1);
 	const float4 S2 = Disp2.Sample(Disp2Sampler, Uv2);
 
-	// Whitecaps break on the crests of the larger waves: the 10 m ripple cascade only adds a little,
-	// otherwise foam is sprinkled evenly over the whole sea.
-	Foam = OceanFoamCoverage(PosM, saturate(S0.w + S1.w * 0.8 + S2.w * 0.15));
+	// Far away: foam from each cascade's own tile. Whitecaps break on the crests of the larger waves,
+	// so the 10 m ripple cascade only adds a little, otherwise foam is sprinkled evenly over the sea.
+	float FoamAmount = saturate(S0.w + S1.w * 0.8 + S2.w * 0.15);
+
+	// Around the camera: the simulated foam map (whitecaps of the whole surface, drifting streaks),
+	// faded into the tile foam over the outer 10 % of the map.
+	if (FoamMapSize > 0.0)
+	{
+		const float2 MapUv = (PosM - FoamMapOrigin.xy) / FoamMapSize;
+		const float2 EdgeDistance = min(MapUv, 1.0 - MapUv);
+		const float Inside = saturate(min(EdgeDistance.x, EdgeDistance.y) / 0.1);
+		const float MapFoam = FoamMap.Sample(FoamMapSampler, MapUv).r;
+		FoamAmount = lerp(FoamAmount, saturate(MapFoam), Inside);
+	}
+	Foam = OceanFoamCoverage(PosM, FoamAmount);
 	Crest = saturate((S0.z + S1.z) / max(CrestHeight, 0.01));
 
 	return normalize(float3(-Slope, 1.0));

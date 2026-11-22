@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Ocean/OceanFoamMap.h"
 #include "Ocean/OceanSettings.h"
 #include "Ocean/OceanSimulation.h"
 #include "Tasks/Task.h"
@@ -103,6 +104,7 @@ private:
 	TUniquePtr<FOceanSimulation> Simulation;
 	TUniquePtr<FOceanFrame> FrontFrame; // published: rendered and queried
 	TUniquePtr<FOceanFrame> BackFrame;  // being written by the worker task
+	TUniquePtr<FOceanFoamMap> FoamMap;  // advanced by the worker task, after the waves
 	UE::Tasks::FTask PendingTask;
 
 	UPROPERTY(Transient)
@@ -114,6 +116,10 @@ private:
 	/** Slope second moments, see FOceanCascadeFrame::MomentMips. */
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UTexture2D>> MomentTextures;
+
+	/** World-space foam around the camera, see FOceanFoamMap. */
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> FoamMapTexture;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> MaterialInstance;
