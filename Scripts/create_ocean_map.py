@@ -89,7 +89,7 @@ def import_ground_textures():
     /Game/Ocean/Ground/T_Ground_<Kind>_<BaseColor|Normal>. Returns {(kind, suffix): texture} for those present."""
     source = os.path.join(unreal.Paths.project_saved_dir(), "Infinigen", "ground")
     textures = {}
-    for kind in ("limestone", "soil", "litter", "grass"):
+    for kind in ("limestone", "soil", "litter", "grass", "wrack"):
         for suffix, file_suffix in (("BaseColor", "basecolor"), ("Normal", "normal")):
             path = os.path.join(source, f"{kind}_{file_suffix}.png")
             if not os.path.isfile(path):
@@ -167,6 +167,7 @@ def seabed_material():
         "ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, SwellPeriod, SwellMaxDepth, "
         "RockAlbedo, RockAlbedoSampler, RockNormal, RockNormalSampler, SoilAlbedo, SoilAlbedoSampler, SoilNormal, SoilNormalSampler, "
         "LitterAlbedo, LitterAlbedoSampler, LitterNormal, LitterNormalSampler, GrassAlbedo, GrassAlbedoSampler, GrassNormal, GrassNormalSampler, "
+        "WrackAlbedo, WrackAlbedoSampler, WrackNormal, WrackNormalSampler, "
         "RockTint, SoilTint, LitterTint, GrassTint, Roughness, Normal, Glint);")
     surface.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
     surface.set_editor_property("include_file_paths", ["/Makar/Ocean.ush"])
@@ -174,6 +175,7 @@ def seabed_material():
     for name in ("WorldPos", "VertexNormal", "Time", "SwellHeight", "SandColor", "ToSun", "ToCamera", "Footprints", "FootprintTileSize",
                  "ShoreMap", "ShoreMapOrigin", "ShoreMapSize", "SwellPeriod", "SwellMaxDepth",
                  "RockAlbedo", "RockNormal", "SoilAlbedo", "SoilNormal", "LitterAlbedo", "LitterNormal", "GrassAlbedo", "GrassNormal",
+                 "WrackAlbedo", "WrackNormal",
                  "RockTint", "SoilTint", "LitterTint", "GrassTint"):
         custom_input = unreal.CustomInput()
         custom_input.set_editor_property("input_name", name)
@@ -219,7 +221,8 @@ def seabed_material():
     # Ground textures rendered from Infinigen's terrain materials (Scripts/infinigen/render_ground_tiles.py), and the
     # tints that bring them to Caribbean colours: pale grey limestone, brown-red soil, tan dry leaves.
     ground = import_ground_textures()
-    for index, (kind, prefix) in enumerate((("limestone", "Rock"), ("soil", "Soil"), ("litter", "Litter"), ("grass", "Grass"))):
+    for index, (kind, prefix) in enumerate((("limestone", "Rock"), ("soil", "Soil"), ("litter", "Litter"), ("grass", "Grass"),
+                                            ("wrack", "Wrack"))):
         for row, (suffix, input_suffix) in enumerate((("BaseColor", "Albedo"), ("Normal", "Normal"))):
             texture = expression(unreal.MaterialExpressionTextureObjectParameter, -1600, 1500 + 200 * (2 * index + row))
             texture.set_editor_property("parameter_name", f"Ground{prefix}{input_suffix}")

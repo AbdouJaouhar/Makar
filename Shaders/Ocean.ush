@@ -656,6 +656,7 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 	Texture2D SoilAlbedo, SamplerState SoilAlbedoSampler, Texture2D SoilNormal, SamplerState SoilNormalSampler,
 	Texture2D LitterAlbedo, SamplerState LitterAlbedoSampler, Texture2D LitterNormal, SamplerState LitterNormalSampler,
 	Texture2D GrassAlbedo, SamplerState GrassAlbedoSampler, Texture2D GrassNormal, SamplerState GrassNormalSampler,
+	Texture2D WrackAlbedo, SamplerState WrackAlbedoSampler, Texture2D WrackNormal, SamplerState WrackNormalSampler,
 	float3 RockTint, float3 SoilTint, float3 LitterTint, float3 GrassTint,
 	out float Roughness, out float3 Normal, out float Glint)
 {
@@ -748,34 +749,29 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 		const float Density = Band * smoothstep(0.35, 0.6, OceanGradientNoise(PosM / 18.0 + 5.0));
 		if (Density > 0.01)
 		{
-			const float Mat = OceanFractalNoise(PosM + 3.3, 0.5, 4, 0.55) + 0.5;
-			// Tangled clumps a few centimetres across, with shadowed holes between them.
-			const float Lumps = OceanFractalNoise(PosM + 7.7, 0.12, 3, 0.5) + 0.5;
-			// Loose strands scattered beyond the edge of the mat.
-			const float Strays = smoothstep(0.72, 0.78, Lumps) * saturate(3.0 * Density) * 0.9;
-			const float Cover = max(smoothstep(0.55, 0.62, Mat + 0.5 * (Density - 0.5)) * saturate(4.0 * Density), Strays)
-				* saturate(0.3 / Footprint);
+			// The mat: a tile of heaped sargassum sprigs (Scripts/infinigen/render_wrack_tile.py: golden fresh weed,
+			// olive and dried near-black weed, air bladders; its alpha = the weed), read at two scales rotated against
+			// each other. Its outline follows the band, thinning to scattered strands; its holes are the tile's.
+			const float2 UV1 = PosM / 1.5;
+			const float2 UV2 = mul(OceanGroundRotation, PosM) / 2.55 + 0.29;
+			const float WrackMix = smoothstep(0.35, 0.65, OceanValueNoise(PosM / 3.0 + 41.0));
+			const float4 Weed = lerp(WrackAlbedo.Sample(WrackAlbedoSampler, UV1), WrackAlbedo.Sample(WrackAlbedoSampler, UV2), WrackMix);
+			const float Spread = smoothstep(0.15, 0.55, Density + 0.25 * (OceanGradientNoise(PosM / 0.8 + 6.6) - 0.5));
+			const float Cover = Weed.a * Spread;
+			Color *= 1.0 - 0.08 * Spread; // the sand under and around the mat stays damp
 			if (Cover > 0.0)
 			{
-				// Fresh golden weed, darker olive-brown and dried near-black weed, in patches.
-				const float Age = OceanGradientNoise(PosM / 1.2 + 6.6);
-				const float3 Weed = Age < 0.5 ? lerp(float3(0.32, 0.2, 0.05), float3(0.14, 0.1, 0.04), Age * 2.0)
-					: lerp(float3(0.14, 0.1, 0.04), float3(0.06, 0.045, 0.03), Age * 2.0 - 1.0);
-				// Air bladders: little golden berries, ~5 mm, with dark gaps between them.
-				const float BladderDetail = saturate(0.005 / Footprint - 1.5);
-				const float Bladders = (1.0 - smoothstep(0.2, 0.45, OceanCellular(PosM / 0.005 + 2.1))) * BladderDetail;
-				const float Holes = lerp(0.4, 1.0, smoothstep(0.35, 0.55, Lumps));
-				const float3 Sargassum = Weed * Holes * (1.0 + 0.45 * Bladders) * lerp(1.0, 0.8, BladderDetail * (1.0 - Bladders));
-				Color = lerp(Color, Sargassum, Cover);
-				Roughness = lerp(Roughness, lerp(0.65, 0.4, Bladders), Cover); // the bladders are glossy
+				float2 N1 = WrackNormal.Sample(WrackNormalSampler, UV1).rg * 2.0 - 1.0;
+				float2 N2 = WrackNormal.Sample(WrackNormalSampler, UV2).rg * 2.0 - 1.0;
+				N1.y = -N1.y; // the image's y (up) is -V
+				N2.y = -N2.y;
+				N2 = mul(N2, OceanGroundRotation);
+				const float2 N = lerp(N1, N2, WrackMix);
+				const float NZ = sqrt(saturate(1.0 - dot(N, N)));
+				Color = lerp(Color, Weed.rgb, Cover);
+				Roughness = lerp(Roughness, 0.5, Cover); // wet weed, a little glossy
 				SandMask *= 1.0 - Cover;
-				const float E = 0.01;
-				const float2 MatSlope = float2(OceanFractalNoise(PosM + float2(E, 0.0) + 3.3, 0.5, 4, 0.55) + 0.5 - Mat,
-					OceanFractalNoise(PosM + float2(0.0, E) + 3.3, 0.5, 4, 0.55) + 0.5 - Mat) / E;
-				const float2 LumpSlope = float2(OceanFractalNoise(PosM + float2(E, 0.0) + 7.7, 0.12, 3, 0.5) + 0.5 - Lumps,
-					OceanFractalNoise(PosM + float2(0.0, E) + 7.7, 0.12, 3, 0.5) + 0.5 - Lumps) / E;
-				// Moderate slopes only: steep fine-scale ones turn into a maze of light and shadow.
-				Bump = lerp(Bump, MatSlope * 0.03 + LumpSlope * 0.012, Cover);
+				Bump = lerp(Bump, -N / max(NZ, 0.35) * 0.6, Cover);
 			}
 		}
 	}
@@ -883,7 +879,22 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 
 	Normal = normalize(lerp(normalize(VertexNormal - float3(Bump, 0.0)), GroundNormal, GroundCover));
 	SandMask *= (1.0 - GroundCover) * smoothstep(-0.05, 0.05, HeightM);
-	Glint = SandMask > 0.0 ? SandMask * OceanSandGlint(PosM, Footprint, VertexNormal, ToSun, ToCamera) : 0.0;
+	// Sand sparkles through the sun's own specular, so that they vanish in the shade (an emissive glint would not): a
+	// pixel becomes the glinting facet, mirror-smooth, with the probability of the sparkle's brightness (dithered on a
+	// fixed hash, so stable, and averaged by the temporal antialiasing).
+	Glint = 0.0;
+	if (SandMask > 0.0)
+	{
+		const float Sparkle = SandMask * OceanSandGlint(PosM, Footprint, VertexNormal, ToSun, ToCamera);
+		const float Dither = OceanHash01(OceanCellHash(int2(floor(PosM / max(Footprint, 1e-4))), 0x51u));
+		if (Dither < saturate(6.0 * Sparkle)) // a mirror pixel is far brighter than the glint's mean: fewer of them
+		{
+			// Exactly towards the half vector: the glinting facet's lobe (~0.06 rad) is wider than a smooth GGX lobe, which
+			// would then mostly miss the sun.
+			Normal = normalize(ToSun + ToCamera);
+			Roughness = 0.1;
+		}
+	}
 	return Color;
 }
 

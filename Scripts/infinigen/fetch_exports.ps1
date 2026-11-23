@@ -43,6 +43,14 @@ if (Test-Path "$ground\*_basecolor.png") {
     "ground"
 }
 
+# Beached sargassum tile for the wrack line (Scripts/infinigen/render_wrack_tile.py), with the ground tiles.
+$wrack = "\\wsl.localhost\$Distro\root\makar\wrack_tile"
+if (Test-Path "$wrack\wrack_basecolor.png") {
+    New-Item -ItemType Directory -Force (Join-Path $target "ground") | Out-Null
+    Copy-Item -Force "$wrack\*.png" (Join-Path $target "ground")
+    "wrack"
+}
+
 # Leaf clusters for the leaf cards of the broadleaf trees and sea grapes (Scripts/infinigen/render_leaf_cluster.py).
 $leaves = "\\wsl.localhost\$Distro\root\makar\leaf_atlas"
 if (Test-Path "$leaves\*_basecolor.png") {
