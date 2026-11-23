@@ -1,6 +1,12 @@
 ﻿#include "Ocean/OceanBathymetry.h"
 
 #include "Async/ParallelFor.h"
+#include "Camera/PlayerCameraManager.h"
+#include "Engine/World.h"
+#include "Kismet/GameplayStatics.h"
+#if WITH_EDITOR
+#include "LevelEditorViewport.h"
+#endif
 #include "Engine/Texture2D.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/FileHelper.h"
@@ -225,7 +231,9 @@ namespace
 
 AOceanBathymetry::AOceanBathymetry()
 {
-	PrimaryActorTick.bCanEverTick = false;
+	// Tick picks each land tile's level of detail from the viewer's distance.
+	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.TickInterval = 0.1f;
 
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 
@@ -830,111 +838,245 @@ void AOceanBathymetry::BuildLandTiles(const TArray<float>& Heights, int32 N, flo
 	}
 	constexpr int32 TileChunks = 4;
 	const int32 Tiles = FMath::DivideAndRoundUp(Chunks, TileChunks);
+	auto TileOf = [&](int32 CX, int32 CY) { return (CY / TileChunks) * Tiles + CX / TileChunks; };
 	struct FTileMesh
 	{
 		TArray<FVector> Vertices;
 		TArray<FVector> Normals;
 		TArray<int32> Triangles;
 	};
-	TArray<FTileMesh> TileMeshes;
-	TileMeshes.SetNum(Tiles * Tiles);
-	int64 FineVertexCount = 0;
+
+	// Three levels of detail per tile: full resolution, then half, then a quarter (never coarser than the sea floor).
+	// Within a level, chunks stitch to coarser neighbours; tiles shown at different levels meet over skirts hanging
+	// from their edges (both ways, so the crack is filled whichever side is lower).
+	constexpr int32 NumLods = 3;
+	constexpr int32 LodDivisors[NumLods] = { 1, 2, 4 };
+	constexpr float SkirtDepth = 8.f;
+	TArray<TArray<FTileMesh>> LodMeshes;
+	LodMeshes.SetNum(NumLods);
+	int64 VertexCounts[NumLods] = {};
 	int32 CoastChunks = 0, LandChunks = 0;
-	for (int32 CY = 0; CY < Chunks; ++CY)
+	for (int32 Lod = 0; Lod < NumLods; ++Lod)
 	{
-		for (int32 CX = 0; CX < Chunks; ++CX)
+		TArray<FTileMesh>& TileMeshes = LodMeshes[Lod];
+		TileMeshes.SetNum(Tiles * Tiles);
+		auto LodLevelAt = [&](int32 CX, int32 CY)
 		{
 			const int32 S = LevelAt(CX, CY);
-			if (S <= 1)
+			return S > 1 ? FMath::Max(1, S / LodDivisors[Lod]) : 1;
+		};
+		for (int32 CY = 0; CY < Chunks; ++CY)
+		{
+			for (int32 CX = 0; CX < Chunks; ++CX)
 			{
-				continue;
-			}
-			(S == CoastSubdivision ? CoastChunks : LandChunks) += 1;
-			const int32 X0 = CX * ChunkCells;
-			const int32 Y0 = CY * ChunkCells;
-			const int32 X1 = FMath::Min(X0 + ChunkCells, M - 1);
-			const int32 Y1 = FMath::Min(Y0 + ChunkCells, M - 1);
-			const int32 W = (X1 - X0) * S + 1;
-			const int32 H = (Y1 - Y0) * S + 1;
-			const float FineStep = Step / S;
-			const FVector2f Origin = TexelCenter(X0 * Stride, Y0 * Stride);
+				if (LevelAt(CX, CY) <= 1)
+				{
+					continue;
+				}
+				if (Lod == 0)
+				{
+					(LevelAt(CX, CY) == CoastSubdivision ? CoastChunks : LandChunks) += 1;
+				}
+				const int32 S = LodLevelAt(CX, CY);
+				const int32 X0 = CX * ChunkCells;
+				const int32 Y0 = CY * ChunkCells;
+				const int32 X1 = FMath::Min(X0 + ChunkCells, M - 1);
+				const int32 Y1 = FMath::Min(Y0 + ChunkCells, M - 1);
+				const int32 W = (X1 - X0) * S + 1;
+				const int32 H = (Y1 - Y0) * S + 1;
+				const float FineStep = Step / S;
+				const FVector2f Origin = TexelCenter(X0 * Stride, Y0 * Stride);
 
-			// Heights with a one-sample ring around the chunk, for the normals.
-			const int32 RW = W + 2;
-			TArray<float> Local;
-			Local.SetNumUninitialized(RW * (H + 2));
-			ParallelFor(H + 2, [&](int32 J)
-			{
-				for (int32 I = 0; I < RW; ++I)
+				// Heights with a one-sample ring around the chunk, for the normals.
+				const int32 RW = W + 2;
+				TArray<float> Local;
+				Local.SetNumUninitialized(RW * (H + 2));
+				ParallelFor(H + 2, [&](int32 J)
 				{
-					Local[J * RW + I] = GetTerrainHeight(Origin + FVector2f((I - 1) * FineStep, (J - 1) * FineStep));
-				}
-			});
-			// Edges shared with a coarser chunk follow its edge (linear between its vertices, which this chunk's grid
-			// also holds), so the meshes meet without cracks.
-			auto Stitch = [&](int32 NeighbourLevel, int32 Count, TFunctionRef<float&(int32)> At)
-			{
-				if (NeighbourLevel >= S)
-				{
-					return;
-				}
-				const int32 K = S / FMath::Max(NeighbourLevel, 1);
-				for (int32 I = 0; I < Count; ++I)
-				{
-					const int32 I0 = (I / K) * K;
-					if (I != I0 && I0 + K < Count)
+					for (int32 I = 0; I < RW; ++I)
 					{
-						At(I) = FMath::Lerp(At(I0), At(I0 + K), float(I - I0) / K);
+						Local[J * RW + I] = GetTerrainHeight(Origin + FVector2f((I - 1) * FineStep, (J - 1) * FineStep));
+					}
+				});
+				// Edges shared with a coarser chunk follow its edge (linear between its vertices, which this chunk's grid
+				// also holds), so the meshes meet without cracks.
+				auto Stitch = [&](int32 NeighbourLevel, int32 Count, TFunctionRef<float&(int32)> At)
+				{
+					if (NeighbourLevel >= S)
+					{
+						return;
+					}
+					const int32 K = S / FMath::Max(NeighbourLevel, 1);
+					for (int32 I = 0; I < Count; ++I)
+					{
+						const int32 I0 = (I / K) * K;
+						if (I != I0 && I0 + K < Count)
+						{
+							At(I) = FMath::Lerp(At(I0), At(I0 + K), float(I - I0) / K);
+						}
+					}
+				};
+				Stitch(LodLevelAt(CX - 1, CY), H, [&](int32 J) -> float& { return Local[(J + 1) * RW + 1]; });
+				Stitch(LodLevelAt(CX + 1, CY), H, [&](int32 J) -> float& { return Local[(J + 1) * RW + W]; });
+				Stitch(LodLevelAt(CX, CY - 1), W, [&](int32 I) -> float& { return Local[RW + I + 1]; });
+				Stitch(LodLevelAt(CX, CY + 1), W, [&](int32 I) -> float& { return Local[H * RW + I + 1]; });
+
+				FTileMesh& Mesh = TileMeshes[TileOf(CX, CY)];
+				const int32 Base = Mesh.Vertices.Num();
+				for (int32 J = 0; J < H; ++J)
+				{
+					for (int32 I = 0; I < W; ++I)
+					{
+						const int32 L = (J + 1) * RW + I + 1;
+						const FVector2f Position = Origin + FVector2f(I * FineStep, J * FineStep) - Center;
+						Mesh.Vertices.Add(FVector(Position.X * 100.0, Position.Y * 100.0, Local[L] * 100.0 - ActorZ));
+						Mesh.Normals.Add(FVector(-(Local[L + 1] - Local[L - 1]), -(Local[L + RW] - Local[L - RW]), 2.f * FineStep).GetSafeNormal());
 					}
 				}
-			};
-			Stitch(LevelAt(CX - 1, CY), H, [&](int32 J) -> float& { return Local[(J + 1) * RW + 1]; });
-			Stitch(LevelAt(CX + 1, CY), H, [&](int32 J) -> float& { return Local[(J + 1) * RW + W]; });
-			Stitch(LevelAt(CX, CY - 1), W, [&](int32 I) -> float& { return Local[RW + I + 1]; });
-			Stitch(LevelAt(CX, CY + 1), W, [&](int32 I) -> float& { return Local[H * RW + I + 1]; });
+				for (int32 J = 0; J + 1 < H; ++J)
+				{
+					for (int32 I = 0; I + 1 < W; ++I)
+					{
+						const int32 V00 = Base + J * W + I;
+						Mesh.Triangles.Append({ V00, V00 + W, V00 + 1, V00 + 1, V00 + W, V00 + W + 1 });
+					}
+				}
 
-			FTileMesh& Mesh = TileMeshes[(CY / TileChunks) * Tiles + CX / TileChunks];
-			const int32 Base = Mesh.Vertices.Num();
-			for (int32 J = 0; J < H; ++J)
-			{
-				for (int32 I = 0; I < W; ++I)
+				// Skirts on the edges shared with a chunk of another tile (which may be shown at another level).
+				auto Skirt = [&](int32 NX, int32 NY, int32 Count, TFunctionRef<int32(int32)> EdgeVertex)
 				{
-					const int32 L = (J + 1) * RW + I + 1;
-					const FVector2f Position = Origin + FVector2f(I * FineStep, J * FineStep) - Center;
-					Mesh.Vertices.Add(FVector(Position.X * 100.0, Position.Y * 100.0, Local[L] * 100.0 - ActorZ));
-					Mesh.Normals.Add(FVector(-(Local[L + 1] - Local[L - 1]), -(Local[L + RW] - Local[L - RW]), 2.f * FineStep).GetSafeNormal());
-				}
+					if (LevelAt(NX, NY) <= 1 || TileOf(NX, NY) == TileOf(CX, CY))
+					{
+						return;
+					}
+					const int32 SkirtBase = Mesh.Vertices.Num();
+					for (int32 I = 0; I < Count; ++I)
+					{
+						const int32 V = Base + EdgeVertex(I);
+						const FVector Vertex = Mesh.Vertices[V] - FVector(0.0, 0.0, SkirtDepth * 100.0);
+						const FVector Normal = Mesh.Normals[V];
+						Mesh.Vertices.Add(Vertex);
+						Mesh.Normals.Add(Normal);
+					}
+					for (int32 I = 0; I + 1 < Count; ++I)
+					{
+						const int32 A = Base + EdgeVertex(I), B = Base + EdgeVertex(I + 1);
+						const int32 C = SkirtBase + I, D = SkirtBase + I + 1;
+						// Both windings: the gap may be seen from either side.
+						Mesh.Triangles.Append({ A, B, C, B, D, C, A, C, B, B, C, D });
+					}
+				};
+				Skirt(CX - 1, CY, H, [&](int32 J) { return J * W; });
+				Skirt(CX + 1, CY, H, [&](int32 J) { return J * W + W - 1; });
+				Skirt(CX, CY - 1, W, [&](int32 I) { return I; });
+				Skirt(CX, CY + 1, W, [&](int32 I) { return (H - 1) * W + I; });
+				VertexCounts[Lod] += W * H;
 			}
-			for (int32 J = 0; J + 1 < H; ++J)
-			{
-				for (int32 I = 0; I + 1 < W; ++I)
-				{
-					const int32 V00 = Base + J * W + I;
-					Mesh.Triangles.Append({ V00, V00 + W, V00 + 1, V00 + 1, V00 + W, V00 + W + 1 });
-				}
-			}
-			FineVertexCount += W * H;
 		}
 	}
-	for (FTileMesh& Mesh : TileMeshes)
+
+	LandTileLods.Reset();
+	for (int32 Tile = 0; Tile < Tiles * Tiles; ++Tile)
 	{
-		if (Mesh.Vertices.Num() == 0)
+		if (LodMeshes[0][Tile].Vertices.Num() == 0)
 		{
 			continue;
 		}
-		UOceanMeshComponent* Tile = NewObject<UOceanMeshComponent>(this, NAME_None, RF_Transient);
-		Tile->ComponentTags.Add(TEXT("LandTile"));
-		Tile->SetupAttachment(RootComponent);
-		Tile->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		Tile->RegisterComponent();
-		TArray<FProcMeshTangent> Tangents;
-		Tangents.Init(FProcMeshTangent(1.f, 0.f, 0.f), Mesh.Vertices.Num());
-		Tile->CreateMeshSection_LinearColor(0, Mesh.Vertices, Mesh.Triangles, Mesh.Normals, TArray<FVector2D>(), TArray<FLinearColor>(), Tangents, false);
-		LandTiles.Add(Tile);
+		FLandTileLods& Entry = LandTileLods.AddDefaulted_GetRef();
+		for (int32 Lod = 0; Lod < NumLods; ++Lod)
+		{
+			FTileMesh& Mesh = LodMeshes[Lod][Tile];
+			UOceanMeshComponent* Component = NewObject<UOceanMeshComponent>(this, NAME_None, RF_Transient);
+			Component->ComponentTags.Add(TEXT("LandTile"));
+			Component->SetupAttachment(RootComponent);
+			Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Component->SetVisibility(Lod == 0);
+			Component->RegisterComponent();
+			TArray<FProcMeshTangent> Tangents;
+			Tangents.Init(FProcMeshTangent(1.f, 0.f, 0.f), Mesh.Vertices.Num());
+			Component->CreateMeshSection_LinearColor(0, Mesh.Vertices, Mesh.Triangles, Mesh.Normals, TArray<FVector2D>(), TArray<FLinearColor>(), Tangents, false);
+			if (Lod == 0)
+			{
+				Entry.Bounds = Component->Bounds.GetBox();
+			}
+			Entry.Lods.Add(LandTiles.Add(Component));
+			Mesh = FTileMesh();
+		}
+		Entry.Shown = 0;
 	}
-	UE_LOG(LogTemp, Display, TEXT("OceanBathymetry: sea floor %d x %d at %.1f m; %d coast chunks at %.2f m, %d land chunks at %.2f m: %lld vertices in %d tiles, %.1f s"),
-		M, M, Step, CoastChunks, Step / CoastSubdivision, LandChunks, Step / LandSubdivision, FineVertexCount, LandTiles.Num(),
-		FPlatformTime::Seconds() - StartTime);
+	UpdateLandTileLods();
+	UE_LOG(LogTemp, Display, TEXT("OceanBathymetry: sea floor %d x %d at %.1f m; %d coast chunks at %.2f m, %d land chunks at %.2f m: %lld / %lld / %lld vertices per level of detail in %d tiles, %.1f s"),
+		M, M, Step, CoastChunks, Step / CoastSubdivision, LandChunks, Step / LandSubdivision, VertexCounts[0], VertexCounts[1], VertexCounts[2],
+		LandTileLods.Num(), FPlatformTime::Seconds() - StartTime);
+}
+
+void AOceanBathymetry::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+	UpdateLandTileLods();
+}
+
+void AOceanBathymetry::UpdateLandTileLods()
+{
+	// The viewer: the player's camera in game, the level viewport's camera in the editor (as AOceanActor follows it).
+	FVector Viewer;
+	bool bHasViewer = false;
+	if (const UWorld* World = GetWorld(); World && World->IsGameWorld())
+	{
+		if (const APlayerCameraManager* CameraManager = UGameplayStatics::GetPlayerCameraManager(this, 0))
+		{
+			Viewer = CameraManager->GetCameraLocation();
+			bHasViewer = true;
+		}
+	}
+#if WITH_EDITOR
+	else if (GCurrentLevelEditingViewportClient && GCurrentLevelEditingViewportClient->IsPerspective())
+	{
+		Viewer = GCurrentLevelEditingViewportClient->GetViewLocation();
+		bHasViewer = true;
+	}
+#endif
+	const float Lod1 = LandLod1Distance * 100.f;
+	const float Lod2 = FMath::Max(LandLod2Distance, LandLod1Distance) * 100.f;
+	bool bChanged = false;
+	for (FLandTileLods& Entry : LandTileLods)
+	{
+		int32 Wanted = 0;
+		if (bHasViewer)
+		{
+			const double Distance = FMath::Sqrt(Entry.Bounds.ComputeSquaredDistanceToPoint(Viewer));
+			Wanted = Distance > Lod2 ? 2 : (Distance > Lod1 ? 1 : 0);
+		}
+		Wanted = FMath::Min(Wanted, Entry.Lods.Num() - 1);
+		if (Wanted == Entry.Shown)
+		{
+			continue;
+		}
+		for (int32 Lod = 0; Lod < Entry.Lods.Num(); ++Lod)
+		{
+			if (UOceanMeshComponent* Component = LandTiles.IsValidIndex(Entry.Lods[Lod]) ? LandTiles[Entry.Lods[Lod]].Get() : nullptr)
+			{
+				Component->SetVisibility(Lod == Wanted);
+			}
+		}
+		Entry.Shown = Wanted;
+		bChanged = true;
+	}
+	if (bChanged && UE_LOG_ACTIVE(LogTemp, Verbose))
+	{
+		int32 Counts[3] = {};
+		int64 Vertices = 0;
+		for (const FLandTileLods& Entry : LandTileLods)
+		{
+			Counts[FMath::Clamp(Entry.Shown, 0, 2)] += 1;
+			if (UOceanMeshComponent* Component = LandTiles.IsValidIndex(Entry.Lods[Entry.Shown]) ? LandTiles[Entry.Lods[Entry.Shown]].Get() : nullptr)
+			{
+				Vertices += Component->GetProcMeshSection(0) ? Component->GetProcMeshSection(0)->ProcVertexBuffer.Num() : 0;
+			}
+		}
+		UE_LOG(LogTemp, Verbose, TEXT("OceanBathymetry: land tiles shown at full / half / quarter detail: %d / %d / %d, %lld vertices"),
+			Counts[0], Counts[1], Counts[2], Vertices);
+	}
 }
 
 void AOceanBathymetry::BuildSprayCurtain(const FOceanShoreData& Data)

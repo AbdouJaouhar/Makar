@@ -69,6 +69,8 @@ public:
 	FOceanTerrainSample SampleTerrain(const FVector2f& PositionM) const;
 
 	virtual void OnConstruction(const FTransform& Transform) override;
+	virtual void Tick(float DeltaSeconds) override;
+	virtual bool ShouldTickIfViewportsOnly() const override { return true; }
 
 protected:
 	virtual void BeginPlay() override;
@@ -229,6 +231,16 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Spray", meta = (ClampMin = "1", Units = "Meters"))
 	float SprayCurtainHeight = 6.f;
 
+	/**
+	 * Distance from the viewer to a land tile beyond which it drops to its next level of detail (full: 0.5 m coast and
+	 * 1 m land; then half; then a quarter of that resolution).
+	 */
+	UPROPERTY(EditAnywhere, Category = "Rendering", meta = (ClampMin = "10", Units = "Meters"))
+	float LandLod1Distance = 120.f;
+
+	UPROPERTY(EditAnywhere, Category = "Rendering", meta = (ClampMin = "10", Units = "Meters"))
+	float LandLod2Distance = 450.f;
+
 private:
 	void Build();
 	void BuildShoreTexture(const FOceanShoreData& Data);
@@ -257,9 +269,22 @@ private:
 	/** Builds the land and coast meshes: chunks at 0.5 m (coast), 1 m (land), grouped into tiles that cull separately. */
 	void BuildLandTiles(const TArray<float>& Heights, int32 N, float Texel, int32 Stride);
 
-	/** Land and coast meshes, one component per tile (created on build, not saved). */
+	/** Land and coast meshes, one component per tile and level of detail (created on build, not saved). */
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UOceanMeshComponent>> LandTiles;
+
+	/**
+	 * Each tile's levels of detail (indices into LandTiles, finest first) and its bounds: Tick shows the level matching
+	 * the viewer's distance (LandLod1Distance, LandLod2Distance). Neighbours at different levels meet over skirts hanging from the edges.
+	 */
+	struct FLandTileLods
+	{
+		FBox Bounds = FBox(ForceInit);
+		TArray<int32, TInlineAllocator<3>> Lods;
+		int32 Shown = -1;
+	};
+	TArray<FLandTileLods> LandTileLods;
+	void UpdateLandTileLods();
 
 	/**
 	 * The massif grown by landscape evolution (OceanErosion::LandscapeEvolution, 2 m), scaled to the analytic massif's
