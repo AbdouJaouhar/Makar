@@ -57,6 +57,14 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Rendering")
 	TSoftObjectPtr<UMaterialInterface> PalmFrondMaterial;
 
+	/** The palms' modelled leaflets and rachises up close (vertex-coloured, glossier than the other leaves). */
+	UPROPERTY(EditAnywhere, Category = "Flora")
+	TSoftObjectPtr<UMaterialInterface> PalmLeafletMaterial;
+
+	/** The real leaves of the trees and shrubs up close: a curved quad per leaf, outline and veins drawn by the material. */
+	UPROPERTY(EditAnywhere, Category = "Flora")
+	TSoftObjectPtr<UMaterialInterface> LeafBladeMaterial;
+
 	/** Coconut palm trunk: procedural ringed bark (Scripts/create_flora_materials.py). */
 	UPROPERTY(EditAnywhere, Category = "Rendering")
 	TSoftObjectPtr<UMaterialInterface> PalmBarkMaterial;

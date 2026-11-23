@@ -34,6 +34,8 @@ AOceanIslandFlora::AOceanIslandFlora()
 	BarkMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_StemF.M_StemF")));
 	FoliageMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_Foliage.M_Foliage")));
 	PalmFrondMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_PalmFrond.M_PalmFrond")));
+	PalmLeafletMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_PalmLeaflet.M_PalmLeaflet")));
+	LeafBladeMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_LeafBlade.M_LeafBlade")));
 	PalmBarkMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_PalmBark.M_PalmBark")));
 	BroadleafLeavesMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_LeafCards_Broadleaf.M_LeafCards_Broadleaf")));
 	SeaGrapeLeavesMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_LeafCards_SeaGrape.M_LeafCards_SeaGrape")));
@@ -132,6 +134,10 @@ void AOceanIslandFlora::Build()
 		return Loaded ? Loaded : Fallback;
 	};
 	UMaterialInterface* PalmFrond = LoadOr(PalmFrondMaterial, Foliage);
+	UMaterialInterface* PalmLeaflet = LoadOr(PalmLeafletMaterial, Foliage);
+	UMaterialInterface* LeafBlade = LoadOr(LeafBladeMaterial, Foliage);
+	UE_LOG(LogTemp, Verbose, TEXT("OceanIslandFlora: palm leaflets %s, leaf blades %s (from %s)"), *GetNameSafe(PalmLeaflet), *GetNameSafe(LeafBlade),
+		*LeafBladeMaterial.ToString());
 	UMaterialInterface* PalmBark = LoadOr(PalmBarkMaterial, Bark);
 	UMaterialInterface* BroadleafLeaves = LoadOr(BroadleafLeavesMaterial, Foliage);
 	UMaterialInterface* SeaGrapeLeaves = LoadOr(SeaGrapeLeavesMaterial, Foliage);
@@ -140,22 +146,26 @@ void AOceanIslandFlora::Build()
 	TArray<UHierarchicalInstancedStaticMeshComponent*> Palms, Trees, Shrubs, Bushes, Rocks;
 	for (int32 Variant = 0; Variant < NumPalmVariants; ++Variant)
 	{
-		UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeCoconutPalm(Seed * 100 + Variant), { PalmBark, PalmFrond, Bark });
+		// Every leaflet modelled up close, a third of them further, a dozen broad strips a side in the distance (the same
+		// crown at every level).
+		const FOceanMeshData Near = OceanFlora::MakeCoconutPalm(Seed * 100 + Variant, 0);
+		const FOceanMeshData Middle = OceanFlora::MakeCoconutPalm(Seed * 100 + Variant, 1);
+		const FOceanMeshData Far = OceanFlora::MakeCoconutPalm(Seed * 100 + Variant, 2);
+		UStaticMesh* Mesh = OceanFlora::BuildStaticMeshLods(this, { &Near, &Middle, &Far }, { PalmBark, PalmLeaflet, Bark },
+			{ 1.f, 0.35f, 0.1f }, { 1, 1, 1 });
 		Meshes.Add(Mesh);
 		Palms.Add(AddInstancer(Mesh, 3000.f));
 	}
-	// The L-system plants in two levels of detail: real 3D leaves up close (M_Foliage), leaf cards further away (the
+	// The L-system plants in two levels of detail: real 3D leaves up close (M_LeafBlade), leaf cards further away (the
 	// cards show a rendered cluster of leaves, which up close read as flat rosettes).
 	// Three levels: dense real leaves, then fewer and larger ones, then cards only where they are a few pixels wide.
 	auto TwoLevels = [&](TFunctionRef<FOceanMeshData(bool, float)> Make, UMaterialInterface* Cards, float NearScreenSize)
 	{
-		// Near and middle: the branches join the leaves' section (one material, M_Foliage), so their colours show.
+		// Branches keep their own section (M_Bark, vertex colours): the leaves' material cuts its quads into leaf shapes.
 		FOceanMeshData Near = Make(true, 1.f);
 		FOceanMeshData Middle = Make(true, 2.4f);
-		OceanFlora::MergeSection(Near, 0, 2);
-		OceanFlora::MergeSection(Middle, 0, 2);
 		const FOceanMeshData Far = Make(false, 1.f);
-		UStaticMesh* Mesh = OceanFlora::BuildStaticMeshLods(this, { &Near, &Middle, &Far }, { Bark, Cards, Foliage },
+		UStaticMesh* Mesh = OceanFlora::BuildStaticMeshLods(this, { &Near, &Middle, &Far }, { Bark, Cards, LeafBlade },
 			{ 1.f, NearScreenSize, 0.3f * NearScreenSize }, { 2, 2, -1 });
 		Meshes.Add(Mesh);
 		return Mesh;

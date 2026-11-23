@@ -56,10 +56,11 @@ def bark():
     save(material, "M_Bark")
 
 
-def foliage(name="M_Foliage", tint=(0.35, 0.5, 0.1), roughness=0.65):
+def foliage(name="M_Foliage", tint=(0.35, 0.5, 0.1), roughness=0.6):
     """Leaves let light through: two-sided foliage shading, the transmitted light a warmer, yellower green.
     M_StemF (the generated stems, trunks and coconuts) is the same with next to no light through. Built from scratch:
-    a duplicate of M_Foliage drew the vertex colours white."""
+    a duplicate of M_Foliage drew the vertex colours white. Roughness 0.6: tropical leaves are waxy, a little of the sky shows on
+    them (matte, the crowns read as flat lime green)."""
     material = fresh_material(name)
     material.set_editor_property("two_sided", True)
     material.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_TWO_SIDED_FOLIAGE)
@@ -75,6 +76,84 @@ def foliage(name="M_Foliage", tint=(0.35, 0.5, 0.1), roughness=0.65):
     MEL.connect_material_property(constant(material, roughness, -300, 300), "", unreal.MaterialProperty.MP_ROUGHNESS)
     MEL.connect_material_property(constant(material, 0.3, -300, 380), "", unreal.MaterialProperty.MP_SPECULAR)
     save(material, name)
+
+
+
+
+LEAF_BLADE_CODE = """
+// One leaf on a quad (OceanFlora::AddLeafSpray): U across (0.5 = midrib), V = 1 at the stalk, 0 at the tip.
+const float Along = 1.0 - UV.y;           // 0 at the stalk, 1 at the tip
+const float Across = abs(UV.x - 0.5) * 2.0; // 0 on the midrib, 1 at the quad's edge
+// Outline: a short stalk, then an elliptic blade rounded at its base, pointed at its tip, widest a little before the
+// middle (sea grape and almond leaves are broader towards the tip: the vertex colour's species does not change this).
+const float S = saturate((Along - 0.07) / 0.93);
+const float Blade = Along > 0.07 ? pow(sin(3.14159 * pow(S, 0.8)), 0.6) : 0.0;
+const float Width = max(Blade, Along < 0.1 ? 0.06 : 0.0);
+const float Inside = Width - Across;
+Opacity = saturate(Inside / max(fwidth(Inside), 1e-4) + 0.5);
+// Veins: the midrib and secondary veins arching from it towards the margin, a little lighter; faded where they would
+// alias (fwidth: vein periods per pixel).
+const float Relative = Across / max(Width, 1e-3);
+const float Midrib = 1.0 - smoothstep(0.015, 0.045, Across);
+const float Phase = Along * 10.0 - pow(Relative, 0.7) * 1.6;
+const float VeinWidth = max(0.06, fwidth(Phase));
+const float Vein = (1.0 - smoothstep(0.0, VeinWidth, abs(frac(Phase) - 0.5) - 0.44)) * smoothstep(0.08, 0.2, Relative)
+    * (1.0 - smoothstep(0.8, 0.97, Relative)) * saturate(1.5 - 6.0 * fwidth(Phase));
+// The blade is a little paler towards its margin and along the veins; the midrib paler still, yellow-green.
+float3 C = Color.rgb * lerp(0.9, 1.06, Relative) * (1.0 + 0.1 * Vein);
+C = lerp(C, Color.rgb * float3(1.6, 1.5, 1.0), 0.6 * Midrib);
+return C;
+"""
+
+
+def leaf_blade():
+    """Real leaves of the trees and shrubs up close (OceanFlora::AddLeafSpray): each a curved quad whose outline and
+    veins are drawn here from its UVs, cut out by the opacity mask, so the leaves have smooth outlines at any distance
+    (modelled blades showed their polygons). Vertex colour = linear albedo; two-sided foliage, waxy."""
+    material = fresh_material("M_LeafBlade")
+    material.set_editor_property("two_sided", True)
+    material.set_editor_property("blend_mode", unreal.BlendMode.BLEND_MASKED)
+    material.set_editor_property("opacity_mask_clip_value", 0.5)
+    material.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_TWO_SIDED_FOLIAGE)
+    uv = node(material, unreal.MaterialExpressionTextureCoordinate, -900, 0)
+    vertex = node(material, unreal.MaterialExpressionVertexColor, -900, 150)
+    blade = node(material, unreal.MaterialExpressionCustom, -600, 0)
+    blade.set_editor_property("description", "Leaf Blade")
+    blade.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
+    blade.set_editor_property("code", LEAF_BLADE_CODE)
+    inputs = []
+    for name in ("UV", "Color"):
+        custom_input = unreal.CustomInput()
+        custom_input.set_editor_property("input_name", name)
+        inputs.append(custom_input)
+    blade.set_editor_property("inputs", inputs)
+    opacity = unreal.CustomOutput()
+    opacity.set_editor_property("output_name", "Opacity")
+    opacity.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT1)
+    blade.set_editor_property("additional_outputs", [opacity])
+    connect(uv, blade, "UV")
+    connect(vertex, blade, "Color")
+    MEL.connect_material_property(blade, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    MEL.connect_material_property(blade, "Opacity", unreal.MaterialProperty.MP_OPACITY_MASK)
+    # Vertex alpha = occlusion inside the leaf mass (OceanFlora::AddLeafSpray): dims the sky light and its reflection.
+    MEL.connect_material_property(vertex, "A", unreal.MaterialProperty.MP_AMBIENT_OCCLUSION)
+    transmission = node(material, unreal.MaterialExpressionConstant3Vector, -600, 250)
+    transmission.set_editor_property("constant", unreal.LinearColor(0.4, 0.55, 0.12, 1.0))
+    transmitted = node(material, unreal.MaterialExpressionMultiply, -300, 250)
+    connect(blade, transmitted, "A")
+    connect(transmission, transmitted, "B")
+    MEL.connect_material_property(transmitted, "", unreal.MaterialProperty.MP_SUBSURFACE_COLOR)
+    MEL.connect_material_property(constant(material, 0.65, -300, 350), "", unreal.MaterialProperty.MP_ROUGHNESS)
+    # Specular fades out with the occlusion (UE's Fresnel term scales with Specular too): leaves inside the mass, in the
+    # shade, mirrored the open sky at grazing angles and the bushes looked frosted white.
+    occluded = node(material, unreal.MaterialExpressionMultiply, -450, 420)
+    connect(vertex, occluded, "A", "A")
+    connect(vertex, occluded, "B", "A")
+    specular = node(material, unreal.MaterialExpressionMultiply, -300, 420)
+    connect(occluded, specular, "A")
+    connect(constant(material, 0.35, -450, 500), specular, "B")
+    MEL.connect_material_property(specular, "", unreal.MaterialProperty.MP_SPECULAR)
+    save(material, "M_LeafBlade")
 
 
 def rock():
@@ -248,7 +327,7 @@ const float Fissure = smoothstep(0.68, 0.9, PALM_BARK_NOISE(70.0, 1.3, float2(5.
 // Sun-bleached grey patches over browner bark.
 const float Weather = 0.65 * PALM_BARK_NOISE(5.0, 0.9, float2(9.3, 4.1)) + 0.35 * PALM_BARK_NOISE(17.0, 3.0, float2(2.7, 8.8));
 #undef PALM_BARK_NOISE
-float3 Bark = lerp(float3(0.22, 0.2, 0.17), float3(0.4, 0.39, 0.37), smoothstep(0.3, 0.75, Weather));
+float3 Bark = lerp(float3(0.15, 0.135, 0.115), float3(0.28, 0.27, 0.255), smoothstep(0.3, 0.75, Weather)); // grey bark ~0.2-0.3 (0.4 read white)
 Bark *= lerp(1.0, 0.45, lerp(0.13, Scar, Detail)) * lerp(1.0, 0.6, Fissure);
 // Darker and sand-stained at the foot.
 Bark = lerp(Bark * float3(0.85, 0.8, 0.7) + float3(0.04, 0.035, 0.025), Bark, smoothstep(0.0, 0.7, V));
@@ -382,6 +461,10 @@ def grass_tuft():
 bark()
 foliage()
 foliage("M_StemF", (0.06, 0.06, 0.03), 0.85)
+# Coconut palm leaflets (OceanFlora::MakeCoconutPalm, near levels): waxy and glossy, the sky sheen shows on them; the
+# light through them a warm yellow-green.
+foliage("M_PalmLeaflet", (0.5, 0.6, 0.15), 0.42)
+leaf_blade()
 rock()
 palm_frond()
 palm_bark()

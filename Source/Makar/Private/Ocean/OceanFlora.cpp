@@ -329,11 +329,7 @@ namespace
 			const float Half = 0.5f * Width * Length;
 			const float Fold = 0.25f * Half; // the edges sit below the midrib: a V cross-section
 			const float Sag = 0.12f * Length;  // the tip bends down
-			const FVector3f Root = Base + Axis * (0.12f * Length);
-			const FVector3f Mid = Root + Axis * (0.5f * Length) + Face * (0.02f * Length);
-			const FVector3f Tip = Root + Axis * Length - FVector3f::UpVector * Sag;
-			const FVector3f Left = Root + Axis * (0.45f * Length) - Side * Half - Face * Fold;
-			const FVector3f Right = Root + Axis * (0.45f * Length) + Side * Half - Face * Fold;
+			const FVector3f Root = Base; // the blade material draws the stalk
 			FLinearColor Color = FMath::Lerp(Green, Accent, AccentAmount * Random.FRand()) * Random.FRandRange(0.8f, 1.2f);
 			if (Random.FRand() < RedChance)
 			{
@@ -341,27 +337,33 @@ namespace
 			}
 			// Inner leaves are darker (shaded by the mass).
 			Color *= FMath::Lerp(0.55f, 1.f, Depth);
+			// Alpha = ambient occlusion (M_LeafBlade): leaves deep in the mass and on its underside see little sky, and must not
+			// mirror it either (unoccluded, the shaded leaves inside the bushes shone white at grazing angles).
+			const float Height = FMath::Clamp(0.5f + 0.5f * (Base.Z - Center.Z) / FMath::Max(Radius, 1.f), 0.f, 1.f);
+			Color.A = FMath::Lerp(0.15f, 1.f, Depth * Depth) * FMath::Lerp(0.45f, 1.f, Height);
 			const FVector3f Radial = (Base - Below).GetSafeNormal();
 			auto Normal = [&](const FVector3f& Blade) { return (Blade * 0.45f + Radial * 0.55f).GetSafeNormal(); };
+			// A small curved quad (3 x 3 vertices, 8 triangles) holding the blade: M_LeafBlade cuts the leaf's outline (a stalk,
+			// an elliptic blade pointed at its tip) and draws its veins from the UVs (U across, V = 1 at the stalk, 0 at the tip),
+			// sharp at any distance. Its edges sit below the midrib (a shallow V) and it curves down more towards its tip.
+			const FVector3f LeftNormal = Normal((Face - Side * 0.5f).GetSafeNormal());
+			const FVector3f RightNormal = Normal((Face + Side * 0.5f).GetSafeNormal());
 			const int32 First = Data.Vertices.Num();
-			Data.AddVertex(Root, Normal(Face), FVector2f(0.5f, 1.f), Color * 0.85f);
-			Data.AddVertex(Left, Normal((Face - Side * 0.5f).GetSafeNormal()), FVector2f(0.f, 0.5f), Color);
-			Data.AddVertex(Mid, Normal(Face), FVector2f(0.5f, 0.5f), Color * 1.05f);
-			Data.AddVertex(Right, Normal((Face + Side * 0.5f).GetSafeNormal()), FVector2f(1.f, 0.5f), Color);
-			Data.AddVertex(Tip, Normal(Face), FVector2f(0.5f, 0.f), Color);
-			Data.AddTriangle(Section, First, First + 2, First + 1);
-			Data.AddTriangle(Section, First + 1, First + 2, First + 4);
-			Data.AddTriangle(Section, First, First + 3, First + 2);
-			Data.AddTriangle(Section, First + 3, First + 4, First + 2);
-			// The petiole: a thin sliver from the twig.
-			if (Leaf % 3 == 0)
+			for (const float U : { 0.f, 0.5f, 1.f })
 			{
-				const FVector3f Twig = Base - Axis * (0.1f * Length) - FVector3f::UpVector * (0.05f * Length);
-				const int32 P = Data.Vertices.Num();
-				Data.AddVertex(Twig, Normal(Face), FVector2f(0.5f, 1.f), Color * 0.6f);
-				Data.AddVertex(Root - Side * 0.04f * Length, Normal(Face), FVector2f(0.4f, 1.f), Color * 0.7f);
-				Data.AddVertex(Root + Side * 0.04f * Length, Normal(Face), FVector2f(0.6f, 1.f), Color * 0.7f);
-				Data.AddTriangle(Section, P, P + 2, P + 1);
+				const FVector3f C = Root + Axis * (U * Length) + Face * (0.03f * Length * FMath::Sin(UE_PI * U)) - FVector3f::UpVector * (Sag * U * U);
+				Data.AddVertex(C - Side * Half - Face * Fold, LeftNormal, FVector2f(0.f, 1.f - U), Color);
+				Data.AddVertex(C, Normal(Face), FVector2f(0.5f, 1.f - U), Color);
+				Data.AddVertex(C + Side * Half - Face * Fold, RightNormal, FVector2f(1.f, 1.f - U), Color);
+			}
+			for (int32 Row = 0; Row < 2; ++Row)
+			{
+				for (int32 Column = 0; Column < 2; ++Column)
+				{
+					const int32 A = First + Row * 3 + Column;
+					Data.AddTriangle(Section, A, A + 3, A + 1);
+					Data.AddTriangle(Section, A + 1, A + 3, A + 4);
+				}
 			}
 		}
 	}
@@ -421,7 +423,7 @@ namespace
 		float Jitter = 0.3f;        // relative angle noise
 		float Phototropism = 0.12f; // bend towards the sky per segment
 		float LeafRadius = 120.f;   // cm
-		FLinearColor Bark = FLinearColor(0.2f, 0.17f, 0.13f);
+		FLinearColor Bark = FLinearColor(0.075f, 0.065f, 0.052f); // grey-brown tropical bark (0.2 read as pale birch)
 		FLinearColor Leaf = FLinearColor(0.06f, 0.14f, 0.03f);
 		FLinearColor LeafAccent = FLinearColor(0.16f, 0.2f, 0.05f);
 		float AccentAmount = 0.5f;
@@ -562,10 +564,10 @@ namespace
 
 namespace OceanFlora
 {
-	FOceanMeshData MakeCoconutPalm(int32 Seed)
+	FOceanMeshData MakeCoconutPalm(int32 Seed, int32 Detail)
 	{
 		FRandomStream Random(Seed);
-		FOceanMeshData Data(3); // bark, frond cards, coconuts
+		FOceanMeshData Data(3); // bark, leaflets and rachises, coconuts
 
 		// Trunk: leans (towards +X; instances are rotated to lean seawards) then curves back up, slimmer at the top,
 		// with the ring scars of fallen fronds.
@@ -616,51 +618,136 @@ namespace OceanFlora
 			const float Droop = FMath::DegreesToRadians(bDead ? 25.f : FMath::Lerp(35.f, 110.f, Age));
 			const float Roll = FMath::DegreesToRadians(Random.FRandRange(-28.f, 28.f));
 			const FVector3f Outward(FMath::Cos(Azimuth), FMath::Sin(Azimuth), 0.f);
-			// Vertex colour = tint over the rendered frond (M_PalmFrond divides by the young green (0.12, 0.2, 0.04)):
-			// young fronds a little yellower than the render, old ones yellow, dead ones straw-brown.
-			const FLinearColor Green = bDead ? FLinearColor(0.2f, 0.11f, 0.045f)
-				: FMath::Lerp(FLinearColor(0.17f, 0.18f, 0.03f), FLinearColor(0.22f, 0.18f, 0.035f), Age * Age);
+			const float Shade = Random.FRandRange(0.85f, 1.15f);
 
-			// A leaf card along the arching rachis, textured with a frond rendered from Infinigen's coconut palm
-			// (Scripts/infinigen/render_frond_atlas.py: base at V = 1, tip at V = 0, the frond spanning
-			// U 0.27-0.73 of the square image). Three vertices across: the leaflets droop on both sides of the
-			// rachis, more towards the tip, so the card has a V cross-section instead of being a flat ribbon.
-			const FLinearColor Color = Green * Random.FRandRange(0.85f, 1.15f);
-			const float HalfWidth = 0.24f * Length;
-			const int32 Steps = 12;
-			// Older fronds spring from lower on the crown shaft.
+			// The rachis, finely sampled once for every level of detail (they then share the same crown): position and
+			// frame (along, across the frond, up from its upper face).
+			struct FRachisPoint { FVector3f Position, Along, Side, Up; };
+			constexpr int32 Fine = 48;
+			FRachisPoint Rachis[Fine + 1];
+			// Older fronds spring from lower on the crown.
 			FVector3f Position = Top + Outward * 8.f - FVector3f(0.f, 0.f, 35.f * Age);
-			int32 Previous[3] = { INDEX_NONE, INDEX_NONE, INDEX_NONE };
-			for (int32 Step = 0; Step <= Steps; ++Step)
+			for (int32 Step = 0; Step <= Fine; ++Step)
 			{
-				const float S = float(Step) / Steps;
+				const float S = float(Step) / Fine;
 				const float Pitch = StartPitch - Droop * FMath::Pow(S, 1.5f);
-				const FVector3f Direction = (Outward * FMath::Cos(Pitch) + FVector3f(0.f, 0.f, FMath::Sin(Pitch))).GetSafeNormal();
-				const FVector3f Flat = FVector3f::CrossProduct(Direction, FVector3f::UpVector).GetSafeNormal();
-				const FVector3f FlatUp = FVector3f::CrossProduct(Flat, Direction).GetSafeNormal();
+				const FVector3f Along = (Outward * FMath::Cos(Pitch) + FVector3f(0.f, 0.f, FMath::Sin(Pitch))).GetSafeNormal();
+				const FVector3f Flat = FVector3f::CrossProduct(Along, FVector3f::UpVector).GetSafeNormal();
+				const FVector3f FlatUp = FVector3f::CrossProduct(Flat, Along).GetSafeNormal();
 				const float Twist = Roll * (0.4f + 0.6f * S);
 				const FVector3f Side = Flat * FMath::Cos(Twist) + FlatUp * FMath::Sin(Twist);
-				const FVector3f Up = FVector3f::CrossProduct(Side, Direction).GetSafeNormal();
-				const float Sag = HalfWidth * FMath::Lerp(0.25f, 0.6f, S);
-				const float V = FMath::Lerp(0.99f, 0.01f, S);
-				const FVector3f Left = Position - Side * HalfWidth - Up * Sag;
-				const FVector3f Right = Position + Side * HalfWidth - Up * Sag;
-				const FVector3f LeftNormal = (Up + Side * 0.4f).GetSafeNormal();
-				const FVector3f RightNormal = (Up - Side * 0.4f).GetSafeNormal();
-				const int32 Row[3] = {
-					Data.AddVertex(Left, LeftNormal, FVector2f(0.27f, V), Color),
-					Data.AddVertex(Position, Up, FVector2f(0.5f, V), Color),
-					Data.AddVertex(Right, RightNormal, FVector2f(0.73f, V), Color) };
-				if (Step > 0)
+				Rachis[Step] = { Position, Along, Side, FVector3f::CrossProduct(Side, Along).GetSafeNormal() };
+				Position += Along * (Length / Fine);
+			}
+			auto At = [&Rachis](float S)
+			{
+				const float X = FMath::Clamp(S, 0.f, 1.f) * Fine;
+				const int32 I = FMath::Min(int32(X), Fine - 1);
+				const float F = X - I;
+				const FRachisPoint& A = Rachis[I];
+				const FRachisPoint& B = Rachis[I + 1];
+				return FRachisPoint{ FMath::Lerp(A.Position, B.Position, F), FMath::Lerp(A.Along, B.Along, F).GetSafeNormal(),
+					FMath::Lerp(A.Side, B.Side, F).GetSafeNormal(), FMath::Lerp(A.Up, B.Up, F).GetSafeNormal() };
+			};
+
+			// The frond as it grows. A tapering rachis, bare over its first fifth (the petiole), then
+			// leaflets on both sides, ~85 a side (Cocos nucifera carries 200-250): narrow strips (2-5 cm wide, up to ~a
+			// fifth of the frond long, shortest at the base and the tip), pointing forward at 50-60 degrees from the
+			// rachis, hanging below it in a V (the frond's cross-section) and curling down under their own weight, more
+			// on old fronds. Each folded along its midrib into a shallow inverted V (reduplicate leaflets), so they catch
+			// the light on one half and not the other. Some torn short, a few missing, some with dry brown tips.
+			// Middle level: a third as many leaflets, as wide as the ones they replace, flat, in two segments; far level: a
+			// dozen broad strips a side (every level has the same sections and colours: no jump from one to the next).
+			// Colours are linear albedo (the mesh is built with this section as its colour section): a deep green that
+			// yellows with age; the rachis yellow-green.
+			FRandomStream Leaf(Seed * 7919 + Frond * 131);
+			const bool bNear = Detail == 0;
+			const FLinearColor Blade = (bDead ? FLinearColor(0.17f, 0.11f, 0.05f)
+				: FMath::Lerp(FLinearColor(0.045f, 0.09f, 0.018f), FLinearColor(0.14f, 0.125f, 0.03f), FMath::Pow(Age, 3.f))) * Shade;
+			const FLinearColor Dry(0.2f, 0.14f, 0.06f);
+			const FLinearColor Stalk = bDead ? FLinearColor(0.2f, 0.14f, 0.07f) : FMath::Lerp(FLinearColor(0.15f, 0.16f, 0.05f), FLinearColor(0.24f, 0.2f, 0.06f), Age);
+			auto RachisRadius = [](float S) { return FMath::Lerp(4.5f, 0.6f, FMath::Pow(S, 0.8f)); };
+			AddBarkTube(Data, SectionFoliage, [&](float T) { return At(T).Position; }, RachisRadius, bNear ? 24 : (Detail == 1 ? 10 : 5), bNear ? 6 : (Detail == 1 ? 4 : 3), Stalk);
+
+			const int32 PerSide = bNear ? 85 : (Detail == 1 ? 30 : 12);
+			const float MaxLeaflet = 0.2f * Length;
+			const float WidthScale = bNear ? 1.f : (Detail == 1 ? 2.4f : 5.5f);
+			const int32 Segments = bNear ? 4 : 2;
+			const float Fold = bNear ? 0.22f : 0.f;
+			for (int32 SideSign = -1; SideSign <= 1; SideSign += 2)
+			{
+				for (int32 K = 0; K < PerSide; ++K)
 				{
-					for (int32 Column = 0; Column < 2; ++Column)
+					const float T = (K + 0.5f + 0.3f * (Leaf.FRand() - 0.5f)) / PerSide;
+					const float Torn = Leaf.FRand();
+					const float Brown = Leaf.FRand() < 0.25f + 0.5f * Age ? Leaf.FRandRange(0.3f, 0.9f) : 0.f;
+					const float Jitter = Leaf.FRandRange(-1.f, 1.f);
+					const float JitterDroop = Leaf.FRandRange(-1.f, 1.f);
+					if (Torn < 0.03f)
 					{
-						Data.AddTriangle(SectionFoliage, Previous[Column], Row[Column], Previous[Column + 1]);
-						Data.AddTriangle(SectionFoliage, Previous[Column + 1], Row[Column], Row[Column + 1]);
+						continue; // torn off
+					}
+					const float S = 0.2f + 0.79f * T;
+					const FRachisPoint R = At(S);
+					const float Profile = FMath::Max(0.22f, FMath::Sin(UE_PI * FMath::Pow(FMath::Clamp(0.12f + 0.88f * T, 0.f, 1.f), 0.75f)));
+					const float L = MaxLeaflet * Profile * (Torn < 0.09f ? FMath::Lerp(0.4f, 0.7f, Torn / 0.09f) : 1.f);
+					const float W = (2.f + 2.6f * Profile) * WidthScale;
+					// Pointing forward (more so towards the tip), hanging below the rachis in the frond's V.
+					const float Forward = FMath::DegreesToRadians(32.f + 18.f * T + 6.f * Jitter);
+					const float Hang = FMath::DegreesToRadians((bDead ? 55.f : FMath::Lerp(20.f, 42.f, Age)) + 8.f * JitterDroop);
+					FVector3f Direction = (R.Side * float(SideSign) * FMath::Cos(Forward) + R.Along * FMath::Sin(Forward)).GetSafeNormal();
+					Direction = (Direction * FMath::Cos(Hang) - R.Up * FMath::Sin(Hang)).GetSafeNormal();
+					const FVector3f Across = (R.Along - Direction * FVector3f::DotProduct(R.Along, Direction)).GetSafeNormal();
+					FVector3f Normal = FVector3f::CrossProduct(Across, Direction).GetSafeNormal();
+					if (FVector3f::DotProduct(Normal, R.Up) < 0.f)
+					{
+						Normal = -Normal;
+					}
+					const float Curl = (bDead ? 1.3f : FMath::Lerp(0.35f, 1.1f, Age)) * (L / 90.f);
+					FVector3f Point = R.Position + R.Side * float(SideSign) * RachisRadius(S);
+					int32 Previous[3] = { INDEX_NONE, INDEX_NONE, INDEX_NONE };
+					for (int32 J = 0; J <= Segments; ++J)
+					{
+						const float U = float(J) / Segments;
+						// Narrow at the base, widest at a tenth of its length, tapering to a point.
+						const float Width = W * (U < 0.1f ? FMath::Lerp(0.35f, 1.f, U / 0.1f) : 1.f - 0.95f * FMath::Pow((U - 0.1f) / 0.9f, 2.2f));
+						const FLinearColor Color = FMath::Lerp(Blade, Dry, Brown * FMath::SmoothStep(0.65f, 1.f, U));
+						const FVector3f Half = Across * (0.5f * Width);
+						const FVector3f Drop = Normal * (Fold * Width);
+						if (Fold > 0.f)
+						{
+							const int32 Row[3] = {
+								Data.AddVertex(Point - Half - Drop, (Normal - Across * 0.45f).GetSafeNormal(), FVector2f(0.f, U), Color),
+								Data.AddVertex(Point, Normal, FVector2f(0.5f, U), Color),
+								Data.AddVertex(Point + Half - Drop, (Normal + Across * 0.45f).GetSafeNormal(), FVector2f(1.f, U), Color) };
+							if (J > 0)
+							{
+								for (int32 Column = 0; Column < 2; ++Column)
+								{
+									Data.AddTriangle(SectionFoliage, Previous[Column], Row[Column], Previous[Column + 1]);
+									Data.AddTriangle(SectionFoliage, Previous[Column + 1], Row[Column], Row[Column + 1]);
+								}
+							}
+							FMemory::Memcpy(Previous, Row, sizeof(Row));
+						}
+						else
+						{
+							const int32 Row[2] = {
+								Data.AddVertex(Point - Half, Normal, FVector2f(0.f, U), Color),
+								Data.AddVertex(Point + Half, Normal, FVector2f(1.f, U), Color) };
+							if (J > 0)
+							{
+								Data.AddTriangle(SectionFoliage, Previous[0], Row[0], Previous[1]);
+								Data.AddTriangle(SectionFoliage, Previous[1], Row[0], Row[1]);
+							}
+							Previous[0] = Row[0];
+							Previous[1] = Row[1];
+						}
+						// Curling down under its weight along its length.
+						const FVector3f Bent = (Direction - FVector3f::UpVector * (Curl * (U + 0.5f / Segments))).GetSafeNormal();
+						Point += Bent * (L / Segments);
 					}
 				}
-				FMemory::Memcpy(Previous, Row, sizeof(Row));
-				Position += Direction * (Length / Steps);
 			}
 		}
 		return Data;
@@ -765,7 +852,7 @@ namespace OceanFlora
 		Params.Phototropism = 0.05f;
 		Params.Wobble = 14.f; // the sea grape's stems twist and sprawl
 		Params.LeafRadius = Random.FRandRange(55.f, 80.f);
-		Params.Bark = FLinearColor(0.18f, 0.15f, 0.12f);
+		Params.Bark = FLinearColor(0.07f, 0.06f, 0.05f);
 		Params.Leaf = FLinearColor(0.08f, 0.15f, 0.04f);
 		Params.LeafAccent = FLinearColor(0.24f, 0.11f, 0.05f); // red-veined old leaves
 		Params.AccentAmount = 0.35f;
@@ -803,7 +890,7 @@ namespace OceanFlora
 		Params.Phototropism = 0.1f;
 		Params.Wobble = 11.f;
 		Params.LeafRadius = Random.FRandRange(65.f, 90.f);
-		Params.Bark = FLinearColor(0.17f, 0.15f, 0.12f);
+		Params.Bark = FLinearColor(0.065f, 0.058f, 0.048f);
 		Params.bLeafCards = true;
 		Params.CardSize = Random.FRandRange(85.f, 105.f);
 		Params.CardTint = FLinearColor(0.5f * Random.FRandRange(0.85f, 1.f), 0.5f * Random.FRandRange(0.9f, 1.05f), 0.5f * Random.FRandRange(0.85f, 1.f));
@@ -1543,34 +1630,36 @@ namespace OceanFlora
 					C = FMath::Clamp(C, 0.f, 1.f);
 					return !bAlbedo ? C : C <= 0.04045f ? C / 12.92f : FMath::Pow((C + 0.055f) / 1.055f, 2.4f);
 				};
-				Colors[Instance] = FVector4f(Decode(Vertex.Color.R), Decode(Vertex.Color.G), Decode(Vertex.Color.B), 1.f);
+				// Alpha passes through: an occlusion term for the materials that read it (M_LeafBlade).
+				Colors[Instance] = FVector4f(Decode(Vertex.Color.R), Decode(Vertex.Color.G), Decode(Vertex.Color.B), FMath::Clamp(Vertex.Color.A, 0.f, 1.f));
 				Instances.Add(Instance);
 			}
-			TArray<int32> Order;
-			if (Data.Sections.IsValidIndex(ColorSection) && Data.Sections[ColorSection].Num() >= 3)
-			{
-				const TArray<int32>& Indices = Data.Sections[ColorSection];
-				const FPolygonGroupID First = Description.CreatePolygonGroup();
-				SlotNames[First] = FName(*FString::Printf(TEXT("Slot%d"), ColorSection));
-				Description.CreateTriangle(First, { Instances[Indices[0]], Instances[Indices[1]], Instances[Indices[2]] });
-				Order.Add(ColorSection);
-			}
+			// One polygon group per section, in order, even when empty: the runtime build gives each group the material of
+			// its index (its slot name aside), so a skipped, emptied or reordered group shifted every material after it (trunks
+			// drawn with the vertex-colour material, 3D leaves with the leaf-card texture: the "chewed" leaves).
 			for (int32 Section = 0; Section < Data.Sections.Num(); ++Section)
 			{
-				if (Section != ColorSection || Order.Num() == 0)
-				{
-					Order.AddUnique(Section);
-				}
-			}
-			for (const int32 Section : Order)
-			{
 				const TArray<int32>& Indices = Data.Sections[Section];
-				if (Indices.Num() < 3)
-				{
-					continue;
-				}
 				const FPolygonGroupID Group = Description.CreatePolygonGroup();
 				SlotNames[Group] = FName(*FString::Printf(TEXT("Slot%d"), Section));
+				if (Indices.Num() < 3 && Instances.Num() > 0)
+				{
+					// The build drops empty groups (and the rest move down an index): a speck of a triangle keeps this one.
+					FVertexInstanceID Speck[3];
+					for (int32 Corner = 0; Corner < 3; ++Corner)
+					{
+						const FVertexID VertexID = Description.CreateVertex();
+						Positions[VertexID] = Data.Vertices[0].Position + FVector3f(Corner == 1 ? 0.01f : 0.f, Corner == 2 ? 0.01f : 0.f, 0.f);
+						Speck[Corner] = Description.CreateVertexInstance(VertexID);
+						Normals[Speck[Corner]] = FVector3f::UpVector;
+						Tangents[Speck[Corner]] = FVector3f::ForwardVector;
+						BinormalSigns[Speck[Corner]] = 1.f;
+						UVs.Set(Speck[Corner], 0, FVector2f::ZeroVector);
+						Colors[Speck[Corner]] = FVector4f(0.f, 0.f, 0.f, 1.f);
+					}
+					Description.CreateTriangle(Group, { Speck[0], Speck[1], Speck[2] });
+					continue;
+				}
 				for (int32 I = 0; I + 2 < Indices.Num(); I += 3)
 				{
 					Description.CreateTriangle(Group, { Instances[Indices[I]], Instances[Indices[I + 1]], Instances[Indices[I + 2]] });

@@ -33,11 +33,12 @@ struct MAKAR_API FOceanMeshData
  *  - Broadleaf tree, sea grape shrub and coastal bush: stochastic L-systems (string rewriting) read by a 3D turtle,
  *    with leaf masses of textured cards (a cluster of Infinigen leaves) at the branch tips.
  *  - Rock: an icosphere displaced by 3D fractal noise, flattened at the base, like eroded coral limestone.
- * Section 0 = bark / trunk, 1 = foliage (plants), 2 = coconuts (palms); rocks have one section.
+ * Section 0 = bark / trunk, 1 = foliage (plants; the leaflets of palms), 2 = coconuts (palms); rocks have one section.
  */
 namespace OceanFlora
 {
-	MAKAR_API FOceanMeshData MakeCoconutPalm(int32 Seed);
+	/** Detail 0: every leaflet modelled (near), 1: a third as many, wider and flat (middle), 2: a dozen broad strips a side (far). */
+	MAKAR_API FOceanMeshData MakeCoconutPalm(int32 Seed, int32 Detail = 2);
 	/**
 	 * b3DLeaves: real leaves in section 2 (the near levels of detail) instead of leaf cards in section 1; LeafScale > 1
 	 * gives fewer, larger leaves for a middle level.
