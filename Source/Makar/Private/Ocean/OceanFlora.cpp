@@ -710,21 +710,71 @@ namespace OceanFlora
 			const float Side = Sway * FMath::Sin(UE_PI * T * Waves);
 			return FVector3f(Out, Side, Height * T - 20.f); // base slightly sunk in the sand
 		};
-		// Bark: M_PalmBark draws the ring scars and fissures procedurally from the bark coordinates (V = metres along
-		// the trunk); the vertex colour stays neutral. Slimmer at the top, flared at the foot.
+		// The palm's own details, from their own random stream so that the crown stays the same.
+		FRandomStream Extra(Seed * 53 + 1);
+		// Bark: M_PalmBark draws the ring scars, fissures and lichen procedurally from the bark coordinates (V = metres along
+		// the trunk); the vertex colour stays neutral. Slimmer at the top, a swollen foot (the bole), and a diameter that
+		// varies a little along the trunk with the good and lean years.
 		const FLinearColor TrunkColor(0.27f, 0.23f, 0.18f);
-		AddBarkTube(Data, SectionBark, TrunkPoint,
-			[](float T) { return FMath::Lerp(22.f, 14.f, T) * (1.f + 0.6f * FMath::Exp(-T * 25.f)); }, 24, 12, TrunkColor);
+		const float Girth1 = Extra.FRandRange(0.f, 2.f * UE_PI), Girth2 = Extra.FRandRange(0.f, 2.f * UE_PI);
+		auto TrunkRadius = [&](float T)
+		{
+			const float Metres = T * Height * 0.01f;
+			return FMath::Lerp(21.f, 13.5f, T) * (1.f + 0.45f * FMath::Exp(-T * Height / 60.f))
+				* (1.f + 0.045f * FMath::Sin(1.3f * Metres + Girth1) + 0.025f * FMath::Sin(3.7f * Metres + Girth2));
+		};
+		AddBarkTube(Data, SectionBark, TrunkPoint, TrunkRadius, Detail == 0 ? 56 : (Detail == 1 ? 24 : 12), Detail == 0 ? 16 : (Detail == 1 ? 12 : 8),
+			TrunkColor);
 		const FVector3f Top = TrunkPoint(1.f);
 
-		// Coconuts under the crown.
-		const int32 Nuts = Random.RandRange(3, 7);
-		for (int32 Nut = 0; Nut < Nuts; ++Nut)
+		// The root mass at the foot: a dense collar of short dark roots springing from the bole and diving straight into the
+		// sand (a coconut palm has no taproot), the older ones greyed.
+		if (Detail < 2)
 		{
-			const float Angle = Random.FRandRange(0.f, 2.f * UE_PI);
-			const FVector3f Center = Top + FVector3f(FMath::Cos(Angle) * 18.f, FMath::Sin(Angle) * 18.f, -25.f);
-			FRandomStream NutRandom(Seed * 31 + Nut);
-			AddLeafCluster(Data, Center, 11.f, NutRandom, FLinearColor(0.16f, 0.15f, 0.04f), FLinearColor(0.25f, 0.17f, 0.06f), 0.6f, SectionNuts);
+			const int32 Roots = Detail == 0 ? 64 : 20;
+			for (int32 Root = 0; Root < Roots; ++Root)
+			{
+				const float Angle = 2.f * UE_PI * (Root + Extra.FRand()) / Roots;
+				const FVector3f Out(FMath::Cos(Angle), FMath::Sin(Angle), 0.f);
+				const float Above = Extra.FRandRange(0.f, 14.f); // cm above the sand where it leaves the trunk
+				const float T0 = (Above + 20.f) / Height;
+				const FVector3f Start = TrunkPoint(T0) + Out * (TrunkRadius(T0) * 0.92f);
+				const float Length = Extra.FRandRange(9.f, 22.f); // short: they dive into the sand close to the trunk
+				const float Dip = FMath::DegreesToRadians(Extra.FRandRange(45.f, 75.f));
+				const float Radius = Extra.FRandRange(1.3f, 2.2f) * (Detail == 0 ? 1.f : 1.4f);
+				const FLinearColor Color = FMath::Lerp(FLinearColor(0.09f, 0.065f, 0.045f), FLinearColor(0.12f, 0.11f, 0.09f), Extra.FRand()); // dark brown, greyed with age (orange read as straw)
+				AddBarkTube(Data, SectionNuts,
+					[&](float T) { return Start + Out * (Length * T * FMath::Cos(Dip)) - FVector3f(0.f, 0.f, Length * T * FMath::Sin(Dip) * (0.6f + 0.4f * T)); },
+					[&](float T) { return Radius * (1.f - 0.4f * T); }, 3, Detail == 0 ? 5 : 3, Color);
+			}
+		}
+
+		// The fibrous sheath at the crown's base, where the fronds spring from: a brown mat wrapping the top of the trunk.
+		const FVector3f TopDirection = (Top - TrunkPoint(0.97f)).GetSafeNormal();
+		AddBarkTube(Data, SectionNuts, [&](float T) { return Top + TopDirection * FMath::Lerp(-75.f, 15.f, T); },
+			[&](float T) { return TrunkRadius(1.f) * (1.05f + 0.45f * FMath::Sin(UE_PI * FMath::Min(T * 1.15f, 1.f))); },
+			Detail == 0 ? 6 : 3, Detail == 0 ? 14 : 8, FLinearColor(0.16f, 0.1f, 0.05f));
+
+		// Coconuts: one to three bunches hanging below the crown on their stalks, nuts of one bunch of one ripeness: green,
+		// yellow-orange or brown.
+		const int32 Bunches = Extra.RandRange(1, 3);
+		for (int32 Bunch = 0; Bunch < Bunches; ++Bunch)
+		{
+			const float Angle = Extra.FRandRange(0.f, 2.f * UE_PI);
+			const FVector3f Out(FMath::Cos(Angle), FMath::Sin(Angle), 0.f);
+			const FVector3f Center = Top + Out * 30.f - FVector3f(0.f, 0.f, Extra.FRandRange(30.f, 50.f));
+			const float Ripeness = Extra.FRand();
+			const FLinearColor Green = Ripeness < 0.5f ? FLinearColor(0.09f, 0.13f, 0.03f)
+				: (Ripeness < 0.8f ? FLinearColor(0.3f, 0.19f, 0.04f) : FLinearColor(0.17f, 0.1f, 0.045f));
+			AddBarkTube(Data, SectionNuts, [&](float T) { return FMath::Lerp(Top + Out * 10.f - FVector3f(0.f, 0.f, 15.f), Center, T); },
+				[](float T) { return 2.f; }, 2, 4, FLinearColor(0.3f, 0.25f, 0.08f));
+			const int32 Nuts = Extra.RandRange(4, 10);
+			for (int32 Nut = 0; Nut < Nuts; ++Nut)
+			{
+				const FVector3f Offset = FVector3f(Extra.GetUnitVector()) * FVector3f(16.f, 16.f, 10.f) * Extra.FRandRange(0.4f, 1.f);
+				FRandomStream NutRandom(Seed * 31 + Bunch * 17 + Nut);
+				AddLeafCluster(Data, Center + Offset, Extra.FRandRange(9.f, 12.f), NutRandom, Green, Green * 1.25f, 0.4f, SectionNuts);
+			}
 		}
 
 		// Fronds: an arching rachis with leaflets hanging on both sides. The crown is a sphere, not a flat star: in a

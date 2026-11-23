@@ -336,33 +336,48 @@ def palm_frond():
 
 
 PALM_BARK_CODE = """
-// Bark coordinates from OceanFlora's AddMappedTube: U once around the trunk (0-1), V metres up from the base.
+// Bark coordinates from OceanFlora's AddBarkTube: U once around the trunk (0-1), V metres up from the base.
 const float U = UV.x;
 const float V = UV.y;
 // Noise seamless around the trunk: the samples at U and at U - 1 blended by U agree at U = 0 and U = 1.
 #define PALM_BARK_NOISE(F, G, O) lerp(OceanValueNoise(float2(U * (F), V * (G)) + (O)), OceanValueNoise(float2((U - 1.0) * (F), V * (G)) + (O)), U)
-// Ring scars left by the fallen fronds, every ~9 cm but irregularly spaced (growth varies from year to year),
-// slightly wavy and of uneven depth around the trunk; worn almost smooth on the weathered lower trunk.
-const float C = V / 0.09 + 4.0 * OceanValueNoise(float2(3.3, V * 0.5)) + 0.3 * (PALM_BARK_NOISE(4.0, 0.6, float2(0.0, 0.0)) - 0.5);
+// Ring scars of the fallen fronds: ~11 cm apart at the foot, closer towards the crown (5-6 cm: the palm grows slower
+// as it ages), irregular from year to year, wavy and leaning around the trunk. C counts the rings: the integral of
+// 1 / spacing, spacing = 0.11 - 0.005 V.
+const float Spacing = max(0.11 - 0.005 * V, 0.05);
+const float C = -200.0 * log(Spacing) + 2.5 * OceanValueNoise(float2(3.3, V * 0.7)) + 0.35 * (PALM_BARK_NOISE(3.0, 0.5, float2(0.0, 0.0)) - 0.5);
 const float Ring = floor(C);
-const float Strength = (0.35 + 0.65 * PALM_BARK_NOISE(3.0, 0.0, float2(Ring * 1.37, Ring * 0.71))) * lerp(0.3, 1.0, smoothstep(0.3, 2.5, V));
-const float D = (frac(C) - 0.5) / 0.1;
-const float Scar = exp(-D * D) * Strength;
-// The scars fade to their average before they alias (fwidth: rings per pixel).
+const float F = frac(C);
+// Each scar a low ridge with a dark crease along its lower edge; some fade out partway round, all worn almost smooth
+// on the weathered lower trunk.
+const float Strength = (0.3 + 0.7 * PALM_BARK_NOISE(2.0, 0.0, float2(Ring * 1.37, Ring * 0.71)))
+    * smoothstep(0.15, 0.45, PALM_BARK_NOISE(2.5, 0.0, float2(Ring * 0.53, 7.0))) * lerp(0.25, 1.0, smoothstep(0.3, 2.5, V));
+const float Ridge = exp(-Square((F - 0.45) / 0.16)) * Strength;
+const float Crease = exp(-Square((F - 0.66) / 0.045)) * Strength;
+// Everything fades to its average before it aliases (fwidth: rings per pixel).
 const float Detail = saturate(2.0 - 5.0 * fwidth(C));
-// Fine vertical fissures, long and narrow, also faded with distance.
-const float Fissure = smoothstep(0.68, 0.9, PALM_BARK_NOISE(70.0, 1.3, float2(5.1, 1.7))) * saturate(2.0 - 5.0 * fwidth(U * 70.0));
-// Sun-bleached grey patches over browner bark.
+// Long vertical fissures and fine fibres.
+const float Fissure = max(smoothstep(0.62, 0.8, PALM_BARK_NOISE(36.0, 0.9, float2(5.1, 1.7))) * saturate(2.0 - 5.0 * fwidth(U * 36.0)),
+    0.7 * smoothstep(0.66, 0.85, PALM_BARK_NOISE(90.0, 2.2, float2(2.3, 6.1))) * saturate(2.0 - 5.0 * fwidth(U * 90.0)));
+const float Fibre = (PALM_BARK_NOISE(220.0, 3.0, float2(9.9, 3.3)) - 0.5) * saturate(2.0 - 5.0 * fwidth(U * 220.0));
+// Sun-bleached grey over browner bark; stained by sand at the foot, browner towards the crown.
 const float Weather = 0.65 * PALM_BARK_NOISE(5.0, 0.9, float2(9.3, 4.1)) + 0.35 * PALM_BARK_NOISE(17.0, 3.0, float2(2.7, 8.8));
+// Mottled: darker and paler patches a hand wide over the weathering.
+const float Mottle = PALM_BARK_NOISE(14.0, 4.0, float2(6.6, 2.2));
+float3 Bark = lerp(float3(0.12, 0.105, 0.09), float3(0.25, 0.24, 0.225), smoothstep(0.3, 0.75, Weather)) * lerp(0.75, 1.15, Mottle);
+Bark = lerp(Bark * float3(1.15, 1.05, 0.85) + float3(0.03, 0.025, 0.015), Bark, smoothstep(0.0, 0.9, V));
+Bark = lerp(Bark, Bark * float3(0.95, 0.78, 0.62), smoothstep(5.0, 10.0, V));
+Bark *= (1.0 + 0.2 * Fibre) * lerp(1.0, 0.4, Fissure) * lerp(1.0, 1.12, Ridge * Detail) * lerp(1.0, 0.45, Crease * Detail);
+// Lichen: patches of grey-white and pale green crust, above the reach of the sand, mostly on one side.
+const float Lichen = smoothstep(0.5, 0.6, PALM_BARK_NOISE(7.0, 1.4, float2(3.1, 5.5)) + 0.25 * PALM_BARK_NOISE(30.0, 6.0, float2(8.2, 1.1)) - 0.1 * cos(6.2832 * U))
+    * smoothstep(0.4, 1.5, V);
+Bark = lerp(Bark, lerp(float3(0.42, 0.42, 0.38), float3(0.3, 0.33, 0.24), PALM_BARK_NOISE(12.0, 2.0, float2(4.4, 4.4))), 0.8 * Lichen);
 #undef PALM_BARK_NOISE
-float3 Bark = lerp(float3(0.15, 0.135, 0.115), float3(0.28, 0.27, 0.255), smoothstep(0.3, 0.75, Weather)); // grey bark ~0.2-0.3 (0.4 read white)
-Bark *= lerp(1.0, 0.45, lerp(0.13, Scar, Detail)) * lerp(1.0, 0.6, Fissure);
-// Darker and sand-stained at the foot.
-Bark = lerp(Bark * float3(0.85, 0.8, 0.7) + float3(0.04, 0.035, 0.025), Bark, smoothstep(0.0, 0.7, V));
-// Each scar is a shallow groove, 2.5 mm deep: tangent-space slope along V (Y = +V).
-const float Slope = 0.0025 * Strength * 2.0 * D * exp(-D * D) / (0.1 * 0.09) * Detail;
-Normal = normalize(float3(0.0, -Slope, 1.0));
-Roughness = lerp(0.8, 0.95, Scar * Detail);
+// Relief: the ridge and its crease along V, the fissures as grooves across U (tangent space: X = +U, Y = +V).
+const float Slope = (-0.004 * Strength * 2.0 * (F - 0.45) / Square(0.16) * exp(-Square((F - 0.45) / 0.16))
+    + 0.002 * Strength * 2.0 * (F - 0.66) / Square(0.045) * exp(-Square((F - 0.66) / 0.045))) / Spacing * Detail; // dh/dV = dh/dF / spacing
+Normal = normalize(float3(0.6 * Fissure * sin(U * 377.0), Slope, 1.0));
+Roughness = lerp(lerp(0.75, 0.95, Crease * Detail), 0.9, Lichen);
 return Bark;
 """
 
