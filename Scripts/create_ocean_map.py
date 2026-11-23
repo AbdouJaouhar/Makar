@@ -66,7 +66,11 @@ def spawn(cls, location=(0.0, 0.0, 0.0), rotation=(0.0, 0.0, 0.0), label=None):
     return actor
 
 
-SUN_ROTATION = (0.0, -50.0, 215.0)  # roll, pitch, yaw of the directional light
+# Time of day: the sun's elevation and the compass direction towards it (degrees, X = 0, Y = 90). Late afternoon:
+# low enough for long shadows, warm light through the atmosphere and the palms lit from the side, high enough that the
+# lagoon keeps its turquoise. MAKAR_SUN="elevation,azimuth" overrides it (look development).
+SUN_ELEVATION_DEG, SUN_AZIMUTH_DEG = (float(v) for v in os.environ.get("MAKAR_SUN", "14,-60").split(","))
+SUN_ROTATION = (0.0, -SUN_ELEVATION_DEG, SUN_AZIMUTH_DEG + 180.0)  # roll, pitch, yaw of the directional light
 
 
 def sun_direction():
@@ -442,9 +446,9 @@ def build():
     world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
     world.get_world_settings().set_editor_property("default_game_mode", unreal.GameModeBase.static_class())
 
-    # --- Sky: high tropical sun in a physical atmosphere, real-time sky light, scattered cumulus ---
-    # The sun is behind the start, facing the island (light travelling towards -X): the island and the lagoon
-    # are front-lit like in holiday photos, instead of showing their shaded sides against the light.
+    # --- Sky: late afternoon sun (SUN_ELEVATION_DEG) in a physical atmosphere, real-time sky light, cumulus ---
+    # From the side of the usual views: the relief, the palms and the waves are modelled by light and shade, with long
+    # shadows across the beach, rather than front-lit and flat like a midday holiday photo.
     sun = spawn(unreal.DirectionalLight, (0.0, 0.0, 1000.0), SUN_ROTATION, "Sun")
     sun_light = sun.get_component_by_class(unreal.DirectionalLightComponent)
     sun_light.set_mobility(unreal.ComponentMobility.MOVABLE)
