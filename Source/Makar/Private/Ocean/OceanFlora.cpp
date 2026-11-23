@@ -303,6 +303,7 @@ namespace
 		const FVector3f Below = Center - FVector3f(0.f, 0.f, 0.35f * Radius);
 		FVector3f Direction = FVector3f::UpVector, TwigPoint = Center;
 		float Depth = 1.f;
+		float TwigTone = 0.f;
 		int32 LeftInTwig = 0;
 		for (int32 Leaf = 0; Leaf < Leaves; ++Leaf)
 		{
@@ -312,6 +313,7 @@ namespace
 				Direction = FVector3f(Random.GetUnitVector());
 				Depth = FMath::Sqrt(Random.FRandRange(0.2f, 1.f));
 				TwigPoint = Center + FVector3f(Direction.X, Direction.Y, Direction.Z * 0.7f) * (Radius * Depth);
+				TwigTone = Random.FRandRange(-1.f, 1.f);
 			}
 			const FVector3f Spoke(Random.GetUnitVector());
 			const FVector3f Base = TwigPoint + Spoke * (0.08f * LeafSize);
@@ -340,6 +342,13 @@ namespace
 			// Alpha = ambient occlusion (M_LeafBlade): leaves deep in the mass and on its underside see little sky, and must not
 			// mirror it either (unoccluded, the shaded leaves inside the bushes shone white at grazing angles).
 			const float Height = FMath::Clamp(0.5f + 0.5f * (Base.Z - Center.Z) / FMath::Max(Radius, 1.f), 0.f, 1.f);
+			// Each twig its own shade (young growth yellower, older leaves bluer), a little less saturated than a pure green,
+			// and the sunlit leaves on top of the mass paler: a crown of many greens rather than one flat colour.
+			const FLinearColor Shift = TwigTone > 0.f ? FMath::Lerp(FLinearColor::White, FLinearColor(1.25f, 1.1f, 0.55f), TwigTone)
+				: FMath::Lerp(FLinearColor::White, FLinearColor(0.82f, 0.96f, 1.2f), -TwigTone);
+			Color = Color * Shift;
+			const float Luma = 0.3f * Color.R + 0.59f * Color.G + 0.11f * Color.B;
+			Color = FMath::Lerp(FLinearColor(Luma, Luma, Luma), Color, 0.8f) * FMath::Lerp(0.92f, 1.15f, Height * Depth);
 			Color.A = FMath::Lerp(0.15f, 1.f, Depth * Depth) * FMath::Lerp(0.45f, 1.f, Height);
 			const FVector3f Radial = (Base - Below).GetSafeNormal();
 			auto Normal = [&](const FVector3f& Blade) { return (Blade * 0.45f + Radial * 0.55f).GetSafeNormal(); };
@@ -683,6 +692,9 @@ namespace OceanFlora
 					const float Brown = Leaf.FRand() < 0.25f + 0.5f * Age ? Leaf.FRandRange(0.3f, 0.9f) : 0.f;
 					const float Jitter = Leaf.FRandRange(-1.f, 1.f);
 					const float JitterDroop = Leaf.FRandRange(-1.f, 1.f);
+					// Each leaflet a slightly different green: some yellower, some bluer, lighter or darker.
+					const FLinearColor LeafletBlade = Blade * FMath::Lerp(FLinearColor(0.9f, 1.f, 1.12f), FLinearColor(1.15f, 1.06f, 0.8f), Leaf.FRand())
+						* Leaf.FRandRange(0.85f, 1.12f);
 					if (Torn < 0.03f)
 					{
 						continue; // torn off
@@ -711,7 +723,7 @@ namespace OceanFlora
 						const float U = float(J) / Segments;
 						// Narrow at the base, widest at a tenth of its length, tapering to a point.
 						const float Width = W * (U < 0.1f ? FMath::Lerp(0.35f, 1.f, U / 0.1f) : 1.f - 0.95f * FMath::Pow((U - 0.1f) / 0.9f, 2.2f));
-						const FLinearColor Color = FMath::Lerp(Blade, Dry, Brown * FMath::SmoothStep(0.65f, 1.f, U));
+						const FLinearColor Color = FMath::Lerp(LeafletBlade, Dry, Brown * FMath::SmoothStep(0.65f, 1.f, U));
 						const FVector3f Half = Across * (0.5f * Width);
 						const FVector3f Drop = Normal * (Fold * Width);
 						if (Fold > 0.f)
@@ -1198,18 +1210,67 @@ namespace OceanFlora
 
 	FOceanMeshData MakeTurksCap(int32 Seed)
 	{
-		// Turk's cap cactus (Melocactus intortus), on the limestone of Pointe des Chateaux and the Grenadines: a ribbed
-		// green globe crowned with a woolly red cephalium. Bark section (vertex colour).
+		// Turk's cap cactus (Melocactus intortus), on the limestone of Pointe des Chateaux and the Grenadines: a glaucous
+		// green globe of a dozen deep ribs, each lined with areoles of stout reddish spines radiating against the body,
+		// crowned with a cephalium of red-brown wool and cream bristles from which small pink club-shaped fruits poke out.
+		// One section (vertex colour, linear albedo).
 		FRandomStream Random(Seed);
 		FOceanMeshData Data(1);
 		const float R = Random.FRandRange(12.f, 19.f);
-		const int32 Ribs = Random.RandRange(12, 15);
-		const FLinearColor Green(0.04f, 0.09f, 0.04f), Rib(0.08f, 0.14f, 0.07f);
-		AddRibbedColumn(Data, 0, [&](float T) { return FVector3f(0.f, 0.f, -3.f + 1.8f * R * T); },
-			[&](float T) { return R * FMath::Max(FMath::Sin(UE_PI * FMath::Lerp(0.18f, 0.92f, T)), 0.35f); }, Ribs, 0.14f, 10, 3 * Ribs, Green, Rib);
-		const float CapHeight = R * Random.FRandRange(0.5f, 1.3f);
-		AddRibbedColumn(Data, 0, [&](float T) { return FVector3f(0.f, 0.f, 1.5f * R + CapHeight * T); },
-			[&](float T) { return 0.55f * R; }, 24, 0.08f, 6, 24, FLinearColor(0.35f, 0.08f, 0.07f), FLinearColor(0.5f, 0.3f, 0.26f));
+		const float Height = R * Random.FRandRange(1.4f, 2.f);
+		const int32 Ribs = Random.RandRange(11, 15);
+		const FLinearColor Body(0.05f, 0.085f, 0.06f), RibEdge(0.085f, 0.12f, 0.08f);
+		auto Axis = [&](float T) { return FVector3f(0.f, 0.f, -3.f + Height * T); };
+		auto Radius = [&](float T) { return R * FMath::Max(FMath::Pow(FMath::Sin(UE_PI * FMath::Lerp(0.12f, 0.93f, T)), 0.6f), 0.3f); };
+		AddRibbedColumn(Data, 0, Axis, Radius, Ribs, 0.3f, 14, 4 * Ribs, Body, RibEdge);
+
+		// Areoles along every rib's crest, each a star of spines lying close to the body: one central, six radials.
+		const float Spacing = 0.22f * R;
+		for (int32 Rib = 0; Rib < Ribs; ++Rib)
+		{
+			const float Angle = 2.f * UE_PI * Rib / Ribs; // a crest of AddRibbedColumn (cos(Ribs / 2 x angle) = +-1)
+			// AddRibbedColumn's frame on a vertical axis: angle 0 along +Y, then towards -X.
+			const FVector3f Out(-FMath::Sin(Angle), FMath::Cos(Angle), 0.f);
+			for (float T = 0.14f; T < 0.88f; T += Spacing / Height)
+			{
+				const float Jitter = Random.FRandRange(-0.015f, 0.015f);
+				const FVector3f Areole = Axis(T + Jitter) + Out * Radius(T + Jitter);
+				const FVector3f Up = (Axis(T + Jitter + 0.02f) + Out * Radius(T + Jitter + 0.02f) - Areole).GetSafeNormal();
+				const FVector3f Side = FVector3f::CrossProduct(Up, Out).GetSafeNormal();
+				for (int32 Spine = 0; Spine < 7; ++Spine)
+				{
+					const float A = Spine == 0 ? 0.f : 2.f * UE_PI * (Spine - 1) / 6.f + Random.FRandRange(-0.25f, 0.25f);
+					const FVector3f Along = Spine == 0 ? (Out * 0.8f - Up * 0.6f).GetSafeNormal()
+						: (Out * 0.3f + Up * FMath::Cos(A) * 0.95f + Side * FMath::Sin(A) * 0.95f).GetSafeNormal();
+					const float Length = (Spine == 0 ? 2.6f : 1.7f) * Random.FRandRange(0.8f, 1.2f) * R / 15.f;
+					const FVector3f Across = FVector3f::CrossProduct(Along, Out).GetSafeNormal() * 0.14f;
+					const FLinearColor Root(0.17f, 0.07f, 0.045f), Tip(0.3f, 0.26f, 0.21f);
+					const int32 First = Data.Vertices.Num();
+					Data.AddVertex(Areole - Across, Out, FVector2f(0.f, 1.f), Root);
+					Data.AddVertex(Areole + Across, Out, FVector2f(1.f, 1.f), Root);
+					Data.AddVertex(Areole + Along * Length, Out, FVector2f(0.5f, 0.f), Tip);
+					Data.AddTriangle(0, First, First + 1, First + 2);
+				}
+			}
+		}
+
+		// The cephalium: a cylinder of wool, finely ribbed by its bristles, red-brown and cream.
+		const float CapHeight = R * Random.FRandRange(0.4f, 1.1f);
+		const float CapBase = 0.93f * Height - 3.f - 0.15f * R;
+		AddRibbedColumn(Data, 0, [&](float T) { return FVector3f(0.f, 0.f, CapBase + CapHeight * T); },
+			[&](float T) { return 0.5f * R * (1.f - 0.15f * T); }, 30, 0.1f, 6, 60, FLinearColor(0.2f, 0.06f, 0.045f), FLinearColor(0.42f, 0.33f, 0.26f));
+		// Fruits: small pink-magenta clubs poking out of its top.
+		const int32 Fruits = Random.RandRange(2, 7);
+		for (int32 Fruit = 0; Fruit < Fruits; ++Fruit)
+		{
+			const float A = Random.FRandRange(0.f, 2.f * UE_PI);
+			const float D = Random.FRandRange(0.1f, 0.35f) * R;
+			const FVector3f Base(FMath::Cos(A) * D, FMath::Sin(A) * D, CapBase + CapHeight - 0.6f);
+			const FVector3f Lean = FVector3f(FMath::Cos(A) * 0.3f, FMath::Sin(A) * 0.3f, 1.f).GetSafeNormal();
+			const float Length = Random.FRandRange(1.4f, 2.2f);
+			AddBarkTube(Data, 0, [&](float T) { return Base + Lean * (Length * T); },
+				[&](float T) { return 0.35f + 0.25f * FMath::Sin(UE_PI * FMath::Min(T * 1.2f, 1.f)); }, 3, 5, FLinearColor(0.55f, 0.05f, 0.2f));
+		}
 		return Data;
 	}
 
@@ -1255,10 +1316,30 @@ namespace OceanFlora
 			const float Azimuth = Spiral + Leaf * 2.39996f;
 			const FVector3f Out(FMath::Cos(Azimuth), FMath::Sin(Azimuth), 0.f);
 			const float Length = Size * FMath::Lerp(0.6f, 1.f, Age) * Random.FRandRange(0.9f, 1.1f);
-			const FLinearColor Color = (bRed && Age < 0.35f ? Heart : Green * Random.FRandRange(0.85f, 1.2f));
+			// Red-hearted ones turn red from the centre out (Guzmania): the inner leaves red, the next ones orange then green;
+			// the others a glossy green, some yellower, the outer leaves with dry tips.
+			const FLinearColor Leafy = Green * FMath::Lerp(FLinearColor(0.9f, 1.f, 1.1f), FLinearColor(1.2f, 1.05f, 0.75f), Random.FRand()) * Random.FRandRange(0.85f, 1.15f);
+			const FLinearColor Color = bRed ? FMath::Lerp(Heart, Leafy, FMath::SmoothStep(0.2f, 0.55f, Age)) : Leafy;
 			AddBlade(Data, 1, Out * 2.f + FVector3f(0.f, 0.f, 3.f), Out, Length, FMath::DegreesToRadians(FMath::Lerp(72.f, 30.f, Age)),
 				FMath::DegreesToRadians(FMath::Lerp(40.f, 95.f, Age)), Random.FRandRange(4.5f, 7.f), 0.35f,
 				FMath::DegreesToRadians(Random.FRandRange(-20.f, 20.f)), 0, 6, Color, Color * 0.8f);
+		}
+		// Some flower: a spike of red bracts rising from the heart, tipped yellow.
+		if (bRed && Random.FRand() < 0.6f)
+		{
+			const float SpikeHeight = Size * Random.FRandRange(0.35f, 0.55f);
+			const int32 Bracts = Random.RandRange(8, 12);
+			for (int32 Bract = 0; Bract < Bracts; ++Bract)
+			{
+				const float T = (Bract + 0.5f) / Bracts;
+				const float Azimuth = Bract * 2.39996f;
+				const FVector3f Out(FMath::Cos(Azimuth), FMath::Sin(Azimuth), 0.f);
+				const FLinearColor Bright = FMath::Lerp(FLinearColor(0.5f, 0.04f, 0.03f), FLinearColor(0.6f, 0.4f, 0.03f), FMath::SmoothStep(0.7f, 1.f, T));
+				AddBlade(Data, 1, FVector3f(0.f, 0.f, 4.f + SpikeHeight * T), Out, Size * 0.18f * (1.2f - 0.6f * T),
+					FMath::DegreesToRadians(65.f), FMath::DegreesToRadians(20.f), 3.5f * (1.2f - 0.5f * T), 0.4f, 0.f, 0, 3, Bright, Bright * 0.8f);
+			}
+			AddBarkTube(Data, 1, [&](float T) { return FVector3f(0.f, 0.f, 2.f + SpikeHeight * T); }, [](float T) { return 1.2f * (1.f - 0.6f * T); }, 4, 5,
+				FLinearColor(0.42f, 0.05f, 0.03f));
 		}
 		return Data;
 	}

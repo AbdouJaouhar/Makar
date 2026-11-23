@@ -42,7 +42,35 @@ def connect(source, target, input_name, source_output=""):
         raise RuntimeError(f"Could not connect {source.get_name()} -> {target.get_name()}.{input_name}")
 
 
-def save(material, name):
+# Wind (Shaders/Flora.ush): every plant part bends with the same law, so leaves stay on their twigs; WIND_BEND in cm
+# per square metre of height above the plant's foot (a 10 m palm sways ~20 cm), flutter in cm per metre from its axis.
+WIND_BEND = 0.2
+
+
+def add_wind(material, flutter):
+    wind = node(material, unreal.MaterialExpressionCustom, -600, 900)
+    wind.set_editor_property("description", "Flora Wind")
+    wind.set_editor_property("include_file_paths", ["/Makar/Flora.ush"])
+    wind.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
+    wind.set_editor_property("code", f"return FloraWind(WorldPos, Pivot, Time, {WIND_BEND}, {flutter});")
+    inputs = []
+    for input_name in ("WorldPos", "Pivot", "Time"):
+        custom_input = unreal.CustomInput()
+        custom_input.set_editor_property("input_name", input_name)
+        inputs.append(custom_input)
+    wind.set_editor_property("inputs", inputs)
+    connect(node(material, unreal.MaterialExpressionWorldPosition, -900, 900), wind, "WorldPos")
+    connect(node(material, unreal.MaterialExpressionObjectPositionWS, -900, 980), wind, "Pivot")
+    connect(node(material, unreal.MaterialExpressionTime, -900, 1060), wind, "Time")
+    MEL.connect_material_property(wind, "", unreal.MaterialProperty.MP_WORLD_POSITION_OFFSET)
+    # Bounds: the crowns move up to a few decimetres.
+    material.set_editor_property("max_world_position_offset_displacement", 60.0)
+
+
+def save(material, name, flutter=None):
+    """Saves the material; flutter (cm per metre from the plant's axis, 0 for bark) adds the wind."""
+    if flutter is not None:
+        add_wind(material, flutter)
     MEL.recompile_material(material)
     unreal.EditorAssetLibrary.save_asset(f"{DIRECTORY}/{name}")
 
@@ -53,10 +81,10 @@ def bark():
     color = node(material, unreal.MaterialExpressionVertexColor, -400, 0)
     MEL.connect_material_property(color, "", unreal.MaterialProperty.MP_BASE_COLOR)
     MEL.connect_material_property(constant(material, 0.9, -400, 200), "", unreal.MaterialProperty.MP_ROUGHNESS)
-    save(material, "M_Bark")
+    save(material, "M_Bark", flutter=0.0)
 
 
-def foliage(name="M_Foliage", tint=(0.35, 0.5, 0.1), roughness=0.6):
+def foliage(name="M_Foliage", tint=(0.35, 0.5, 0.1), roughness=0.6, flutter=0.5):
     """Leaves let light through: two-sided foliage shading, the transmitted light a warmer, yellower green.
     M_StemF (the generated stems, trunks and coconuts) is the same with next to no light through. Built from scratch:
     a duplicate of M_Foliage drew the vertex colours white. Roughness 0.6: tropical leaves are waxy, a little of the sky shows on
@@ -75,7 +103,7 @@ def foliage(name="M_Foliage", tint=(0.35, 0.5, 0.1), roughness=0.6):
     MEL.connect_material_property(transmitted, "", unreal.MaterialProperty.MP_SUBSURFACE_COLOR)
     MEL.connect_material_property(constant(material, roughness, -300, 300), "", unreal.MaterialProperty.MP_ROUGHNESS)
     MEL.connect_material_property(constant(material, 0.3, -300, 380), "", unreal.MaterialProperty.MP_SPECULAR)
-    save(material, name)
+    save(material, name, flutter=flutter)
 
 
 
@@ -153,7 +181,7 @@ def leaf_blade():
     connect(occluded, specular, "A")
     connect(constant(material, 0.35, -450, 500), specular, "B")
     MEL.connect_material_property(specular, "", unreal.MaterialProperty.MP_SPECULAR)
-    save(material, "M_LeafBlade")
+    save(material, "M_LeafBlade", flutter=0.6)
 
 
 def rock():
@@ -365,7 +393,7 @@ def palm_bark():
     MEL.connect_material_property(bark_node, "", unreal.MaterialProperty.MP_BASE_COLOR)
     MEL.connect_material_property(bark_node, "Normal", unreal.MaterialProperty.MP_NORMAL)
     MEL.connect_material_property(bark_node, "Roughness", unreal.MaterialProperty.MP_ROUGHNESS)
-    save(material, "M_PalmBark")
+    save(material, "M_PalmBark", flutter=0.0)
 
 
 LEAF_SOURCE = os.path.join(unreal.Paths.project_saved_dir(), "Infinigen", "leaves")
@@ -412,7 +440,7 @@ def leaf_cards(kind, title, roughness, specular):
     MEL.connect_material_property(transmitted, "", unreal.MaterialProperty.MP_SUBSURFACE_COLOR)
     MEL.connect_material_property(constant(material, roughness, -250, 550), "", unreal.MaterialProperty.MP_ROUGHNESS)
     MEL.connect_material_property(constant(material, specular, -250, 620), "", unreal.MaterialProperty.MP_SPECULAR)
-    save(material, name)
+    save(material, name, flutter=0.5)
 
 
 TUFT_SOURCE = os.path.join(unreal.Paths.project_saved_dir(), "Infinigen", "tuft")
@@ -455,15 +483,15 @@ def grass_tuft():
     connect(transmit, transmitted, "B")
     MEL.connect_material_property(transmitted, "", unreal.MaterialProperty.MP_SUBSURFACE_COLOR)
     MEL.connect_material_property(constant(material, 0.7, -250, 550), "", unreal.MaterialProperty.MP_ROUGHNESS)
-    save(material, "M_GrassTuft")
+    save(material, "M_GrassTuft", flutter=0.3)
 
 
 bark()
 foliage()
-foliage("M_StemF", (0.06, 0.06, 0.03), 0.85)
+foliage("M_StemF", (0.06, 0.06, 0.03), 0.85, flutter=0.0)
 # Coconut palm leaflets (OceanFlora::MakeCoconutPalm, near levels): waxy and glossy, the sky sheen shows on them; the
 # light through them a warm yellow-green.
-foliage("M_PalmLeaflet", (0.5, 0.6, 0.15), 0.42)
+foliage("M_PalmLeaflet", (0.5, 0.6, 0.15), 0.42, flutter=1.6)  # the frond tips flap
 leaf_blade()
 rock()
 palm_frond()

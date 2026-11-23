@@ -85,6 +85,9 @@ UHierarchicalInstancedStaticMeshComponent* AOceanIslandFlora::AddInstancer(UStat
 	Instancer->SetStaticMesh(Mesh);
 	Instancer->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Instancer->SetCullDistances(0, int32(CullDistanceM * 100.f));
+	// The wind (Shaders/Flora.ush) only within 80 m: further away it is not seen, and every plant moving by world position
+	// offset invalidates its cached shadows each frame.
+	Instancer->SetWorldPositionOffsetDisableDistance(8000);
 	Instancer->RegisterComponent();
 	Instancers.Add(Instancer);
 	return Instancer;
