@@ -62,6 +62,9 @@ constexpr float OceanSwashMaxHeightM = 1.5f;
 /** Run-up of each swash relative to the average: 0.65..1.1, one value per wave (Phase = time / period). Identical to OceanSwashWaveSize in Shaders/Ocean.ush. */
 MAKAR_API float OceanSwashWaveSize(float Phase);
 
+/** Tongues of the uprush: lobes a few metres wide, a new pattern per wave; multiplies the run-up (~0.75..1.25). Identical to OceanSwashTongues in Shaders/Ocean.ush. */
+MAKAR_API float OceanSwashTongues(const FVector2f& PositionM, float Phase);
+
 inline float OceanSwashRunup(float SwellHeightM, float Gaps)
 {
 	return 0.6f * SwellHeightM * Gaps;

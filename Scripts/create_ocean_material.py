@@ -285,6 +285,8 @@ def build():
 
     # Sand stirred up by the breaking waves makes the surf zone milky (OceanSurfTurbidity): strong, neutral to
     # cream scattering and a little absorption of blue by the grains, per cm like the coefficients above.
+    # Caribbean beaches of coarse carbonate sand stay clear up to the swash: 2.5 times less than before, which
+    # turned the shallows khaki (iteration 118).
     turbidity = custom(
         material, -500, 1320, "Surf Turbidity",
         "return OceanSurfTurbidity(WorldPos, Time, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, "
@@ -296,8 +298,8 @@ def build():
         "ShoreMapSize": shore_map_size, "SwellHeight": swell_inputs["SwellHeight"],
         "SwellMaxDepth": swell_inputs["SwellMaxDepth"],
     }, turbidity)
-    sand_scattering = color(material, "SurfSandScattering", (0.006, 0.0058, 0.005), -500, 1440)
-    sand_absorption = color(material, "SurfSandAbsorption", (0.0003, 0.0005, 0.0009), -500, 1520)
+    sand_scattering = color(material, "SurfSandScattering", (0.0024, 0.0023, 0.002), -500, 1440)
+    sand_absorption = color(material, "SurfSandAbsorption", (0.00012, 0.0002, 0.00036), -500, 1520)
     milky_scatter = node(material, unreal.MaterialExpressionMultiply, -300, 1440)
     connect(sand_scattering, milky_scatter, "A")
     connect(turbidity, milky_scatter, "B")
