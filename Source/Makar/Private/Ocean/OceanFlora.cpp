@@ -799,6 +799,175 @@ namespace OceanFlora
 		return Data;
 	}
 
+	FOceanMeshData MakeCaribbeanRock(ERockKind Kind, int32 Seed)
+	{
+		FRandomStream Random(Seed * 7919 + int32(Kind) * 104729);
+		FOceanMeshData Data(1);
+		TArray<FVector3f> Directions;
+		TArray<int32> Triangles;
+		const bool bSmall = Kind == ERockKind::CoralRubble || Kind == ERockKind::Cobble;
+		MakeIcosphere(bSmall ? 3 : 4, Directions, Triangles);
+		const FVector3f Offset(Random.FRandRange(0.f, 90.f), Random.FRandRange(0.f, 90.f), Random.FRandRange(0.f, 90.f));
+		auto Ridged = [](const FVector3f& P, int32 Octaves) { return 1.f - FMath::Abs(2.f * Fractal3(P, Octaves) - 1.f); };
+
+		// Proportions (semi-axes, the longest 1 = 100 cm) and squareness (superellipsoid exponent: 2 = ellipsoid,
+		// higher = a block with rounded edges) per kind.
+		FVector3f Axes(1.f, Random.FRandRange(0.6f, 0.95f), Random.FRandRange(0.45f, 0.8f));
+		float Square = 2.f;
+		FLinearColor Light, Dark;
+		switch (Kind)
+		{
+		case ERockKind::Limestone:   // a broken block of bedded limestone: angular, layered, pitted by dissolution
+			Square = Random.FRandRange(3.5f, 6.f);
+			Light = FLinearColor(0.62f, 0.58f, 0.5f); Dark = FLinearColor(0.3f, 0.29f, 0.26f);
+			break;
+		case ERockKind::Ironshore:   // low, wide, black-grey and razor-jagged (biokarst of the spray zone)
+			Axes = FVector3f(1.f, Random.FRandRange(0.6f, 1.f), Random.FRandRange(0.22f, 0.38f));
+			Square = Random.FRandRange(2.5f, 3.5f);
+			Light = FLinearColor(0.36f, 0.34f, 0.3f); Dark = FLinearColor(0.1f, 0.1f, 0.09f);
+			break;
+		case ERockKind::Beachrock:   // a cemented sand slab, tabular, cut by joints into blocks
+			Axes = FVector3f(1.f, Random.FRandRange(0.5f, 0.8f), Random.FRandRange(0.1f, 0.16f));
+			Square = Random.FRandRange(4.f, 7.f);
+			Light = FLinearColor(0.6f, 0.52f, 0.4f); Dark = FLinearColor(0.3f, 0.27f, 0.2f);
+			break;
+		case ERockKind::Volcanic:    // a rounded andesite boulder of the Lesser Antilles, dark and smooth
+			Square = Random.FRandRange(2.f, 2.6f);
+			Light = FLinearColor(0.2f, 0.19f, 0.18f); Dark = FLinearColor(0.07f, 0.07f, 0.065f);
+			break;
+		case ERockKind::CoralRubble: // a bleached lump of dead coral, knobbly
+			Axes = FVector3f(1.f, Random.FRandRange(0.6f, 0.9f), Random.FRandRange(0.4f, 0.7f));
+			Light = FLinearColor(0.8f, 0.77f, 0.7f); Dark = FLinearColor(0.5f, 0.47f, 0.42f);
+			break;
+		case ERockKind::Cobble:      // a water-worn pebble
+		default:
+			Axes = FVector3f(1.f, Random.FRandRange(0.65f, 0.9f), Random.FRandRange(0.35f, 0.55f));
+			Light = FMath::Lerp(FLinearColor(0.5f, 0.47f, 0.42f), FLinearColor(0.22f, 0.21f, 0.2f), Random.FRand());
+			Dark = Light * 0.55f;
+			break;
+		}
+
+		// Fracture planes: a broken block is bounded by a few flat faces at random angles.
+		TArray<FVector4f> Planes;
+		if (Kind == ERockKind::Limestone || Kind == ERockKind::Beachrock)
+		{
+			const int32 Count = Random.RandRange(4, 7);
+			for (int32 I = 0; I < Count; ++I)
+			{
+				FVector3f Normal = FVector3f(Random.GetUnitVector());
+				Normal.Z *= Kind == ERockKind::Beachrock ? 0.15f : 0.6f; // mostly steep faces
+				Normal.Normalize();
+				Planes.Add(FVector4f(Normal.X, Normal.Y, Normal.Z, Random.FRandRange(0.72f, 0.95f)));
+			}
+		}
+		const float BedPhase = Random.FRand();
+		const float BedThickness = Random.FRandRange(0.18f, 0.32f) * Axes.Z * 2.f;
+		const float JointAngle = Random.FRand() * 2.f * UE_PI;
+		const FVector3f JointA(FMath::Cos(JointAngle), FMath::Sin(JointAngle), 0.f);
+		const FVector3f JointB(-JointA.Y, JointA.X, 0.f);
+
+		TArray<FVector3f> Positions;
+		TArray<float> Weathering;
+		Positions.Reserve(Directions.Num());
+		Weathering.Reserve(Directions.Num());
+		for (const FVector3f& D : Directions)
+		{
+			// Superellipsoid radius along D.
+			const float P = Square;
+			const float Sum = FMath::Pow(FMath::Abs(D.X / Axes.X), P) + FMath::Pow(FMath::Abs(D.Y / Axes.Y), P) + FMath::Pow(FMath::Abs(D.Z / Axes.Z), P);
+			float R = FMath::Pow(Sum, -1.f / P);
+			// Cut by the fracture planes (distance along D to the plane at Plane.W of the radius).
+			for (const FVector4f& Plane : Planes)
+			{
+				const float Facing = D.X * Plane.X + D.Y * Plane.Y + D.Z * Plane.Z;
+				if (Facing > 0.05f)
+				{
+					R = FMath::Min(R, Plane.W * R / FMath::Pow(Facing, 0.15f) + (1.f - Facing) * 0.02f);
+				}
+			}
+			const FVector3f S = D * R;
+			float Hollow = 0.f; // how sunken this point is (darker)
+			switch (Kind)
+			{
+			case ERockKind::Limestone:
+			{
+				// Bedding: notches along the layer boundaries; dissolution pits; rills (karren) running down the top.
+				const float Layer = FMath::Frac(S.Z / BedThickness + BedPhase + 0.08f * Fractal3(S * 3.f + Offset, 2));
+				const float Notch = FMath::Exp(-FMath::Square((Layer - 0.5f) / 0.07f));
+				const float Pits = FMath::SmoothStep(0.62f, 0.8f, Fractal3(S * 6.f + Offset * 1.3f, 3));
+				const float Rills = Ridged(FVector3f(S.X * 9.f, S.Y * 9.f, S.Z * 1.5f) + Offset, 2) * FMath::Max(D.Z, 0.f);
+				const float Lumps = Fractal3(S * 2.2f + Offset, 4) - 0.5f;
+				R += 0.1f * Lumps - 0.045f * Notch * (1.f - FMath::Abs(D.Z)) - 0.06f * Pits - 0.025f * Rills;
+				Hollow = 0.8f * Notch * (1.f - FMath::Abs(D.Z)) + Pits;
+				break;
+			}
+			case ERockKind::Ironshore:
+			{
+				const float Jag = Ridged(S * 7.f + Offset, 4);
+				const float Basins = FMath::SmoothStep(0.55f, 0.75f, Fractal3(S * 3.f + Offset * 0.7f, 3));
+				const float Top = FMath::SmoothStep(-0.2f, 0.6f, D.Z);
+				R += 0.12f * (Fractal3(S * 1.6f + Offset, 3) - 0.5f) + Top * (0.09f * Jag - 0.1f * Basins);
+				Hollow = Top * (Basins + 0.6f * (1.f - Jag));
+				break;
+			}
+			case ERockKind::Beachrock:
+			{
+				// Joints: two sets of straight cracks across the slab; the slab's top worn smooth, its edges crumbly.
+				const float JA = FMath::Abs(FMath::Frac(FVector3f::DotProduct(S, JointA) * 2.2f + BedPhase) - 0.5f);
+				const float JB = FMath::Abs(FMath::Frac(FVector3f::DotProduct(S, JointB) * 1.6f + BedPhase * 1.7f) - 0.5f);
+				const float Joint = FMath::Max(FMath::SmoothStep(0.44f, 0.5f, JA), FMath::SmoothStep(0.45f, 0.5f, JB));
+				const float Crumble = (1.f - FMath::Abs(D.Z)) * (Fractal3(S * 8.f + Offset, 3) - 0.5f);
+				R += 0.03f * (Fractal3(S * 3.f + Offset, 3) - 0.5f) - 0.035f * Joint * FMath::Max(D.Z, 0.f) + 0.06f * Crumble;
+				Hollow = Joint * FMath::Max(D.Z, 0.f) + FMath::Max(-Crumble, 0.f) * 3.f;
+				break;
+			}
+			case ERockKind::Volcanic:
+			{
+				const float Vesicles = FMath::SmoothStep(0.7f, 0.85f, Fractal3(S * 14.f + Offset, 2));
+				R += 0.14f * (Fractal3(S * 1.5f + Offset, 4) - 0.5f) + 0.03f * (Fractal3(S * 6.f + Offset, 3) - 0.5f) - 0.015f * Vesicles;
+				Hollow = Vesicles;
+				break;
+			}
+			case ERockKind::CoralRubble:
+			{
+				const float Knobs = FMath::Abs(Fractal3(S * 6.f + Offset, 3) - 0.5f) * 2.f;
+				R += 0.25f * (Fractal3(S * 2.f + Offset, 3) - 0.5f) + 0.12f * Knobs;
+				Hollow = 1.f - Knobs;
+				break;
+			}
+			default:
+				R += 0.06f * (Fractal3(S * 2.f + Offset, 3) - 0.5f);
+				break;
+			}
+			FVector3f Position = D * R * 100.f;
+			// A flat base, a little below the ground (sinks in when placed).
+			Position.Z = FMath::Max(Position.Z, -Axes.Z * 65.f);
+			Positions.Add(Position);
+			Weathering.Add(Hollow);
+		}
+		const TArray<FVector3f> Normals = SmoothNormals(Positions, Triangles);
+		for (int32 Index = 0; Index < Positions.Num(); ++Index)
+		{
+			const FVector3f& Position = Positions[Index];
+			// Lighter weathered rinds on the tops, darker in the hollows and on the undersides; mottled.
+			const float Up = Normals[Index].Z;
+			const float Tone = FMath::Clamp(0.55f + 0.3f * Up - 0.45f * Weathering[Index] + 0.35f * (Fractal3(Position * 0.02f + Offset, 3) - 0.5f), 0.f, 1.f);
+			FLinearColor Color = FMath::Lerp(Dark, Light, Tone);
+			// Orange-brown iron stains here and there on the limestones.
+			if (Kind == ERockKind::Limestone || Kind == ERockKind::Beachrock)
+			{
+				const float Stain = FMath::SmoothStep(0.62f, 0.78f, Fractal3(Position * 0.012f + Offset * 2.f, 3));
+				Color = FMath::Lerp(Color, Color * FLinearColor(1.15f, 0.85f, 0.6f), Stain * 0.7f);
+			}
+			Data.AddVertex(Position, Normals[Index], FVector2f(Position.X * 0.01f, Position.Y * 0.01f), Color);
+		}
+		for (int32 I = 0; I < Triangles.Num(); I += 3)
+		{
+			Data.AddTriangle(0, Triangles[I], Triangles[I + 2], Triangles[I + 1]);
+		}
+		return Data;
+	}
+
 	UStaticMesh* BuildStaticMesh(UObject* Outer, const FOceanMeshData& Data, const TArray<UMaterialInterface*>& Materials)
 	{
 		FMeshDescription Description;

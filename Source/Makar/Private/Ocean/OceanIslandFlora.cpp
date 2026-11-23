@@ -202,18 +202,26 @@ void AOceanIslandFlora::Build()
 			}
 		}
 	};
-	LoadSet(RockMeshes, 2000.f, Rocks, RockSizes);
 	LoadSet(CoralMeshes, 400.f, Corals, CoralSizes);
 	LoadSet(UrchinMeshes, 80.f, Urchins, UrchinSizes);
 	LoadSet(ShellMeshes, 60.f, Shells, ShellSizes);
-	if (Rocks.Num() == 0)
+	// Caribbean stones (OceanFlora::MakeCaribbeanRock): a few variants of each kind, one instancer per variant; the
+	// small ones are culled sooner.
+	using OceanFlora::ERockKind;
+	constexpr int32 NumRockKinds = 6;
+	const int32 VariantsPerKind[NumRockKinds] = { 7, 4, 4, 4, 3, 3 };
+	const float RockCullM[NumRockKinds] = { 1500.f, 900.f, 700.f, 900.f, 120.f, 90.f };
+	TArray<TArray<int32>> RockVariants;
+	RockVariants.SetNum(NumRockKinds);
+	for (int32 Kind = 0; Kind < NumRockKinds; ++Kind)
 	{
-		for (int32 Variant = 0; Variant < NumRockVariants; ++Variant)
+		for (int32 Variant = 0; Variant < VariantsPerKind[Kind]; ++Variant)
 		{
-			UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeRock(Seed * 400 + Variant), { Stone });
+			UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeCaribbeanRock(ERockKind(Kind), Seed * 400 + Variant), { Stone });
 			Meshes.Add(Mesh);
-			Rocks.Add(AddInstancer(Mesh, 2000.f));
-			RockSizes.Add(2.f); // MakeRock: unit radius
+			RockVariants[Kind].Add(Rocks.Num());
+			Rocks.Add(AddInstancer(Mesh, RockCullM[Kind]));
+			RockSizes.Add(FMath::Max(float(Mesh->GetBounds().BoxExtent.GetMax()) * 2.f * 0.01f, 0.01f));
 		}
 	}
 
@@ -348,26 +356,6 @@ void AOceanIslandFlora::Build()
 		}
 	});
 
-	// Limestone boulders: piled on the rocky points (also under water), a few at the waterline elsewhere.
-	Scatter(3.f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
-	{
-		if (Terrain.Ground < -3.f || Terrain.Ground > 6.f)
-		{
-			return;
-		}
-		const float Probability = RockDensity * (0.45f * Terrain.Rock + (FMath::Abs(Terrain.Ground) < 0.6f ? 0.015f : 0.f));
-		if (Random.FRand() >= Probability)
-		{
-			return;
-		}
-		const float SizeM = FMath::Lerp(1.2f, 5.6f, FMath::Square(Random.FRand())) * (0.7f + Terrain.Rock);
-		const int32 Variant = Random.RandRange(0, Rocks.Num() - 1);
-		const float Scale = SizeM / RockSizes[Variant];
-		RockTransforms[Variant].Add(FTransform(
-			FRotator(Random.FRandRange(-12.f, 12.f), Random.FRandRange(0.f, 360.f), Random.FRandRange(-12.f, 12.f)),
-			Ground(Position, Terrain.Ground, 10.f * SizeM), FVector(Scale)));
-	});
-
 	// --- Ground cover ---
 	// Props that lie on the ground sit on the rendered terrain (ground plus the understory's relief).
 	auto Surface = [&](const FVector2f& Position) { return Island->GetTerrainHeight(Position); };
@@ -476,18 +464,102 @@ void AOceanIslandFlora::Build()
 		});
 	}
 
-	// Loose stones: limestone cobbles and pebbles on top of the rocky points and at the foot of their cliffs.
-	Scatter(2.f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
+	// --- Stones, by kind and setting ---
+	auto PlaceRock = [&](ERockKind Kind, const FVector2f& Position, float HeightM, float SizeM, float Yaw, float Tilt, float SinkShare)
 	{
-		if (Terrain.Rock < 0.25f || Terrain.Ground < 0.3f || Terrain.Ground > 12.f || Random.FRand() >= 0.3f * GroundCoverDensity * Terrain.Rock)
+		const TArray<int32>& Variants = RockVariants[int32(Kind)];
+		const int32 Index = Variants[Random.RandRange(0, Variants.Num() - 1)];
+		RockTransforms[Index].Add(FTransform(FRotator(Random.FRandRange(-Tilt, Tilt), Yaw, Random.FRandRange(-Tilt, Tilt)),
+			Ground(Position, HeightM, SinkShare * 100.f * SizeM), FVector(SizeM / RockSizes[Index])));
+	};
+	// Seaward direction from the shore data's distance field (positive at sea).
+	auto Seaward = [&](const FVector2f& Position)
+	{
+		const float DX = Shore->Sample(Position + FVector2f(2.f, 0.f)).Y - Shore->Sample(Position - FVector2f(2.f, 0.f)).Y;
+		const float DY = Shore->Sample(Position + FVector2f(0.f, 2.f)).Y - Shore->Sample(Position - FVector2f(0.f, 2.f)).Y;
+		return FVector2f(DX, DY).GetSafeNormal();
+	};
+	Scatter(3.f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
+	{
+		const float H = Terrain.Ground;
+		if (H < -3.f)
 		{
 			return;
 		}
-		const float SizeM = FMath::Lerp(0.12f, 0.55f, FMath::Square(Random.FRand()));
-		const int32 Variant = Random.RandRange(0, Rocks.Num() - 1);
-		RockTransforms[Variant].Add(FTransform(
-			FRotator(Random.FRandRange(-30.f, 30.f), Random.FRandRange(0.f, 360.f), Random.FRandRange(-30.f, 30.f)),
-			Ground(Position, Surface(Position), 30.f * SizeM), FVector(SizeM / RockSizes[Variant])));
+		// Blocks fallen from the limestone cliffs: piled at their foot and on the rocky points, also under water; along
+		// the waterline the spray zone has weathered them into black, razor-jagged ironshore.
+		if (Terrain.Rock > 0.15f && H < 16.f)
+		{
+			if (Random.FRand() < RockDensity * 0.55f * Terrain.Rock)
+			{
+				const bool bSpray = H > -0.8f && H < 2.5f && Random.FRand() < 0.6f;
+				const float SizeM = bSpray ? Random.FRandRange(1.2f, 4.5f) : FMath::Lerp(0.5f, 4.f, FMath::Square(Random.FRand())) * (0.7f + Terrain.Rock);
+				PlaceRock(bSpray ? ERockKind::Ironshore : ERockKind::Limestone, Position, H, SizeM, Random.FRandRange(0.f, 360.f), bSpray ? 6.f : 18.f, 0.15f);
+			}
+			return;
+		}
+		// Beachrock: along some stretches of the sandy beaches, slabs of cemented sand at the swash line, lying parallel
+		// to the shore and tilted gently seaward.
+		const float BeachrockStretch = Smooth(0.6f, 0.72f, OceanGradientNoise(Position / 160.f + FVector2f(17.f, 3.f)));
+		if (H > -0.6f && H < 0.9f && BeachrockStretch > 0.f)
+		{
+			if (Random.FRand() < 0.55f * BeachrockStretch)
+			{
+				const FVector2f Out = Seaward(Position);
+				const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Out.Y, Out.X)) + 90.f + Random.FRandRange(-12.f, 12.f);
+				PlaceRock(ERockKind::Beachrock, Position, H, Random.FRandRange(1.5f, 4.f), Yaw, 4.f, 0.05f);
+			}
+			return;
+		}
+		// A boulder beach: one stretch of the coast strewn with dark rounded volcanic boulders across the upper beach.
+		const float BoulderBeach = Smooth(0.7f, 0.8f, OceanGradientNoise(Position / 220.f + FVector2f(41.f, 9.f)));
+		if (H > -1.2f && H < 2.5f && BoulderBeach > 0.f)
+		{
+			if (Random.FRand() < 0.35f * BoulderBeach)
+			{
+				PlaceRock(ERockKind::Volcanic, Position, H, FMath::Lerp(0.4f, 2.f, FMath::Square(Random.FRand())), Random.FRandRange(0.f, 360.f), 25.f, 0.2f);
+			}
+			return;
+		}
+		// Limestone outcrops on the steep slopes inland, half buried; a lone block at the waterline here and there.
+		if (H > 5.f && Random.FRand() < 0.05f * RockDensity)
+		{
+			const float Slope = SlopeAt(Position, H);
+			if (Random.FRand() < Smooth(0.25f, 0.8f, Slope))
+			{
+				PlaceRock(ERockKind::Limestone, Position, H, FMath::Lerp(0.8f, 3.5f, Random.FRand()), Random.FRandRange(0.f, 360.f), 20.f, 0.35f);
+			}
+			return;
+		}
+		if (FMath::Abs(H) < 0.6f && Random.FRand() < 0.01f * RockDensity)
+		{
+			PlaceRock(ERockKind::Limestone, Position, H, Random.FRandRange(0.6f, 2.f), Random.FRandRange(0.f, 360.f), 15.f, 0.2f);
+		}
+	});
+	// Loose stones: limestone cobbles on the rocky points and at the foot of their cliffs; bleached coral rubble along
+	// the beaches, at the swash line and on the upper beach (where storms threw it).
+	Scatter(2.f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
+	{
+		const float H = Terrain.Ground;
+		if (Terrain.Rock >= 0.25f && H > 0.3f && H < 14.f)
+		{
+			if (Random.FRand() < 0.3f * GroundCoverDensity * Terrain.Rock)
+			{
+				const float SizeM = FMath::Lerp(0.12f, 0.55f, FMath::Square(Random.FRand()));
+				PlaceRock(Random.FRand() < 0.5f ? ERockKind::Cobble : ERockKind::Limestone, Position, Surface(Position), SizeM,
+					Random.FRandRange(0.f, 360.f), 30.f, 0.3f);
+			}
+			return;
+		}
+		if (Terrain.Rock < 0.25f && H > -0.3f && H < 2.2f && Terrain.Understory < 0.05f)
+		{
+			const float Rubble = Smooth(0.45f, 0.7f, OceanGradientNoise(Position / 25.f + FVector2f(61.f, 7.f)));
+			if (Random.FRand() < 0.06f * GroundCoverDensity * Rubble)
+			{
+				PlaceRock(ERockKind::CoralRubble, Position, Surface(Position), FMath::Lerp(0.08f, 0.35f, FMath::Square(Random.FRand())),
+					Random.FRandRange(0.f, 360.f), 40.f, 0.3f);
+			}
+		}
 	});
 
 	// Patch reefs, exactly where the sea floor material draws them (OceanTerrainSurface in Shaders/Ocean.ush:

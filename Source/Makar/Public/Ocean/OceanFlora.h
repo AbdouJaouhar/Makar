@@ -48,6 +48,18 @@ namespace OceanFlora
 	MAKAR_API FOceanMeshData MakeGrassTuft(int32 Seed, float SpanCm, float BaseV);
 	MAKAR_API FOceanMeshData MakeRock(int32 Seed);
 
+	/** Caribbean coastal stones, unit size (the longest semi-axis is 100 cm), flat base, vertex-coloured. */
+	enum class ERockKind : uint8
+	{
+		Limestone,   // broken blocks of bedded coral limestone: angular faces, ledges, dissolution pits, rills
+		Ironshore,   // low, black-grey, razor-jagged limestone of the spray zone
+		Beachrock,   // tabular slabs of cemented beach sand, cut by joints
+		Volcanic,    // rounded dark andesite boulders (Lesser Antilles)
+		CoralRubble, // bleached knobbly lumps of dead coral
+		Cobble,      // water-worn pebbles
+	};
+	MAKAR_API FOceanMeshData MakeCaribbeanRock(ERockKind Kind, int32 Seed);
+
 	/** Builds a transient static mesh (works in the editor and in a cooked game). One material per section. */
 	MAKAR_API UStaticMesh* BuildStaticMesh(UObject* Outer, const FOceanMeshData& Data, const TArray<UMaterialInterface*>& Materials);
 }

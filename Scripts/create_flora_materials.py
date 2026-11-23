@@ -72,29 +72,60 @@ def foliage():
 
 
 def rock():
-    """Coral limestone: vertex colour (lumps, hollows, algae) times a triplanar pitted detail."""
+    """Caribbean stones (OceanFlora::MakeCaribbeanRock): the vertex colour of each kind (limestone, ironshore, beachrock,
+    andesite, coral rubble) over the terrain's limestone tile in triplanar projection (the same texture as the cliffs,
+    so loose blocks match the rock they fell from), with its normals for the small relief. Near sea level the black
+    band of the spray zone and the wet sheen; under water a film of algae."""
     material = fresh_material("M_Rock")
-    material.set_editor_property("two_sided", True)
-    color = node(material, unreal.MaterialExpressionVertexColor, -700, 0)
-    world_pos = node(material, unreal.MaterialExpressionWorldPosition, -900, 200)
-    detail = node(material, unreal.MaterialExpressionCustom, -600, 200)
-    detail.set_editor_property("description", "Rock Detail")
-    detail.set_editor_property("include_file_paths", ["/Makar/Ocean.ush"])
-    detail.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT1)
-    detail.set_editor_property("code", (
+    material.set_editor_property("tangent_space_normal", False)  # the custom node returns a world normal
+    color = node(material, unreal.MaterialExpressionVertexColor, -900, 0)
+    world_pos = node(material, unreal.MaterialExpressionWorldPosition, -900, 120)
+    vertex_normal = node(material, unreal.MaterialExpressionVertexNormalWS, -900, 200)
+    albedo_tex = node(material, unreal.MaterialExpressionTextureObject, -900, 280)
+    albedo_tex.set_editor_property("texture", unreal.load_asset("/Game/Ocean/Ground/T_Ground_Limestone_BaseColor"))
+    normal_tex = node(material, unreal.MaterialExpressionTextureObject, -900, 360)
+    normal_tex.set_editor_property("texture", unreal.load_asset("/Game/Ocean/Ground/T_Ground_Limestone_Normal"))
+    normal_tex.set_editor_property("sampler_type", unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL)
+    custom = node(material, unreal.MaterialExpressionCustom, -500, 100)
+    custom.set_editor_property("description", "Rock Surface")
+    custom.set_editor_property("include_file_paths", ["/Makar/Ocean.ush"])
+    custom.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
+    custom.set_editor_property("code", (
         "const float3 P = WorldPos * 0.01;"
-        "const float N = (OceanValueNoise(P.xy * 1.7) + OceanValueNoise(P.xz * 1.7 + 7.0) + OceanValueNoise(P.yz * 1.7 + 13.0)) / 3.0;"
-        "const float Pits = (OceanValueNoise(P.xy * 9.0) + OceanValueNoise(P.xz * 9.0 + 3.0) + OceanValueNoise(P.yz * 9.0 + 5.0)) / 3.0;"
-        "return 0.65 + 0.5 * N - 0.25 * smoothstep(0.55, 0.75, Pits);"))
-    custom_input = unreal.CustomInput()
-    custom_input.set_editor_property("input_name", "WorldPos")
-    detail.set_editor_property("inputs", [custom_input])
-    connect(world_pos, detail, "WorldPos")
-    base = node(material, unreal.MaterialExpressionMultiply, -300, 100)
-    connect(color, base, "A")
-    connect(detail, base, "B")
-    MEL.connect_material_property(base, "", unreal.MaterialProperty.MP_BASE_COLOR)
-    MEL.connect_material_property(constant(material, 0.85, -300, 300), "", unreal.MaterialProperty.MP_ROUGHNESS)
+        "float3 Tex, N;"
+        "const float Mix = smoothstep(0.35, 0.65, OceanValueNoise(P.xy / 3.0 + 41.0));"
+        "OceanGroundTriplanar(AlbedoTex, AlbedoTexSampler, NormalTex, NormalTexSampler, P * 2.0, VertexNormal, Mix, 1.8, Tex, N);"
+        "const float Luma = dot(Tex, float3(0.3, 0.5, 0.2));"
+        "float3 Base = Color.rgb * lerp(1.0, Luma / 0.42, 0.85);"
+        # Spray zone: the black band of cyanobacteria a metre above the sea; wet and darker just above the water.
+        "const float Spray = (1.0 - smoothstep(0.4, 1.4, P.z)) * smoothstep(-0.3, 0.1, P.z);"
+        "Base *= lerp(1.0, 0.4, Spray);"
+        "const float Under = 1.0 - smoothstep(-0.4, -0.05, P.z);"
+        "Base *= lerp(float3(1.0, 1.0, 1.0), float3(0.55, 0.7, 0.45), Under * 0.8);"
+        "Normal = N;"
+        "Roughness = lerp(0.88, 0.45, max(Spray * (1.0 - smoothstep(0.1, 0.6, P.z)), Under));"
+        "return Base;"))
+    inputs = []
+    for name in ("Color", "WorldPos", "VertexNormal", "AlbedoTex", "NormalTex"):
+        custom_input = unreal.CustomInput()
+        custom_input.set_editor_property("input_name", name)
+        inputs.append(custom_input)
+    custom.set_editor_property("inputs", inputs)
+    outputs = []
+    for name, kind in (("Normal", unreal.CustomMaterialOutputType.CMOT_FLOAT3), ("Roughness", unreal.CustomMaterialOutputType.CMOT_FLOAT1)):
+        output = unreal.CustomOutput()
+        output.set_editor_property("output_name", name)
+        output.set_editor_property("output_type", kind)
+        outputs.append(output)
+    custom.set_editor_property("additional_outputs", outputs)
+    connect(color, custom, "Color")
+    connect(world_pos, custom, "WorldPos")
+    connect(vertex_normal, custom, "VertexNormal")
+    connect(albedo_tex, custom, "AlbedoTex")
+    connect(normal_tex, custom, "NormalTex")
+    MEL.connect_material_property(custom, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    MEL.connect_material_property(custom, "Normal", unreal.MaterialProperty.MP_NORMAL)
+    MEL.connect_material_property(custom, "Roughness", unreal.MaterialProperty.MP_ROUGHNESS)
     save(material, "M_Rock")
 
 
