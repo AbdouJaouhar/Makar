@@ -453,7 +453,8 @@ void AOceanIslandFlora::Build()
 				: Smooth(0.1f, 0.5f, Island->SampleTerrain(Position - Seaward * 4.f).Understory);
 			const float Clearing = Smooth(0.65f, 0.8f, OceanValueNoise(Position / 80.f + FVector2f(3.f))) * Smooth(0.2f, 0.6f, Terrain.Understory);
 			const float Colonies = Smooth(0.45f, 0.7f, OceanValueNoise(Position / 9.f + FVector2f(31.f)));
-			if (Random.FRand() >= GroundCoverDensity * FMath::Max(0.9f * Fringe, 0.5f * Clearing) * Colonies
+			// Along the edge in separate colonies; in the clearings, a sward broken only here and there.
+			if (Random.FRand() >= GroundCoverDensity * FMath::Max(0.9f * Fringe * Colonies, 0.85f * Clearing * FMath::Lerp(0.5f, 1.f, Colonies))
 				|| SlopeAt(Position, Terrain.Ground) > 0.7f)
 			{
 				return;

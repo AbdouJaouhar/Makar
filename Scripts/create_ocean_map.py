@@ -78,7 +78,7 @@ def sun_direction():
 GROUND_DIRECTORY = "/Game/Ocean/Ground"
 # Tints over the rendered tiles (linear means: limestone 0.017 grey, soil 0.11/0.032/0.014, litter 0.4/0.21/0.09)
 # towards pale grey coral limestone (~0.4), brown-red island soil (~0.2/0.1/0.055) and tan dry leaves (~0.24/0.16/0.09).
-GROUND_ROCK_TINT = (24.0, 24.0, 20.5)
+GROUND_ROCK_TINT = (28.0, 27.5, 24.0)
 GROUND_SOIL_TINT = (1.8, 3.1, 3.9)
 GROUND_LITTER_TINT = (0.6, 0.78, 0.95)
 GROUND_GRASS_TINT = (2.0, 1.1, 0.55)  # grass 0.057/0.138/0.089, bluish -> dry-season yellow-green ~0.11/0.15/0.05

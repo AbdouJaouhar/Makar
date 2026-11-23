@@ -315,7 +315,7 @@ void AOceanBathymetry::BuildErosion()
 				const int32 Index = Y * Grown.Width + X;
 				const FVector2f Position = Grown.OriginM + FVector2f(float(X), float(Y)) * Grown.CellM;
 				const FVector2f Seeded = Position + FVector2f(Seed * 37.1f, Seed * 11.3f);
-				const FOceanTerrainSample Shape = SampleShape(Position);
+				const FOceanTerrainSample Shape = SampleShape(Position, false);
 				Target[Index] = Shape.Hills;
 				Uplift[Index] = Shape.Hills > 0.05f
 					? 0.05f * (Shape.Hills / HillHeight) * (0.75f + 0.5f * OceanGradientNoise(Seeded / 55.f + 11.3f)) : 0.f;
@@ -361,7 +361,7 @@ void AOceanBathymetry::BuildErosion()
 		for (int32 X = 0; X < Field.Width; ++X)
 		{
 			const int32 Index = Y * Field.Width + X;
-			const FOceanTerrainSample Shape = SampleShape(Field.OriginM + FVector2f(float(X), float(Y)) * Field.CellM);
+			const FOceanTerrainSample Shape = SampleShape(Field.OriginM + FVector2f(float(X), float(Y)) * Field.CellM, false);
 			Field.Heights[Index] = Shape.Ground;
 			Erodibility[Index] = FMath::SmoothStep(BermHeight * 0.7f, BermHeight + 3.f, Shape.Ground) * (1.f - 0.85f * Shape.Rock);
 			Talus[Index] = Shape.Ground < -0.3f ? 100.f
@@ -431,7 +431,7 @@ void AOceanBathymetry::BuildErosion()
 	Erosion = MoveTemp(Field);
 }
 
-FOceanTerrainSample AOceanBathymetry::SampleShape(const FVector2f& PositionM) const
+FOceanTerrainSample AOceanBathymetry::SampleShape(const FVector2f& PositionM, bool bFineDetail) const
 {
 	FOceanTerrainSample Out;
 	const FVector2f Center(float(GetActorLocation().X * 0.01), float(GetActorLocation().Y * 0.01));
@@ -473,18 +473,27 @@ FOceanTerrainSample AOceanBathymetry::SampleShape(const FVector2f& PositionM) co
 		// Once built, the relief grown from it by landscape evolution (BuildErosion) takes its place.
 		const float Hills = Relief.Contains(PositionM) ? Relief.Sample(PositionM) : MassifHeight;
 		Out.Hills = MassifHeight;
-		// Rocky points: the ground rises steeply right from the water (~45 degrees, shaded as rock by slope) to a
+		// Rocky points: the ground rises steeply right from the water (~65-70 degrees, shaded as rock by slope) to a
 		// low headland that joins the massif: the cliff fades out where the hills are already higher. Added over the
 		// whole land, the rock mask raised 4 m terraces along its contours far inland.
-		const float Rock = Rockiness * FMath::SmoothStep(0.45f, 0.7f, OceanGradientNoise(Seeded / 70.f + 3.1f));
-		const float CliffMask = Rock * FMath::SmoothStep(0.f, 8.f, Inland) * (1.f - FMath::SmoothStep(2.f, 8.f, Hills));
+		const float Rock = RockMask(Seeded);
+		const float CliffMask = Rock * FMath::SmoothStep(0.5f, 4.5f, Inland) * (1.f - FMath::SmoothStep(2.f, 8.f, Hills));
 		const float Cliff = 8.f * CliffMask;
-		// Coral limestone weathers into a jagged, pitted surface (ironshore): sharp ridges and hollows a few metres
-		// across on the rocky points (ridged noise: creases where the noise crosses its middle), not smooth lumps.
-		const float Ridges = 1.f - FMath::Abs(2.f * OceanGradientNoise(Seeded / 4.f + 7.7f) - 1.f);
-		const float Pits = 1.f - FMath::Abs(2.f * OceanGradientNoise(Seeded / 1.6f + 3.3f) - 1.f);
-		const float Jagged = CliffMask * (1.4f * Ridges + 0.5f * Pits - 0.9f);
-		const float Ground = Beach + Hills + Cliff + Jagged;
+		float Ground = Beach + Hills + Cliff;
+		if (bFineDetail)
+		{
+			// Bedding: the limestone lies in near-horizontal layers ~0.9 m thick, which the sea and the rain etch into
+			// ledges on the cliff faces: flat benches, steep risers; the beds dip and wander a little.
+			const float Face = Rock * FMath::SmoothStep(0.3f, 1.5f, Inland) * (1.f - FMath::SmoothStep(4.5f, 7.f, Inland));
+			const float Bed = 0.9f;
+			const float Layer = (Beach + Cliff) / Bed + 0.3f * (OceanGradientNoise(Seeded / 9.f + 4.4f) - 0.5f);
+			const float Benched = (FMath::FloorToFloat(Layer) + FMath::SmoothStep(0.6f, 1.f, FMath::Frac(Layer))) * Bed;
+			// Coral limestone weathers into a jagged, pitted surface (ironshore): sharp ridges and hollows a few metres
+			// across on the rocky points (ridged noise: creases where the noise crosses its middle), not smooth lumps.
+			const float Ridges = 1.f - FMath::Abs(2.f * OceanGradientNoise(Seeded / 4.f + 7.7f) - 1.f);
+			const float Pits = 1.f - FMath::Abs(2.f * OceanGradientNoise(Seeded / 1.6f + 3.3f) - 1.f);
+			Ground += Face * (Benched - Layer * Bed) + CliffMask * (1.4f * Ridges + 0.5f * Pits - 0.9f);
+		}
 		// Understory: 1.5-3 m of lumpy bush mass behind the beach, under the trees of AOceanIslandFlora, which covers
 		// it with shrubs (only UnderstoryRelief of it is terrain).
 		// Thinner on the rocky points. Uses the same vegetation line as OceanTerrainSurface (Shaders/Ocean.ush),
@@ -503,8 +512,16 @@ FOceanTerrainSample AOceanBathymetry::SampleShape(const FVector2f& PositionM) co
 		+ DropOffDepth * FMath::SmoothStep(ShelfWidth, ShelfWidth + DropOffWidth, Across);
 	Out.Ground = -Depth;
 	// Rocky points continue a little under water: boulders on the rocky shores.
-	Out.Rock = Rockiness * FMath::SmoothStep(0.45f, 0.7f, OceanGradientNoise(Seeded / 70.f + 3.1f)) * (1.f - FMath::SmoothStep(5.f, 25.f, Across));
+	Out.Rock = RockMask(Seeded) * (1.f - FMath::SmoothStep(5.f, 25.f, Across));
 	return Out;
+}
+
+float AOceanBathymetry::RockMask(const FVector2f& Seeded) const
+{
+	// Where the coast is rocky: a slow noise, its domain warped so the rocky stretches have ragged outlines rather than
+	// the round blobs of a plain noise threshold.
+	const FVector2f Warp = 14.f * FVector2f(OceanGradientNoise(Seeded / 33.f + 2.1f) - 0.5f, OceanGradientNoise(Seeded / 33.f + 8.4f) - 0.5f);
+	return Rockiness * FMath::SmoothStep(0.45f, 0.7f, OceanGradientNoise((Seeded + Warp) / 70.f + 3.1f));
 }
 
 void AOceanBathymetry::Build()

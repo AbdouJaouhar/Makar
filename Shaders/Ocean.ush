@@ -599,9 +599,9 @@ static const float OceanGroundTileM = 4.0;
 static const float2x2 OceanGroundRotation = float2x2(0.8253, -0.5646, 0.5646, 0.8253); // ~34 degrees
 
 // One ground texture on a plane (2D coordinates P, m): albedo, and the normal in the plane's frame (x along P.x,
-// y along P.y, z out of the plane).
+// y along P.y, z out of the plane), its relief scaled by Strength (the renders' relief is shallow).
 void OceanGroundPlane(Texture2D AlbedoTex, SamplerState AlbedoSampler, Texture2D NormalTex, SamplerState NormalSampler,
-	float2 P, float Mix, out float3 Albedo, out float3 PlaneNormal)
+	float2 P, float Mix, float Strength, out float3 Albedo, out float3 PlaneNormal)
 {
 	const float2 UV1 = P / OceanGroundTileM;
 	const float2 UV2 = mul(OceanGroundRotation, P) / (OceanGroundTileM * 2.63) + 0.37;
@@ -612,31 +612,31 @@ void OceanGroundPlane(Texture2D AlbedoTex, SamplerState AlbedoSampler, Texture2D
 	N1.y = -N1.y;
 	N2.y = -N2.y;
 	N2 = mul(N2, OceanGroundRotation);
-	const float2 N = lerp(N1, N2, Mix);
-	PlaneNormal = float3(N, sqrt(saturate(1.0 - dot(N, N))));
+	const float2 N = lerp(N1, N2, Mix) * Strength;
+	PlaneNormal = normalize(float3(N, sqrt(saturate(1.0 - dot(N, N)) + 0.05)));
 }
 
 // The same on the ground seen from above, blended with the surface normal (whiteout blend): world-space normal.
 void OceanGroundTop(Texture2D AlbedoTex, SamplerState AlbedoSampler, Texture2D NormalTex, SamplerState NormalSampler,
-	float2 PosM, float3 SurfaceNormal, float Mix, out float3 Albedo, out float3 WorldNormal)
+	float2 PosM, float3 SurfaceNormal, float Mix, float Strength, out float3 Albedo, out float3 WorldNormal)
 {
 	float3 N;
-	OceanGroundPlane(AlbedoTex, AlbedoSampler, NormalTex, NormalSampler, PosM, Mix, Albedo, N);
+	OceanGroundPlane(AlbedoTex, AlbedoSampler, NormalTex, NormalSampler, PosM, Mix, Strength, Albedo, N);
 	WorldNormal = normalize(float3(N.xy + SurfaceNormal.xy, abs(N.z) * SurfaceNormal.z));
 }
 
 // On steep ground: projected on the three axis planes, weighted by the surface normal (triplanar), so cliffs are not
 // stretched; normals by whiteout blend per plane (B. Golus, "Normal Mapping for a Triplanar Shader", 2017).
 void OceanGroundTriplanar(Texture2D AlbedoTex, SamplerState AlbedoSampler, Texture2D NormalTex, SamplerState NormalSampler,
-	float3 PosM, float3 SurfaceNormal, float Mix, out float3 Albedo, out float3 WorldNormal)
+	float3 PosM, float3 SurfaceNormal, float Mix, float Strength, out float3 Albedo, out float3 WorldNormal)
 {
 	float3 W = pow(abs(SurfaceNormal), 4.0);
 	W /= W.x + W.y + W.z;
 	float3 AX = 0.0, AY = 0.0, AZ = 0.0;
 	float3 NX = float3(0.0, 0.0, 1.0), NY = float3(0.0, 0.0, 1.0), NZ = float3(0.0, 0.0, 1.0);
-	if (W.x > 0.01) { OceanGroundPlane(AlbedoTex, AlbedoSampler, NormalTex, NormalSampler, PosM.yz + 17.0, Mix, AX, NX); }
-	if (W.y > 0.01) { OceanGroundPlane(AlbedoTex, AlbedoSampler, NormalTex, NormalSampler, PosM.xz + 29.0, Mix, AY, NY); }
-	if (W.z > 0.01) { OceanGroundPlane(AlbedoTex, AlbedoSampler, NormalTex, NormalSampler, PosM.xy, Mix, AZ, NZ); }
+	if (W.x > 0.01) { OceanGroundPlane(AlbedoTex, AlbedoSampler, NormalTex, NormalSampler, PosM.yz + 17.0, Mix, Strength, AX, NX); }
+	if (W.y > 0.01) { OceanGroundPlane(AlbedoTex, AlbedoSampler, NormalTex, NormalSampler, PosM.xz + 29.0, Mix, Strength, AY, NY); }
+	if (W.z > 0.01) { OceanGroundPlane(AlbedoTex, AlbedoSampler, NormalTex, NormalSampler, PosM.xy, Mix, Strength, AZ, NZ); }
 	Albedo = AX * W.x + AY * W.y + AZ * W.z;
 	NX = float3(NX.xy + SurfaceNormal.yz, abs(NX.z) * SurfaceNormal.x);
 	NY = float3(NY.xy + SurfaceNormal.xz, abs(NY.z) * SurfaceNormal.y);
@@ -836,10 +836,10 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 		if (Vegetation > 0.0)
 		{
 			float3 SoilColor, SoilN, LitterColor, LitterN, GrassColor, GrassN;
-			OceanGroundTop(SoilAlbedo, SoilAlbedoSampler, SoilNormal, SoilNormalSampler, PosM, VertexNormal, Mix, SoilColor, SoilN);
-			OceanGroundTop(LitterAlbedo, LitterAlbedoSampler, LitterNormal, LitterNormalSampler, PosM + 5.3, VertexNormal, Mix,
+			OceanGroundTop(SoilAlbedo, SoilAlbedoSampler, SoilNormal, SoilNormalSampler, PosM, VertexNormal, Mix, 1.5, SoilColor, SoilN);
+			OceanGroundTop(LitterAlbedo, LitterAlbedoSampler, LitterNormal, LitterNormalSampler, PosM + 5.3, VertexNormal, Mix, 1.0,
 				LitterColor, LitterN);
-			OceanGroundTop(GrassAlbedo, GrassAlbedoSampler, GrassNormal, GrassNormalSampler, PosM + 11.1, VertexNormal, Mix,
+			OceanGroundTop(GrassAlbedo, GrassAlbedoSampler, GrassNormal, GrassNormalSampler, PosM + 11.1, VertexNormal, Mix, 2.5,
 				GrassColor, GrassN);
 			// Litter under the trees and along the forest edge; grass in the clearings (those of AOceanIslandFlora: no
 			// trees there) and in patches of the open scrub; bare soil on the steeper banks the rain washes clean.
@@ -863,11 +863,11 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 		float3 RockColor = 0.0, RockN = VertexNormal;
 		if (RockMask > 0.0)
 		{
-			OceanGroundTriplanar(RockAlbedo, RockAlbedoSampler, RockNormal, RockNormalSampler, float3(PosM, HeightM), VertexNormal, Mix,
+			OceanGroundTriplanar(RockAlbedo, RockAlbedoSampler, RockNormal, RockNormalSampler, float3(PosM, HeightM), VertexNormal, Mix, 1.6,
 				RockColor, RockN);
 			// Wet and dark where the sea reaches, weathered paler with height; lichen-grey and darker streaks.
-			const float Wet = 1.0 - smoothstep(0.3, 2.0, HeightM + 0.6 * (Medium - 0.5));
-			RockColor *= RockTint * lerp(1.0, 0.45, Wet) * lerp(0.8, 1.15, Small);
+			const float Wet = 1.0 - smoothstep(0.1, 0.9, HeightM + 0.3 * (Medium - 0.5));
+			RockColor *= RockTint * lerp(1.0, 0.6, Wet) * lerp(0.85, 1.15, Small);
 		}
 		const float RockShare = RockMask / max(GroundCover, 1e-3);
 		GroundColor = lerp(GroundColor, RockColor, RockShare);

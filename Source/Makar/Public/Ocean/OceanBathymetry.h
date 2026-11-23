@@ -192,8 +192,14 @@ private:
 	void BuildShoreTexture(const FOceanShoreData& Data);
 	void BuildFootprintTexture();
 
-	/** The island's shape before erosion, analytic (coastline, beach, hills, rocky points, sea floor). */
-	FOceanTerrainSample SampleShape(const FVector2f& PositionM) const;
+	/**
+	 * The island's shape before erosion, analytic (coastline, beach, hills, rocky points, sea floor). Without fine detail
+	 * (the limestone's ledges and pits, finer than the erosion grids) for the erosion's own input.
+	 */
+	FOceanTerrainSample SampleShape(const FVector2f& PositionM, bool bFineDetail = true) const;
+
+	/** Where the coast is rocky (0..Rockiness), from the seeded position. */
+	float RockMask(const FVector2f& Seeded) const;
 
 	/** Erodes the analytic shape over the island (OceanErosion) and keeps the change in Erosion. */
 	void BuildErosion();
