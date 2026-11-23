@@ -450,7 +450,7 @@ void AOceanBathymetry::BuildErosion()
 FString AOceanBathymetry::ErosionCachePath() const
 {
 	// Every setting the erosion depends on, and a version to bump whenever SampleShape or OceanErosion change.
-	const FString Key = FString::Printf(TEXT("v4|%.2f|%.2f|%.2f|%.2f|%.2f|%.3f|%d|%.3f|%.3f|%.3f|%.3f|%.3f|%.2f|%.2f|%.3f|%d|%.3f|%d|%d|%.1f|%.1f|%.3f|%.3f|%.2f|%.2f|%.2f"),
+	const FString Key = FString::Printf(TEXT("v6|%.2f|%.2f|%.2f|%.2f|%.2f|%.3f|%d|%.3f|%.3f|%.3f|%.3f|%.3f|%.2f|%.2f|%.3f|%d|%.3f|%d|%d|%.1f|%.1f|%.3f|%.3f|%.2f|%.2f|%.2f"),
 		IslandRadius, IslandAspect, IslandAngle, CoastlineVariation, CoastlineDetail, CoastlinePersistence, CoastlineOctaves,
 		SandyCoastDetail, MassifWidth, CliffHeight, BermHeight, LandSlope, HillHeight, Rockiness, ErosionStrength,
 		ErosionDroplets, UnderstoryRelief, LandscapeIterations, Seed, GetActorLocation().X, GetActorLocation().Y,
@@ -548,7 +548,9 @@ FOceanTerrainSample AOceanBathymetry::SampleShape(const FVector2f& PositionM, bo
 		const float Rise = FMath::Max(-SmoothAcross - BeachWidth, 0.f);
 		const float Massif = (1.f - FMath::Exp(-Rise / FMath::Max(MassifWidth, 10.f))) * FMath::SmoothStep(0.f, 40.f, Rise);
 		const float Summits = 0.45f + 0.75f * OceanGradientNoise(FVector2f(Local.X / 420.f, Local.Y / 900.f) + FVector2f(Seed * 0.31f, 1.7f));
-		const float MassifHeight = Massif * (HillHeight * Summits + 6.f * (OceanGradientNoise(Seeded / 110.f + 9.2f) - 0.5f));
+		// Lower behind the rocky points, so their cliffs stand as flat-topped headlands rather than the flanks of a hill.
+		const float Headland = 1.f - 0.7f * Rocky * (1.f - FMath::SmoothStep(60.f, 220.f, Inland));
+		const float MassifHeight = Massif * Headland * (HillHeight * Summits + 6.f * (OceanGradientNoise(Seeded / 110.f + 9.2f) - 0.5f));
 		// Once built, the relief grown from it by landscape evolution (BuildErosion) takes its place.
 		const float Hills = Relief.Contains(PositionM) ? Relief.Sample(PositionM) : MassifHeight;
 		Out.Hills = MassifHeight;
@@ -558,7 +560,11 @@ FOceanTerrainSample AOceanBathymetry::SampleShape(const FVector2f& PositionM, bo
 		// The headland is a plateau: the cliff rises almost sheer to its top, which stays flat (scrub, agaves) until the
 		// hills behind rise above it (a maximum, not a sum: added to the hills, the cliff made round domes).
 		const float LocalCliff = CliffHeight * (0.6f + 0.8f * OceanGradientNoise(Seeded / 140.f + 6.1f));
-		const float CliffMask = Rock * FMath::SmoothStep(0.3f, 1.f + 0.15f * LocalCliff, Inland);
+		// Measured from a smoother outline (the coast's first octaves only): following every metre-scale zigzag of the
+		// rocky shore, a sheer cliff this tall stood up as a field of needles.
+		const float CliffInland = -(SmoothAcross + CoastlineDetail * FMath::Lerp(SandyCoastDetail, 1.f, Rocky)
+			* OceanFractalNoise(Seeded, 120.f, FMath::Min(CoastlineOctaves, 3), CoastlinePersistence));
+		const float CliffMask = Rock * FMath::SmoothStep(0.3f, 1.f + 0.15f * LocalCliff, CliffInland); // in front: a low rock shelf
 		const float Cliff = LocalCliff * CliffMask;
 		float Ground = Beach + FMath::Max(Hills, Cliff);
 		if (bFineDetail)
@@ -576,8 +582,9 @@ FOceanTerrainSample AOceanBathymetry::SampleShape(const FVector2f& PositionM, bo
 			const float Pits = 1.f - FMath::Abs(2.f * OceanGradientNoise(Seeded / 1.6f + 3.3f) - 1.f);
 			// Collapsed blocks and buttresses along the cliff foot and on the faces, metres wide.
 			const float Blocks = 1.f - FMath::Abs(2.f * OceanGradientNoise(Seeded / 7.f + 12.9f) - 1.f);
-			Ground += Face * (Benched - Layer * Bed) + CliffMask * (1.4f * Ridges + 0.5f * Pits - 0.9f)
-				+ Face * 1.2f * (Blocks - 0.5f);
+			// (Stronger, the ridges and blocks stood up as spires on the faces: tsingy, not Antillean limestone.)
+			Ground += Face * (Benched - Layer * Bed) + CliffMask * (0.7f * Ridges + 0.4f * Pits - 0.5f)
+				+ Face * 0.6f * (Blocks - 0.5f);
 		}
 		// Understory: 1.5-3 m of lumpy bush mass behind the beach, under the trees of AOceanIslandFlora, which covers
 		// it with shrubs (only UnderstoryRelief of it is terrain).

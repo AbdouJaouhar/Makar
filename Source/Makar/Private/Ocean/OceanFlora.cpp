@@ -1073,7 +1073,7 @@ namespace OceanFlora
 		const int32 Leaves = Random.RandRange(24, 36);
 		const float Size = Random.FRandRange(60.f, 110.f);
 		const float Spiral = Random.FRandRange(0.f, 2.f * UE_PI);
-		const FLinearColor Blue(0.13f, 0.2f, 0.15f), Edge(0.1f, 0.13f, 0.08f), Dry(0.24f, 0.18f, 0.1f);
+		const FLinearColor Blue(0.2f, 0.3f, 0.22f), Edge(0.17f, 0.21f, 0.12f), Dry(0.3f, 0.23f, 0.13f);
 		for (int32 Leaf = 0; Leaf < Leaves; ++Leaf)
 		{
 			const float Age = (Leaf + Random.FRand()) / Leaves; // 0 = inner, young
@@ -1337,7 +1337,7 @@ namespace OceanFlora
 		{
 		case ERockKind::Limestone:   // a broken block of bedded limestone: angular, layered, pitted by dissolution
 			Square = Random.FRandRange(3.5f, 6.f);
-			Light = FLinearColor(0.62f, 0.58f, 0.5f); Dark = FLinearColor(0.3f, 0.29f, 0.26f);
+			Light = FLinearColor(0.46f, 0.43f, 0.37f); Dark = FLinearColor(0.22f, 0.21f, 0.19f);
 			break;
 		case ERockKind::Ironshore:   // low, wide, black-grey and razor-jagged (biokarst of the spray zone)
 			Axes = FVector3f(1.f, Random.FRandRange(0.6f, 1.f), Random.FRandRange(0.22f, 0.38f));
@@ -1486,14 +1486,29 @@ namespace OceanFlora
 		return Data;
 	}
 
-	UStaticMesh* BuildStaticMesh(UObject* Outer, const FOceanMeshData& Data, const TArray<UMaterialInterface*>& Materials)
+	void MergeSection(FOceanMeshData& Data, int32 From, int32 To)
 	{
-		return BuildStaticMeshLods(Outer, { &Data }, Materials, { 1.f });
+		if (Data.Sections.IsValidIndex(From) && Data.Sections.IsValidIndex(To) && From != To)
+		{
+			Data.Sections[To].Append(Data.Sections[From]);
+			Data.Sections[From].Reset();
+		}
+	}
+
+	UStaticMesh* BuildStaticMesh(UObject* Outer, const FOceanMeshData& Data, const TArray<UMaterialInterface*>& Materials, int32 ColorSection)
+	{
+		return BuildStaticMeshLods(Outer, { &Data }, Materials, { 1.f }, { ColorSection });
 	}
 
 	namespace
 	{
-		void FillDescription(FMeshDescription& Description, const FOceanMeshData& Data)
+		/**
+		 * ColorSection: the section whose vertex colours must show. Measured on these runtime-built meshes (UE 5.8):
+		 * only the second polygon group showed its vertex colours, the others drew white whatever their material
+		 * (a copy of the working foliage material included). So that section gets a duplicate of one of its own
+		 * triangles as a first group, and comes second. -1: none (textured cards were tuned on the white colours).
+		 */
+		void FillDescription(FMeshDescription& Description, const FOceanMeshData& Data, int32 ColorSection)
 		{
 			FStaticMeshAttributes Attributes(Description);
 			Attributes.Register();
@@ -1521,7 +1536,23 @@ namespace OceanFlora
 				Colors[Instance] = FVector4f(Vertex.Color.R, Vertex.Color.G, Vertex.Color.B, 1.f);
 				Instances.Add(Instance);
 			}
+			TArray<int32> Order;
+			if (Data.Sections.IsValidIndex(ColorSection) && Data.Sections[ColorSection].Num() >= 3)
+			{
+				const TArray<int32>& Indices = Data.Sections[ColorSection];
+				const FPolygonGroupID First = Description.CreatePolygonGroup();
+				SlotNames[First] = FName(*FString::Printf(TEXT("Slot%d"), ColorSection));
+				Description.CreateTriangle(First, { Instances[Indices[0]], Instances[Indices[1]], Instances[Indices[2]] });
+				Order.Add(ColorSection);
+			}
 			for (int32 Section = 0; Section < Data.Sections.Num(); ++Section)
+			{
+				if (Section != ColorSection || Order.Num() == 0)
+				{
+					Order.AddUnique(Section);
+				}
+			}
+			for (const int32 Section : Order)
 			{
 				const TArray<int32>& Indices = Data.Sections[Section];
 				if (Indices.Num() < 3)
@@ -1539,7 +1570,7 @@ namespace OceanFlora
 	}
 
 	UStaticMesh* BuildStaticMeshLods(UObject* Outer, const TArray<const FOceanMeshData*>& Lods, const TArray<UMaterialInterface*>& Materials,
-		const TArray<float>& ScreenSizes)
+		const TArray<float>& ScreenSizes, const TArray<int32>& ColorSections)
 	{
 		TArray<FMeshDescription> Descriptions;
 		Descriptions.SetNum(Lods.Num());
@@ -1547,7 +1578,7 @@ namespace OceanFlora
 		int32 Slots = 0;
 		for (int32 Lod = 0; Lod < Lods.Num(); ++Lod)
 		{
-			FillDescription(Descriptions[Lod], *Lods[Lod]);
+			FillDescription(Descriptions[Lod], *Lods[Lod], ColorSections.IsValidIndex(Lod) ? ColorSections[Lod] : -1);
 			Pointers.Add(&Descriptions[Lod]);
 			Slots = FMath::Max(Slots, Lods[Lod]->Sections.Num());
 		}

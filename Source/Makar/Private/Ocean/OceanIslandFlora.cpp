@@ -31,7 +31,7 @@ AOceanIslandFlora::AOceanIslandFlora()
 	PrimaryActorTick.bCanEverTick = false;
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 
-	BarkMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_Bark.M_Bark")));
+	BarkMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_StemF.M_StemF")));
 	FoliageMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_Foliage.M_Foliage")));
 	PalmFrondMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_PalmFrond.M_PalmFrond")));
 	PalmBarkMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/Flora/M_PalmBark.M_PalmBark")));
@@ -149,11 +149,14 @@ void AOceanIslandFlora::Build()
 	// Three levels: dense real leaves, then fewer and larger ones, then cards only where they are a few pixels wide.
 	auto TwoLevels = [&](TFunctionRef<FOceanMeshData(bool, float)> Make, UMaterialInterface* Cards, float NearScreenSize)
 	{
-		const FOceanMeshData Near = Make(true, 1.f);
-		const FOceanMeshData Middle = Make(true, 2.4f);
+		// Near and middle: the branches join the leaves' section (one material, M_Foliage), so their colours show.
+		FOceanMeshData Near = Make(true, 1.f);
+		FOceanMeshData Middle = Make(true, 2.4f);
+		OceanFlora::MergeSection(Near, 0, 2);
+		OceanFlora::MergeSection(Middle, 0, 2);
 		const FOceanMeshData Far = Make(false, 1.f);
 		UStaticMesh* Mesh = OceanFlora::BuildStaticMeshLods(this, { &Near, &Middle, &Far }, { Bark, Cards, Foliage },
-			{ 1.f, NearScreenSize, 0.3f * NearScreenSize });
+			{ 1.f, NearScreenSize, 0.3f * NearScreenSize }, { 2, 2, -1 });
 		Meshes.Add(Mesh);
 		return Mesh;
 	};
@@ -180,7 +183,9 @@ void AOceanIslandFlora::Build()
 		TArray<UHierarchicalInstancedStaticMeshComponent*> Set;
 		for (int32 Variant = 0; Variant < NumSmallPlantVariants; ++Variant)
 		{
-			UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, Make(Seed * SeedBase + Variant), { Bark, Foliage });
+			FOceanMeshData Data = Make(Seed * SeedBase + Variant);
+			OceanFlora::MergeSection(Data, 0, 1); // stems with the leaves: one section, its colours show
+			UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, Data, { Foliage, Foliage }, Data.Sections.Num() > 1 ? 1 : 0);
 			Meshes.Add(Mesh);
 			Set.Add(AddInstancer(Mesh, CullM));
 		}
@@ -202,7 +207,7 @@ void AOceanIslandFlora::Build()
 		UStaticMesh* Frond = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeFallenFrond(Seed * 500 + Variant), { PalmFrond });
 		Meshes.Add(Frond);
 		FallenFronds.Add(AddInstancer(Frond, 250.f));
-		UStaticMesh* Nut = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeCoconut(Seed * 600 + Variant), { Bark });
+		UStaticMesh* Nut = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeCoconut(Seed * 600 + Variant), { Bark }, 0);
 		Meshes.Add(Nut);
 		Coconuts.Add(AddInstancer(Nut, 150.f));
 		if (GrassTuft)
@@ -250,7 +255,7 @@ void AOceanIslandFlora::Build()
 	{
 		for (int32 Variant = 0; Variant < VariantsPerKind[Kind]; ++Variant)
 		{
-			UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeCaribbeanRock(ERockKind(Kind), Seed * 400 + Variant), { Stone });
+			UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeCaribbeanRock(ERockKind(Kind), Seed * 400 + Variant), { Stone }, 0);
 			Meshes.Add(Mesh);
 			RockVariants[Kind].Add(Rocks.Num());
 			Rocks.Add(AddInstancer(Mesh, RockCullM[Kind]));
@@ -338,8 +343,19 @@ void AOceanIslandFlora::Build()
 		{
 			return;
 		}
+		// Taller inland, out of the salt wind, with an emergent standing above the canopy here and there; and coconut
+		// palms scattered through the forest, their crowns among the broadleaves.
+		const float Shelter = Smooth(30.f, 220.f, Terrain.Inland);
+		const float Emergent = Random.FRand() < 0.08f ? 1.4f : 1.f;
+		if (Random.FRand() < 0.1f * PalmDensity && Terrain.Ground < 45.f)
+		{
+			PalmTransforms[Random.RandRange(0, NumPalmVariants - 1)].Add(FTransform(FRotator(0.f, Random.FRandRange(0.f, 360.f), 0.f),
+				Ground(Position, Terrain.Ground, 0.f), FVector(Random.FRandRange(1.f, 1.35f))));
+			return;
+		}
 		TreeTransforms[Random.RandRange(0, NumTreeVariants - 1)].Add(
-			FTransform(FRotator(0.f, Random.FRandRange(0.f, 360.f), 0.f), Ground(Position, Terrain.Ground, 30.f), FVector(Random.FRandRange(0.8f, 1.3f))));
+			FTransform(FRotator(0.f, Random.FRandRange(0.f, 360.f), 0.f), Ground(Position, Terrain.Ground, 30.f),
+				FVector(FMath::Lerp(0.85f, 1.6f, Shelter) * Emergent * Random.FRandRange(0.85f, 1.15f))));
 	});
 
 	// Sea grape along the upper beach and the forest edge.

@@ -74,9 +74,12 @@ namespace OceanFlora
 	MAKAR_API FOceanMeshData MakeCaribbeanRock(ERockKind Kind, int32 Seed);
 
 	/** Builds a transient static mesh (works in the editor and in a cooked game). One material per section. */
-	MAKAR_API UStaticMesh* BuildStaticMesh(UObject* Outer, const FOceanMeshData& Data, const TArray<UMaterialInterface*>& Materials);
+	MAKAR_API UStaticMesh* BuildStaticMesh(UObject* Outer, const FOceanMeshData& Data, const TArray<UMaterialInterface*>& Materials,
+		int32 ColorSection = -1);
 
 	/** The same with levels of detail (Lods[0] nearest); ScreenSizes[i]: screen share below which level i takes over. */
 	MAKAR_API UStaticMesh* BuildStaticMeshLods(UObject* Outer, const TArray<const FOceanMeshData*>& Lods,
-		const TArray<UMaterialInterface*>& Materials, const TArray<float>& ScreenSizes);
+		const TArray<UMaterialInterface*>& Materials, const TArray<float>& ScreenSizes, const TArray<int32>& ColorSections = {});
+	/** Moves section From's triangles into section To (one material, and their vertex colours show: see ColorSections). */
+	MAKAR_API void MergeSection(FOceanMeshData& Data, int32 From, int32 To);
 }

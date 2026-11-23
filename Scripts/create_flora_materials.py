@@ -56,6 +56,21 @@ def bark():
     save(material, "M_Bark")
 
 
+def foliage_variant(name, tint, roughness):
+    """A copy of M_Foliage with its transmitted tint and roughness changed (M_StemF: the generated stems, trunks and
+    coconuts, with next to no light through them)."""
+    path = f"{DIRECTORY}/{name}"
+    if unreal.EditorAssetLibrary.does_asset_exist(path):
+        unreal.EditorAssetLibrary.delete_asset(path)
+    material = unreal.EditorAssetLibrary.duplicate_asset(f"{DIRECTORY}/M_Foliage", path)
+    for expression in MEL.get_material_expressions(material):
+        if isinstance(expression, unreal.MaterialExpressionConstant3Vector):
+            expression.set_editor_property("constant", unreal.LinearColor(tint[0], tint[1], tint[2], 1.0))
+        elif isinstance(expression, unreal.MaterialExpressionConstant) and abs(expression.get_editor_property("r") - 0.65) < 1e-3:
+            expression.set_editor_property("r", roughness)
+    save(material, name)
+
+
 def foliage():
     """Leaves let light through: two-sided foliage shading, the transmitted light a warmer, yellower green."""
     material = fresh_material("M_Foliage")
@@ -96,15 +111,16 @@ def rock():
     custom.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
     custom.set_editor_property("code", (
         "const float3 P = WorldPos * 0.01;"
-        # Procedural, triplanar: mottling at two scales and dark pits (the sampled limestone tile read as black here).
+        # Procedural, triplanar: mottling at two scales and dark pits (the sampled limestone tile read as black here);
+        # gradient noise: value noise this fine drew a grid of cells.
         "float3 W = pow(abs(VertexNormal), 4.0); W /= W.x + W.y + W.z;"
         "const float3 Q = P * 2.5;"
-        "const float Mottle = W.x * OceanValueNoise(Q.yz) + W.y * OceanValueNoise(Q.xz + 7.0) + W.z * OceanValueNoise(Q.xy + 13.0);"
+        "const float Mottle = W.x * OceanGradientNoise(Q.yz) + W.y * OceanGradientNoise(Q.xz + 7.0) + W.z * OceanGradientNoise(Q.xy + 13.0);"
         "const float3 F = P * 11.0;"
-        "const float Grain = W.x * OceanValueNoise(F.yz) + W.y * OceanValueNoise(F.xz + 3.0) + W.z * OceanValueNoise(F.xy + 5.0);"
+        "const float Grain = W.x * OceanGradientNoise(F.yz) + W.y * OceanGradientNoise(F.xz + 3.0) + W.z * OceanGradientNoise(F.xy + 5.0);"
         "const float3 G = P * 26.0;"
-        "const float Pits = W.x * OceanValueNoise(G.yz) + W.y * OceanValueNoise(G.xz + 9.0) + W.z * OceanValueNoise(G.xy + 11.0);"
-        "float3 Base = Color.rgb * (0.75 + 0.45 * Mottle) * (0.85 + 0.3 * Grain) * (1.0 - 0.3 * smoothstep(0.68, 0.84, Pits));"
+        "const float Pits = W.x * OceanGradientNoise(G.yz) + W.y * OceanGradientNoise(G.xz + 9.0) + W.z * OceanGradientNoise(G.xy + 11.0);"
+        "float3 Base = Color.rgb * (0.7 + 0.4 * Mottle) * (0.85 + 0.3 * Grain) * (1.0 - 0.3 * smoothstep(0.68, 0.84, Pits));"
         "const float Spray = (1.0 - smoothstep(0.4, 1.4, P.z)) * smoothstep(-0.3, 0.1, P.z);"
         "Base *= lerp(1.0, 0.6, Spray);"
         "const float Under = 1.0 - smoothstep(-0.4, -0.05, P.z);"
@@ -378,6 +394,7 @@ def grass_tuft():
 
 bark()
 foliage()
+foliage_variant("M_StemF", (0.06, 0.06, 0.03), 0.85)
 rock()
 palm_frond()
 palm_bark()
