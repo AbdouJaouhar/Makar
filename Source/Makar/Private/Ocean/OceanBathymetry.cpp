@@ -5,6 +5,9 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/Crc.h"
+#include "Serialization/MemoryReader.h"
+#include "Serialization/MemoryWriter.h"
 #include "Materials/MaterialInterface.h"
 #include "Ocean/OceanMeshComponent.h"
 #include "Ocean/OceanSandFootprints.h"
@@ -298,6 +301,12 @@ void AOceanBathymetry::BuildErosion()
 	{
 		return;
 	}
+	const FString CachePath = ErosionCachePath();
+	if (LoadErosionCache(CachePath))
+	{
+		UE_LOG(LogTemp, Display, TEXT("OceanBathymetry: erosion loaded from %s"), *CachePath);
+		return;
+	}
 	const double StartTime = FPlatformTime::Seconds();
 	const FVector2f Center(float(GetActorLocation().X * 0.01), float(GetActorLocation().Y * 0.01));
 	const float Extent = IslandRadius + CoastlineVariation + CoastlineDetail + 60.f;
@@ -306,7 +315,7 @@ void AOceanBathymetry::BuildErosion()
 	// unevenly (its noise seeds the ridges and valleys); the beaches and the sea are the base level.
 	{
 		FOceanHeightfield Grown;
-		Grown.CellM = 2.f;
+		Grown.CellM = 3.f;
 		Grown.Width = Grown.Height = FMath::CeilToInt(2.f * Extent / Grown.CellM) + 1;
 		Grown.OriginM = Center - FVector2f(Extent);
 		const int32 GrownCount = Grown.Width * Grown.Height;
@@ -435,6 +444,56 @@ void AOceanBathymetry::BuildErosion()
 	WriteRelief(TEXT("ruissellement.bmp"), [&](int32 Index) { return Original[Index] + Field.Heights[Index]; }, true);
 #endif
 	Erosion = MoveTemp(Field);
+	SaveErosionCache(CachePath);
+}
+
+FString AOceanBathymetry::ErosionCachePath() const
+{
+	// Every setting the erosion depends on, and a version to bump whenever SampleShape or OceanErosion change.
+	const FString Key = FString::Printf(TEXT("v3|%.2f|%.2f|%.2f|%.2f|%.2f|%.3f|%d|%.3f|%.3f|%.3f|%.3f|%.3f|%.2f|%.2f|%.3f|%d|%.3f|%d|%d|%.1f|%.1f|%.3f|%.3f|%.2f|%.2f|%.2f"),
+		IslandRadius, IslandAspect, IslandAngle, CoastlineVariation, CoastlineDetail, CoastlinePersistence, CoastlineOctaves,
+		SandyCoastDetail, MassifWidth, CliffHeight, BermHeight, LandSlope, HillHeight, Rockiness, ErosionStrength,
+		ErosionDroplets, UnderstoryRelief, LandscapeIterations, Seed, GetActorLocation().X, GetActorLocation().Y,
+		BeachSlope, ShelfDepth, ShelfWidth, DropOffDepth, DropOffWidth);
+	return FPaths::ProjectSavedDir() / TEXT("OceanCache") / FString::Printf(TEXT("erosion_%08x.bin"), FCrc::StrCrc32(*Key));
+}
+
+namespace
+{
+	void SerializeField(FArchive& Archive, FOceanHeightfield& Field)
+	{
+		Archive << Field.OriginM << Field.CellM << Field.Width << Field.Height << Field.Heights << Field.Flow;
+	}
+}
+
+bool AOceanBathymetry::LoadErosionCache(const FString& Path)
+{
+	TArray<uint8> Bytes;
+	if (!FFileHelper::LoadFileToArray(Bytes, *Path, FILEREAD_Silent))
+	{
+		return false;
+	}
+	FMemoryReader Reader(Bytes);
+	FOceanHeightfield LoadedRelief, LoadedErosion;
+	SerializeField(Reader, LoadedRelief);
+	SerializeField(Reader, LoadedErosion);
+	if (Reader.IsError() || LoadedRelief.Heights.Num() != LoadedRelief.Width * LoadedRelief.Height)
+	{
+		return false;
+	}
+	Relief = MoveTemp(LoadedRelief);
+	Erosion = MoveTemp(LoadedErosion);
+	return true;
+}
+
+void AOceanBathymetry::SaveErosionCache(const FString& Path) const
+{
+	TArray<uint8> Bytes;
+	FMemoryWriter Writer(Bytes);
+	FOceanHeightfield R = Relief, E = Erosion;
+	SerializeField(Writer, R);
+	SerializeField(Writer, E);
+	FFileHelper::SaveArrayToFile(Bytes, *Path);
 }
 
 FOceanTerrainSample AOceanBathymetry::SampleShape(const FVector2f& PositionM, bool bFineDetail) const
@@ -442,7 +501,19 @@ FOceanTerrainSample AOceanBathymetry::SampleShape(const FVector2f& PositionM, bo
 	FOceanTerrainSample Out;
 	const FVector2f Center(float(GetActorLocation().X * 0.01), float(GetActorLocation().Y * 0.01));
 	const FVector2f Delta = PositionM - Center;
-	const float Angle = FMath::Atan2(Delta.Y, Delta.X);
+
+	// An elongated island: an ellipse (IslandRadius along IslandAngle, IslandRadius / IslandAspect across), whose
+	// radius the harmonics bend into bays and headlands. Its radial coordinate is divided by its gradient so that it
+	// reads as a distance to the coast in metres on every side.
+	const float AxisAngle = FMath::DegreesToRadians(IslandAngle);
+	const float CosAxis = FMath::Cos(AxisAngle);
+	const float SinAxis = FMath::Sin(AxisAngle);
+	const FVector2f Local(Delta.X * CosAxis + Delta.Y * SinAxis, -Delta.X * SinAxis + Delta.Y * CosAxis);
+	const float Aspect = FMath::Max(IslandAspect, 1.f);
+	const FVector2f Scaled(Local.X, Local.Y * Aspect);
+	const float Radial = Scaled.Size();
+	const float Stretch = Radial > 1.f ? FVector2f(Scaled.X, Scaled.Y * Aspect).Size() / Radial : 1.f;
+	const float Angle = FMath::Atan2(Scaled.Y, Scaled.X);
 
 	FRandomStream Random(Seed);
 	float Coast = 0.f;
@@ -452,11 +523,14 @@ FOceanTerrainSample AOceanBathymetry::SampleShape(const FVector2f& PositionM, bo
 	}
 
 	// Signed distance-like coordinate across the coast: negative inland, positive at sea.
-	// Fractal gradient noise adds coves and points at every scale to the large bays of the harmonics
-	// (its dimension is measured on build, see CoastlineFractalDimension).
+	// Fractal gradient noise adds coves and points at every scale to the large bays of the harmonics (its dimension is
+	// measured on build, see CoastlineFractalDimension), but mostly on the rocky shores: beaches are smooth arcs.
 	const FVector2f Seeded = PositionM + FVector2f(Seed * 37.1f, Seed * 11.3f);
-	const float Across = Delta.Size() - (IslandRadius + CoastlineVariation * Coast)
-		+ CoastlineDetail * OceanFractalNoise(Seeded, 120.f, CoastlineOctaves, CoastlinePersistence);
+	const float Rock = RockMask(Seeded);
+	const float Rocky = Rockiness > 0.f ? FMath::Clamp(Rock / Rockiness, 0.f, 1.f) : 0.f;
+	const float SmoothAcross = (Radial - (IslandRadius + CoastlineVariation * Coast)) / Stretch;
+	const float Across = SmoothAcross
+		+ CoastlineDetail * FMath::Lerp(SandyCoastDetail, 1.f, Rocky) * OceanFractalNoise(Seeded, 120.f, CoastlineOctaves, CoastlinePersistence);
 	Out.Inland = -Across;
 	if (Across < 0.f)
 	{
@@ -465,32 +539,33 @@ FOceanTerrainSample AOceanBathymetry::SampleShape(const FVector2f& PositionM, bo
 		const float Berm = FMath::Max(BermHeight, 0.1f);
 		const float Beach = Berm * (1.f - FMath::Exp(-Inland * LandSlope / Berm));
 		// Wooded hills behind beaches of varying width: one massif rising from the back of the beaches to the island's
-		// centre, steeper low down and rounded at the top, uneven only at the scale of a few hundred metres. The
-		// erosion (BuildErosion) carves it into ridges and valleys; mid-scale noise here would only leave pits and
-		// bumps that no water could have shaped.
+		// spine, steeper low down and rounded at the top, uneven only at the scale of a few hundred metres (summits and
+		// saddles along the long axis). The erosion (BuildErosion) carves it into ridges and valleys; mid-scale noise
+		// here would only leave pits and bumps that no water could have shaped.
 		// The massif is laid out from the smooth coastline (harmonics only): the fractal detail of the coast would
 		// otherwise roughen the whole land with bumps a few metres wide.
-		const float BeachWidth = 15.f + 35.f * OceanGradientNoise(Seeded / 90.f + 5.3f);
-		const float SmoothInland = IslandRadius + CoastlineVariation * Coast - Delta.Size();
-		const float Rise = FMath::Max(SmoothInland - BeachWidth, 0.f);
-		const float Massif = (1.f - FMath::Exp(-Rise / 90.f)) * FMath::SmoothStep(0.f, 25.f, Rise);
-		const float MassifHeight = Massif * (HillHeight * (0.6f + 0.55f * OceanGradientNoise(Seeded / 160.f + 1.7f))
-			+ 2.5f * (OceanGradientNoise(Seeded / 45.f + 9.2f) - 0.5f));
+		const float BeachWidth = 20.f + 45.f * OceanGradientNoise(Seeded / 150.f + 5.3f);
+		const float Rise = FMath::Max(-SmoothAcross - BeachWidth, 0.f);
+		const float Massif = (1.f - FMath::Exp(-Rise / FMath::Max(MassifWidth, 10.f))) * FMath::SmoothStep(0.f, 40.f, Rise);
+		const float Summits = 0.45f + 0.75f * OceanGradientNoise(FVector2f(Local.X / 420.f, Local.Y / 900.f) + FVector2f(Seed * 0.31f, 1.7f));
+		const float MassifHeight = Massif * (HillHeight * Summits + 6.f * (OceanGradientNoise(Seeded / 110.f + 9.2f) - 0.5f));
 		// Once built, the relief grown from it by landscape evolution (BuildErosion) takes its place.
 		const float Hills = Relief.Contains(PositionM) ? Relief.Sample(PositionM) : MassifHeight;
 		Out.Hills = MassifHeight;
-		// Rocky points: the ground rises steeply right from the water (~65-70 degrees, shaded as rock by slope) to a
-		// low headland that joins the massif: the cliff fades out where the hills are already higher. Added over the
-		// whole land, the rock mask raised 4 m terraces along its contours far inland.
-		const float Rock = RockMask(Seeded);
-		const float CliffMask = Rock * FMath::SmoothStep(0.5f, 4.5f, Inland) * (1.f - FMath::SmoothStep(2.f, 8.f, Hills));
-		const float Cliff = 8.f * CliffMask;
+		// Rocky points: the ground rises steeply right from the water (~70 degrees, shaded as rock by slope) to a
+		// headland that joins the massif: the cliff fades out where the hills are already higher. Added over the
+		// whole land, the rock mask raised terraces along its contours far inland.
+		const float LocalCliff = CliffHeight * (0.6f + 0.8f * OceanGradientNoise(Seeded / 140.f + 6.1f));
+		const float CliffMask = Rock * FMath::SmoothStep(0.5f, 2.f + 0.3f * LocalCliff, Inland)
+			* (1.f - FMath::SmoothStep(0.25f * LocalCliff, LocalCliff, Hills));
+		const float Cliff = LocalCliff * CliffMask;
 		float Ground = Beach + Hills + Cliff;
 		if (bFineDetail)
 		{
 			// Bedding: the limestone lies in near-horizontal layers ~0.9 m thick, which the sea and the rain etch into
 			// ledges on the cliff faces: flat benches, steep risers; the beds dip and wander a little.
-			const float Face = Rock * FMath::SmoothStep(0.3f, 1.5f, Inland) * (1.f - FMath::SmoothStep(4.5f, 7.f, Inland));
+			const float FaceTop = 3.f + 0.35f * LocalCliff;
+			const float Face = Rock * FMath::SmoothStep(0.3f, 1.5f, Inland) * (1.f - FMath::SmoothStep(FaceTop, FaceTop + 3.f, Inland));
 			const float Bed = 0.9f;
 			const float Layer = (Beach + Cliff) / Bed + 0.3f * (OceanGradientNoise(Seeded / 9.f + 4.4f) - 0.5f);
 			const float Benched = (FMath::FloorToFloat(Layer) + FMath::SmoothStep(0.6f, 1.f, FMath::Frac(Layer))) * Bed;
@@ -498,7 +573,10 @@ FOceanTerrainSample AOceanBathymetry::SampleShape(const FVector2f& PositionM, bo
 			// across on the rocky points (ridged noise: creases where the noise crosses its middle), not smooth lumps.
 			const float Ridges = 1.f - FMath::Abs(2.f * OceanGradientNoise(Seeded / 4.f + 7.7f) - 1.f);
 			const float Pits = 1.f - FMath::Abs(2.f * OceanGradientNoise(Seeded / 1.6f + 3.3f) - 1.f);
-			Ground += Face * (Benched - Layer * Bed) + CliffMask * (1.4f * Ridges + 0.5f * Pits - 0.9f);
+			// Collapsed blocks and buttresses along the cliff foot and on the faces, metres wide.
+			const float Blocks = 1.f - FMath::Abs(2.f * OceanGradientNoise(Seeded / 7.f + 12.9f) - 1.f);
+			Ground += Face * (Benched - Layer * Bed) + CliffMask * (1.4f * Ridges + 0.5f * Pits - 0.9f)
+				+ Face * 1.2f * (Blocks - 0.5f);
 		}
 		// Understory: 1.5-3 m of lumpy bush mass behind the beach, under the trees of AOceanIslandFlora, which covers
 		// it with shrubs (only UnderstoryRelief of it is terrain).
@@ -518,7 +596,7 @@ FOceanTerrainSample AOceanBathymetry::SampleShape(const FVector2f& PositionM, bo
 		+ DropOffDepth * FMath::SmoothStep(ShelfWidth, ShelfWidth + DropOffWidth, Across);
 	Out.Ground = -Depth;
 	// Rocky points continue a little under water: boulders on the rocky shores.
-	Out.Rock = RockMask(Seeded) * (1.f - FMath::SmoothStep(5.f, 25.f, Across));
+	Out.Rock = Rock * (1.f - FMath::SmoothStep(5.f, 25.f, Across));
 	return Out;
 }
 
@@ -526,15 +604,15 @@ float AOceanBathymetry::RockMask(const FVector2f& Seeded) const
 {
 	// Where the coast is rocky: a slow noise, its domain warped so the rocky stretches have ragged outlines rather than
 	// the round blobs of a plain noise threshold.
-	const FVector2f Warp = 14.f * FVector2f(OceanGradientNoise(Seeded / 33.f + 2.1f) - 0.5f, OceanGradientNoise(Seeded / 33.f + 8.4f) - 0.5f);
-	return Rockiness * FMath::SmoothStep(0.45f, 0.7f, OceanGradientNoise((Seeded + Warp) / 70.f + 3.1f));
+	const FVector2f Warp = 30.f * FVector2f(OceanGradientNoise(Seeded / 70.f + 2.1f) - 0.5f, OceanGradientNoise(Seeded / 70.f + 8.4f) - 0.5f);
+	return Rockiness * FMath::SmoothStep(0.45f, 0.68f, OceanGradientNoise((Seeded + Warp) / 160.f + 3.1f));
 }
 
 void AOceanBathymetry::Build()
 {
 	// First the eroded relief: everything below (shore data, terrain mesh, flora) samples it through SampleTerrain.
 	BuildErosion();
-	const int32 N = FMath::RoundUpToPowerOfTwo(FMath::Clamp(GridResolution, 64, 1024));
+	const int32 N = FMath::RoundUpToPowerOfTwo(FMath::Clamp(GridResolution, 64, 2048));
 	const float Texel = GridSize / N;
 	const FVector2f Center(float(GetActorLocation().X * 0.01), float(GetActorLocation().Y * 0.01));
 
@@ -605,167 +683,9 @@ void AOceanBathymetry::Build()
 		Data->Texels[Index] = FVector4f(-Heights[Index], Distance[Index], TravelTime[Index], 0.f);
 	}
 
-	// Terrain mesh, one vertex per texel, local to the actor (sea level is world Z = 0).
-	TArray<FVector> Vertices;
-	TArray<FVector> Normals;
-	TArray<FProcMeshTangent> Tangents;
-	TArray<int32> Triangles;
-	Vertices.SetNumUninitialized(N * N);
-	Normals.SetNumUninitialized(N * N);
-	Tangents.Init(FProcMeshTangent(1.f, 0.f, 0.f), N * N);
-	const double ActorZ = GetActorLocation().Z;
-	ParallelFor(N, [&](int32 Y)
-	{
-		for (int32 X = 0; X < N; ++X)
-		{
-			const int32 Index = Y * N + X;
-			const FVector2f Position = TexelCenter(X, Y) - Center;
-			Vertices[Index] = FVector(Position.X * 100.0, Position.Y * 100.0, Heights[Index] * 100.0 - ActorZ);
-			const float DHX = Heights[Y * N + FMath::Min(X + 1, N - 1)] - Heights[Y * N + FMath::Max(X - 1, 0)];
-			const float DHY = Heights[FMath::Min(Y + 1, N - 1) * N + X] - Heights[FMath::Max(Y - 1, 0) * N + X];
-			Normals[Index] = FVector(-DHX, -DHY, 2.f * Texel).GetSafeNormal();
-		}
-	});
-	// Along the coast the 2.5 m triangles show: the swash sheet and the waterline cut them along long straight
-	// edges; on land they would smooth away the gullies of the erosion. Chunks of the grid that hold the coast or
-	// land (ground above -CoastBand) are rebuilt Subdivision times finer (section 1); the sea floor keeps one vertex
-	// per texel (section 0).
-	constexpr int32 ChunkCells = 16;
-	constexpr int32 Subdivision = 5;
-	constexpr float CoastBand = 3.f;
-	const int32 Chunks = FMath::DivideAndRoundUp(N - 1, ChunkCells);
-	TArray<bool> FineChunk;
-	FineChunk.SetNumZeroed(Chunks * Chunks);
-	for (int32 CY = 0; CY < Chunks; ++CY)
-	{
-		for (int32 CX = 0; CX < Chunks; ++CX)
-		{
-			bool bCoast = false;
-			for (int32 Y = CY * ChunkCells; Y <= FMath::Min((CY + 1) * ChunkCells, N - 1) && !bCoast; ++Y)
-			{
-				for (int32 X = CX * ChunkCells; X <= FMath::Min((CX + 1) * ChunkCells, N - 1); ++X)
-				{
-					if (Heights[Y * N + X] > -CoastBand)
-					{
-						bCoast = true;
-						break;
-					}
-				}
-			}
-			FineChunk[CY * Chunks + CX] = bCoast;
-		}
-	}
-	auto IsFine = [&](int32 CX, int32 CY)
-	{
-		return CX >= 0 && CY >= 0 && CX < Chunks && CY < Chunks && FineChunk[CY * Chunks + CX];
-	};
-
-	Triangles.Reserve((N - 1) * (N - 1) * 6);
-	for (int32 Y = 0; Y + 1 < N; ++Y)
-	{
-		for (int32 X = 0; X + 1 < N; ++X)
-		{
-			if (IsFine(X / ChunkCells, Y / ChunkCells))
-			{
-				continue;
-			}
-			const int32 V00 = Y * N + X;
-			const int32 V10 = V00 + 1;
-			const int32 V01 = V00 + N;
-			const int32 V11 = V01 + 1;
-			Triangles.Append({ V00, V01, V10, V10, V01, V11 });
-		}
-	}
-	Terrain->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, TArray<FVector2D>(), TArray<FLinearColor>(), Tangents, false);
-
-	// Fine coast chunks. Edges shared with a coarse chunk follow the coarse edge (linear between its vertices), so
-	// the two meshes meet without cracks; edges between fine chunks sample the same heights on both sides.
-	TArray<FVector> FineVertices;
-	TArray<FVector> FineNormals;
-	TArray<int32> FineTriangles;
-	const float FineStep = Texel / Subdivision;
-	for (int32 CY = 0; CY < Chunks; ++CY)
-	{
-		for (int32 CX = 0; CX < Chunks; ++CX)
-		{
-			if (!IsFine(CX, CY))
-			{
-				continue;
-			}
-			const int32 X0 = CX * ChunkCells;
-			const int32 Y0 = CY * ChunkCells;
-			const int32 X1 = FMath::Min(X0 + ChunkCells, N - 1);
-			const int32 Y1 = FMath::Min(Y0 + ChunkCells, N - 1);
-			const int32 W = (X1 - X0) * Subdivision + 1;
-			const int32 H = (Y1 - Y0) * Subdivision + 1;
-			const FVector2f Origin = TexelCenter(X0, Y0);
-
-			// Heights with a one-sample ring around the chunk, for the normals.
-			const int32 RW = W + 2;
-			TArray<float> Local;
-			Local.SetNumUninitialized(RW * (H + 2));
-			ParallelFor(H + 2, [&](int32 J)
-			{
-				for (int32 I = 0; I < RW; ++I)
-				{
-					Local[J * RW + I] = GetTerrainHeight(Origin + FVector2f((I - 1) * FineStep, (J - 1) * FineStep));
-				}
-			});
-			const auto CoarseLerp = [&](int32 XA, int32 YA, int32 XB, int32 YB, int32 Step)
-			{
-				const int32 Cell = Step / Subdivision;
-				const float T = float(Step % Subdivision) / Subdivision;
-				const float A = Heights[(YA + (YB - YA) * Cell) * N + XA + (XB - XA) * Cell];
-				const float B = T > 0.f ? Heights[(YA + (YB - YA) * (Cell + 1)) * N + XA + (XB - XA) * (Cell + 1)] : A;
-				return FMath::Lerp(A, B, T);
-			};
-			for (int32 J = 0; J < H; ++J)
-			{
-				if (!IsFine(CX - 1, CY)) { Local[(J + 1) * RW + 1] = CoarseLerp(X0, Y0, X0, Y0 + 1, J); }
-				if (!IsFine(CX + 1, CY)) { Local[(J + 1) * RW + W] = CoarseLerp(X1, Y0, X1, Y0 + 1, J); }
-			}
-			for (int32 I = 0; I < W; ++I)
-			{
-				if (!IsFine(CX, CY - 1)) { Local[RW + I + 1] = CoarseLerp(X0, Y0, X0 + 1, Y0, I); }
-				if (!IsFine(CX, CY + 1)) { Local[H * RW + I + 1] = CoarseLerp(X0, Y1, X0 + 1, Y1, I); }
-			}
-
-			const int32 Base = FineVertices.Num();
-			for (int32 J = 0; J < H; ++J)
-			{
-				for (int32 I = 0; I < W; ++I)
-				{
-					const int32 L = (J + 1) * RW + I + 1;
-					const FVector2f Position = Origin + FVector2f(I * FineStep, J * FineStep) - Center;
-					FineVertices.Add(FVector(Position.X * 100.0, Position.Y * 100.0, Local[L] * 100.0 - ActorZ));
-					FineNormals.Add(FVector(-(Local[L + 1] - Local[L - 1]), -(Local[L + RW] - Local[L - RW]), 2.f * FineStep).GetSafeNormal());
-				}
-			}
-			for (int32 J = 0; J + 1 < H; ++J)
-			{
-				for (int32 I = 0; I + 1 < W; ++I)
-				{
-					const int32 V00 = Base + J * W + I;
-					const int32 V10 = V00 + 1;
-					const int32 V01 = V00 + W;
-					const int32 V11 = V01 + 1;
-					FineTriangles.Append({ V00, V01, V10, V10, V01, V11 });
-				}
-			}
-		}
-	}
-	if (FineVertices.Num() > 0)
-	{
-		TArray<FProcMeshTangent> FineTangents;
-		FineTangents.Init(FProcMeshTangent(1.f, 0.f, 0.f), FineVertices.Num());
-		Terrain->CreateMeshSection_LinearColor(1, FineVertices, FineTriangles, FineNormals, TArray<FVector2D>(), TArray<FLinearColor>(), FineTangents, false);
-	}
-	else
-	{
-		Terrain->ClearMeshSection(1);
-	}
-	UE_LOG(LogTemp, Display, TEXT("OceanBathymetry: coast mesh %d vertices at %.2f m (%d chunks)"),
-		FineVertices.Num(), FineStep, FineChunk.FilterByPredicate([](bool bFine) { return bFine; }).Num());
+	// Terrain meshes (local to the actor; sea level is world Z = 0): the sea floor on a coarse grid, the land and the
+	// coast in finer chunks grouped into tiles (BuildLandTiles).
+	BuildLandTiles(Heights, N, Texel, 2);
 	BuildShoreTexture(*Data);
 	ShoreData = Data;
 	BuildFootprintTexture();
@@ -791,9 +711,222 @@ void AOceanBathymetry::Build()
 		{
 			Terrain->SetMaterial(Section, TerrainMaterialInstance);
 		}
+		for (UOceanMeshComponent* Tile : LandTiles)
+		{
+			Tile->SetMaterial(0, TerrainMaterialInstance);
+		}
 	}
 	BuildSprayCurtain(*Data);
 	bBuilt = true;
+}
+
+void AOceanBathymetry::BuildLandTiles(const TArray<float>& Heights, int32 N, float Texel, int32 Stride)
+{
+	const double StartTime = FPlatformTime::Seconds();
+	const FVector2f Center(float(GetActorLocation().X * 0.01), float(GetActorLocation().Y * 0.01));
+	const FVector2f GridOrigin = Center - FVector2f(GridSize * 0.5f);
+	const double ActorZ = GetActorLocation().Z;
+	auto TexelCenter = [&](int32 X, int32 Y) { return GridOrigin + FVector2f((X + 0.5f) * Texel, (Y + 0.5f) * Texel); };
+
+	// Coarse grid: one vertex every Stride texels (the deep sea floor needs no more).
+	const int32 M = (N - 1) / Stride + 1;
+	const float Step = Texel * Stride;
+	auto CoarseIndex = [&](int32 I, int32 J) { return (J * Stride) * N + I * Stride; };
+
+	// Chunks of 16 coarse cells, each at its own resolution: 0.5 m where the coast runs (the swash sheet and the
+	// waterline cut coarse triangles along long straight edges; the cliffs need their ledges), 1 m over the land (the
+	// erosion's gullies), coarse under the sea.
+	constexpr int32 ChunkCells = 16;
+	constexpr float CoastBand = 3.f;
+	constexpr float CoastTop = 10.f;
+	const int32 CoastSubdivision = FMath::Max(1, FMath::RoundToInt(Step / 0.5f));
+	const int32 LandSubdivision = FMath::Max(1, FMath::RoundToInt(Step / 1.f));
+	const int32 Chunks = FMath::DivideAndRoundUp(M - 1, ChunkCells);
+	TArray<int32> Level;
+	Level.Init(1, Chunks * Chunks);
+	ParallelFor(Chunks, [&](int32 CY)
+	{
+		for (int32 CX = 0; CX < Chunks; ++CX)
+		{
+			float Low = MAX_flt, High = -MAX_flt;
+			const int32 X0 = CX * ChunkCells * Stride, X1 = FMath::Min((CX + 1) * ChunkCells, M - 1) * Stride;
+			const int32 Y0 = CY * ChunkCells * Stride, Y1 = FMath::Min((CY + 1) * ChunkCells, M - 1) * Stride;
+			for (int32 Y = Y0; Y <= Y1; ++Y)
+			{
+				for (int32 X = X0; X <= X1; ++X)
+				{
+					Low = FMath::Min(Low, Heights[Y * N + X]);
+					High = FMath::Max(High, Heights[Y * N + X]);
+				}
+			}
+			Level[CY * Chunks + CX] = High > -CoastBand ? (Low < CoastTop ? CoastSubdivision : LandSubdivision) : 1;
+		}
+	});
+	auto LevelAt = [&](int32 CX, int32 CY) { return (CX >= 0 && CY >= 0 && CX < Chunks && CY < Chunks) ? Level[CY * Chunks + CX] : 1; };
+
+	// The coarse sea floor.
+	{
+		TArray<FVector> Vertices;
+		TArray<FVector> Normals;
+		TArray<FProcMeshTangent> Tangents;
+		TArray<int32> Triangles;
+		Vertices.SetNumUninitialized(M * M);
+		Normals.SetNumUninitialized(M * M);
+		Tangents.Init(FProcMeshTangent(1.f, 0.f, 0.f), M * M);
+		ParallelFor(M, [&](int32 J)
+		{
+			for (int32 I = 0; I < M; ++I)
+			{
+				const FVector2f Position = TexelCenter(I * Stride, J * Stride) - Center;
+				Vertices[J * M + I] = FVector(Position.X * 100.0, Position.Y * 100.0, Heights[CoarseIndex(I, J)] * 100.0 - ActorZ);
+				const float DHX = Heights[CoarseIndex(FMath::Min(I + 1, M - 1), J)] - Heights[CoarseIndex(FMath::Max(I - 1, 0), J)];
+				const float DHY = Heights[CoarseIndex(I, FMath::Min(J + 1, M - 1))] - Heights[CoarseIndex(I, FMath::Max(J - 1, 0))];
+				Normals[J * M + I] = FVector(-DHX, -DHY, 2.f * Step).GetSafeNormal();
+			}
+		});
+		Triangles.Reserve((M - 1) * (M - 1) * 6);
+		for (int32 J = 0; J + 1 < M; ++J)
+		{
+			for (int32 I = 0; I + 1 < M; ++I)
+			{
+				if (LevelAt(I / ChunkCells, J / ChunkCells) > 1)
+				{
+					continue;
+				}
+				const int32 V00 = J * M + I;
+				Triangles.Append({ V00, V00 + M, V00 + 1, V00 + 1, V00 + M, V00 + M + 1 });
+			}
+		}
+		Terrain->ClearAllMeshSections();
+		Terrain->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, TArray<FVector2D>(), TArray<FLinearColor>(), Tangents, false);
+	}
+
+	// The tiles (4 x 4 chunks, 256 m at the default grid): rebuilt from scratch.
+	for (UOceanMeshComponent* Tile : LandTiles)
+	{
+		if (Tile)
+		{
+			Tile->DestroyComponent();
+		}
+	}
+	LandTiles.Reset();
+	{
+		TInlineComponentArray<UOceanMeshComponent*> Leftovers(this);
+		for (UOceanMeshComponent* Component : Leftovers)
+		{
+			if (Component && Component->ComponentHasTag(TEXT("LandTile")))
+			{
+				Component->DestroyComponent();
+			}
+		}
+	}
+	constexpr int32 TileChunks = 4;
+	const int32 Tiles = FMath::DivideAndRoundUp(Chunks, TileChunks);
+	struct FTileMesh
+	{
+		TArray<FVector> Vertices;
+		TArray<FVector> Normals;
+		TArray<int32> Triangles;
+	};
+	TArray<FTileMesh> TileMeshes;
+	TileMeshes.SetNum(Tiles * Tiles);
+	int64 FineVertexCount = 0;
+	int32 CoastChunks = 0, LandChunks = 0;
+	for (int32 CY = 0; CY < Chunks; ++CY)
+	{
+		for (int32 CX = 0; CX < Chunks; ++CX)
+		{
+			const int32 S = LevelAt(CX, CY);
+			if (S <= 1)
+			{
+				continue;
+			}
+			(S == CoastSubdivision ? CoastChunks : LandChunks) += 1;
+			const int32 X0 = CX * ChunkCells;
+			const int32 Y0 = CY * ChunkCells;
+			const int32 X1 = FMath::Min(X0 + ChunkCells, M - 1);
+			const int32 Y1 = FMath::Min(Y0 + ChunkCells, M - 1);
+			const int32 W = (X1 - X0) * S + 1;
+			const int32 H = (Y1 - Y0) * S + 1;
+			const float FineStep = Step / S;
+			const FVector2f Origin = TexelCenter(X0 * Stride, Y0 * Stride);
+
+			// Heights with a one-sample ring around the chunk, for the normals.
+			const int32 RW = W + 2;
+			TArray<float> Local;
+			Local.SetNumUninitialized(RW * (H + 2));
+			ParallelFor(H + 2, [&](int32 J)
+			{
+				for (int32 I = 0; I < RW; ++I)
+				{
+					Local[J * RW + I] = GetTerrainHeight(Origin + FVector2f((I - 1) * FineStep, (J - 1) * FineStep));
+				}
+			});
+			// Edges shared with a coarser chunk follow its edge (linear between its vertices, which this chunk's grid
+			// also holds), so the meshes meet without cracks.
+			auto Stitch = [&](int32 NeighbourLevel, int32 Count, TFunctionRef<float&(int32)> At)
+			{
+				if (NeighbourLevel >= S)
+				{
+					return;
+				}
+				const int32 K = S / FMath::Max(NeighbourLevel, 1);
+				for (int32 I = 0; I < Count; ++I)
+				{
+					const int32 I0 = (I / K) * K;
+					if (I != I0 && I0 + K < Count)
+					{
+						At(I) = FMath::Lerp(At(I0), At(I0 + K), float(I - I0) / K);
+					}
+				}
+			};
+			Stitch(LevelAt(CX - 1, CY), H, [&](int32 J) -> float& { return Local[(J + 1) * RW + 1]; });
+			Stitch(LevelAt(CX + 1, CY), H, [&](int32 J) -> float& { return Local[(J + 1) * RW + W]; });
+			Stitch(LevelAt(CX, CY - 1), W, [&](int32 I) -> float& { return Local[RW + I + 1]; });
+			Stitch(LevelAt(CX, CY + 1), W, [&](int32 I) -> float& { return Local[H * RW + I + 1]; });
+
+			FTileMesh& Mesh = TileMeshes[(CY / TileChunks) * Tiles + CX / TileChunks];
+			const int32 Base = Mesh.Vertices.Num();
+			for (int32 J = 0; J < H; ++J)
+			{
+				for (int32 I = 0; I < W; ++I)
+				{
+					const int32 L = (J + 1) * RW + I + 1;
+					const FVector2f Position = Origin + FVector2f(I * FineStep, J * FineStep) - Center;
+					Mesh.Vertices.Add(FVector(Position.X * 100.0, Position.Y * 100.0, Local[L] * 100.0 - ActorZ));
+					Mesh.Normals.Add(FVector(-(Local[L + 1] - Local[L - 1]), -(Local[L + RW] - Local[L - RW]), 2.f * FineStep).GetSafeNormal());
+				}
+			}
+			for (int32 J = 0; J + 1 < H; ++J)
+			{
+				for (int32 I = 0; I + 1 < W; ++I)
+				{
+					const int32 V00 = Base + J * W + I;
+					Mesh.Triangles.Append({ V00, V00 + W, V00 + 1, V00 + 1, V00 + W, V00 + W + 1 });
+				}
+			}
+			FineVertexCount += W * H;
+		}
+	}
+	for (FTileMesh& Mesh : TileMeshes)
+	{
+		if (Mesh.Vertices.Num() == 0)
+		{
+			continue;
+		}
+		UOceanMeshComponent* Tile = NewObject<UOceanMeshComponent>(this, NAME_None, RF_Transient);
+		Tile->ComponentTags.Add(TEXT("LandTile"));
+		Tile->SetupAttachment(RootComponent);
+		Tile->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Tile->RegisterComponent();
+		TArray<FProcMeshTangent> Tangents;
+		Tangents.Init(FProcMeshTangent(1.f, 0.f, 0.f), Mesh.Vertices.Num());
+		Tile->CreateMeshSection_LinearColor(0, Mesh.Vertices, Mesh.Triangles, Mesh.Normals, TArray<FVector2D>(), TArray<FLinearColor>(), Tangents, false);
+		LandTiles.Add(Tile);
+	}
+	UE_LOG(LogTemp, Display, TEXT("OceanBathymetry: sea floor %d x %d at %.1f m; %d coast chunks at %.2f m, %d land chunks at %.2f m: %lld vertices in %d tiles, %.1f s"),
+		M, M, Step, CoastChunks, Step / CoastSubdivision, LandChunks, Step / LandSubdivision, FineVertexCount, LandTiles.Num(),
+		FPlatformTime::Seconds() - StartTime);
 }
 
 void AOceanBathymetry::BuildSprayCurtain(const FOceanShoreData& Data)

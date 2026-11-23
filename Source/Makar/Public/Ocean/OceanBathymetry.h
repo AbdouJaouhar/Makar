@@ -76,17 +76,41 @@ protected:
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 
-	/** Radius of the island at the waterline. */
+	/** Radius of the island at the waterline, along its long axis. */
 	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "10", Units = "Meters"))
-	float IslandRadius = 250.f;
+	float IslandRadius = 850.f;
+
+	/** Long axis over short axis: islands are rarely round (a ridge, a chain of hills). */
+	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "1", ClampMax = "4"))
+	float IslandAspect = 1.6f;
+
+	/** Direction of the long axis, degrees from +X. */
+	UPROPERTY(EditAnywhere, Category = "Island", meta = (Units = "Degrees"))
+	float IslandAngle = 20.f;
+
+	/**
+	 * Share of the fractal coastline detail kept on the sandy coasts: beaches are smooth arcs between the headlands
+	 * (the swash files them straight), only the rocky shores are jagged. Full detail everywhere left sand bars and
+	 * pools all along the beaches.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0", ClampMax = "1"))
+	float SandyCoastDetail = 0.12f;
+
+	/** Distance from the back of the beaches over which the massif rises to most of its height. */
+	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "10", Units = "Meters"))
+	float MassifWidth = 230.f;
+
+	/** Height of the limestone cliffs of the rocky points (varies 0.6-1.4x along the coast). */
+	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0", Units = "Meters"))
+	float CliffHeight = 13.f;
 
 	/** How far the coastline wanders in and out of the circle (large bays and headlands). */
 	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0", Units = "Meters"))
-	float CoastlineVariation = 45.f;
+	float CoastlineVariation = 170.f;
 
 	/** Amplitude of the fractal detail of the coastline (coves, points), from 120 m wavelength down. */
 	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0", Units = "Meters"))
-	float CoastlineDetail = 45.f;
+	float CoastlineDetail = 70.f;
 
 	/**
 	 * Amplitude ratio between successive octaves of the coastline detail. In theory a contour of a fractal surface
@@ -114,7 +138,7 @@ protected:
 
 	/** Height of the wooded hills inland. */
 	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0", Units = "Meters"))
-	float HillHeight = 28.f;
+	float HillHeight = 85.f;
 
 	/** 0 = sandy coast all around, 1 = mostly rocky points. */
 	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0", ClampMax = "1"))
@@ -133,7 +157,7 @@ protected:
 
 	/** Raindrops simulated over the island (~1 per square metre of land gives a well-drained relief). */
 	UPROPERTY(EditAnywhere, Category = "Island|Erosion", meta = (EditCondition = "bErode", ClampMin = "0"))
-	int32 ErosionDroplets = 400000;
+	int32 ErosionDroplets = 2500000;
 
 	/** Scales how much each droplet carries: deeper gullies, larger fans. */
 	UPROPERTY(EditAnywhere, Category = "Island|Erosion", meta = (EditCondition = "bErode", ClampMin = "0"))
@@ -167,11 +191,11 @@ protected:
 
 	/** Width of the area covered by the terrain mesh and the shore data. */
 	UPROPERTY(EditAnywhere, Category = "Grid", meta = (ClampMin = "100", Units = "Meters"))
-	float GridSize = 2560.f;
+	float GridSize = 4096.f;
 
 	/** Samples per side (power of two keeps the distance transform exact). */
-	UPROPERTY(EditAnywhere, Category = "Grid", meta = (ClampMin = "64", ClampMax = "1024"))
-	int32 GridResolution = 1024;
+	UPROPERTY(EditAnywhere, Category = "Grid", meta = (ClampMin = "64", ClampMax = "2048"))
+	int32 GridResolution = 2048;
 
 	UPROPERTY(EditAnywhere, Category = "Rendering")
 	TSoftObjectPtr<UMaterialInterface> TerrainMaterial;
@@ -221,6 +245,21 @@ private:
 
 	/** Erodes the analytic shape over the island (OceanErosion) and keeps the change in Erosion. */
 	void BuildErosion();
+
+	/**
+	 * The erosion takes a minute on a large island and every load (and Play In Editor) rebuilds the terrain: its result
+	 * is cached in Saved/OceanCache, keyed by every setting that shapes it. Returns true when loaded.
+	 */
+	bool LoadErosionCache(const FString& Path);
+	void SaveErosionCache(const FString& Path) const;
+	FString ErosionCachePath() const;
+
+	/** Builds the land and coast meshes: chunks at 0.5 m (coast), 1 m (land), grouped into tiles that cull separately. */
+	void BuildLandTiles(const TArray<float>& Heights, int32 N, float Texel, int32 Stride);
+
+	/** Land and coast meshes, one component per tile (created on build, not saved). */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UOceanMeshComponent>> LandTiles;
 
 	/**
 	 * The massif grown by landscape evolution (OceanErosion::LandscapeEvolution, 2 m), scaled to the analytic massif's

@@ -17,8 +17,8 @@ SEABED_MATERIAL_PATH = "/Game/Ocean/M_Seabed"
 
 # Island (AOceanBathymetry) west of the start: its beach faces the trade-wind waves, which travel towards -X.
 # The shelf around it is ~7 m deep and drops into deep water ~450 m from the shore (behind the start).
-ISLAND_CENTRE_M = (-500.0, 0.0)
-ISLAND_RADIUS_M = 250.0
+ISLAND_CENTRE_M = (-1300.0, 0.0)
+ISLAND_RADIUS_M = 850.0
 
 # Sky: Mie (aerosol) scattering and absorption scales (engine defaults 0.003996 / 0.000444), height fog density.
 SKY_MIE_SCATTERING = 0.0013
