@@ -84,8 +84,8 @@ GROUND_DIRECTORY = "/Game/Ocean/Ground"
 # towards pale grey coral limestone (~0.4), brown-red island soil (~0.2/0.1/0.055) and tan dry leaves (~0.24/0.16/0.09).
 GROUND_ROCK_TINT = (32.0, 30.5, 26.0)  # pale coral limestone (28 read dark grey on the cliffs, 38 white on the forest banks)
 GROUND_SOIL_TINT = (1.8, 3.1, 3.9)
-GROUND_LITTER_TINT = (0.6, 0.78, 0.95)
-GROUND_GRASS_TINT = (2.0, 1.1, 0.55)  # grass 0.057/0.138/0.089, bluish -> dry-season yellow-green ~0.11/0.15/0.05
+GROUND_LITTER_TINT = (0.42, 0.6, 0.8)  # duller, darker brown (0.6/0.78/0.95 read pink and yellow in the low sun)
+GROUND_GRASS_TINT = (1.25, 0.72, 0.5)  # grass 0.057/0.138/0.089, bluish -> a muted green ~0.07/0.1/0.045 (0.11/0.15/0.05 glowed lime)
 
 
 def import_ground_textures():

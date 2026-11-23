@@ -136,7 +136,6 @@ void AOceanIslandFlora::Build()
 		UMaterialInterface* Loaded = Material.LoadSynchronous();
 		return Loaded ? Loaded : Fallback;
 	};
-	UMaterialInterface* PalmFrond = LoadOr(PalmFrondMaterial, Foliage);
 	UMaterialInterface* PalmLeaflet = LoadOr(PalmLeafletMaterial, Foliage);
 	UMaterialInterface* LeafBlade = LoadOr(LeafBladeMaterial, Foliage);
 	UE_LOG(LogTemp, Verbose, TEXT("OceanIslandFlora: palm leaflets %s, leaf blades %s (from %s)"), *GetNameSafe(PalmLeaflet), *GetNameSafe(LeafBlade),
@@ -225,7 +224,11 @@ void AOceanIslandFlora::Build()
 	TArray<UHierarchicalInstancedStaticMeshComponent*> FallenFronds, Coconuts, Tufts;
 	for (int32 Variant = 0; Variant < NumGroundVariants; ++Variant)
 	{
-		UStaticMesh* Frond = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeFallenFrond(Seed * 500 + Variant), { PalmFrond });
+		// Modelled leaflets like the palms' (every one up close, a dozen broad strips a side further away), in the
+		// windless stem material: a frond lying on the sand does not flap.
+		const FOceanMeshData FrondNear = OceanFlora::MakeFallenFrond(Seed * 500 + Variant, 0);
+		const FOceanMeshData FrondFar = OceanFlora::MakeFallenFrond(Seed * 500 + Variant, 2);
+		UStaticMesh* Frond = OceanFlora::BuildStaticMeshLods(this, { &FrondNear, &FrondFar }, { Bark, Bark }, { 1.f, 0.08f }, { 1, 1 });
 		Meshes.Add(Frond);
 		FallenFronds.Add(AddInstancer(Frond, 250.f));
 		UStaticMesh* Nut = OceanFlora::BuildStaticMesh(this, AsSecondSection(OceanFlora::MakeCoconut(Seed * 600 + Variant)), { Bark, Bark }, 1);

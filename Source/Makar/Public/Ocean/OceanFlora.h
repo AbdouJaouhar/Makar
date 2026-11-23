@@ -56,7 +56,7 @@ namespace OceanFlora
 	MAKAR_API FOceanMeshData MakeHeliconia(int32 Seed);
 	MAKAR_API FOceanMeshData MakeBeachCreeper(int32 Seed);
 	/** Ground litter under the palms: a dead frond lying on the sand (M_PalmFrond), a fallen coconut (M_Bark). */
-	MAKAR_API FOceanMeshData MakeFallenFrond(int32 Seed);
+	MAKAR_API FOceanMeshData MakeFallenFrond(int32 Seed, int32 Detail = 1);
 	MAKAR_API FOceanMeshData MakeCoconut(int32 Seed);
 	/** Crossed grass cards (M_GrassTuft), SpanCm square, the tuft's base at BaseV of the image. */
 	MAKAR_API FOceanMeshData MakeGrassTuft(int32 Seed, float SpanCm, float BaseV);
