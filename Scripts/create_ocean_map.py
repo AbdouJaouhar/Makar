@@ -122,6 +122,104 @@ def import_ground_textures():
     return textures
 
 
+SPRAY_MATERIAL_PATH = "/Game/Ocean/M_OceanSpray"
+
+
+def spray_material():
+    """Sea spray on the spray curtain (AOceanBathymetry::BuildSprayCurtain): OceanSpray in Shaders/Ocean.ush, unlit and
+    translucent, lit by hand with the sun's illuminance through the atmosphere (single scattering by the droplets),
+    softened where it meets the water and the rocks (depth fade). The shore data comes from the bathymetry's dynamic
+    instance; the swell must match the ocean's (as for the terrain)."""
+    if unreal.EditorAssetLibrary.does_asset_exist(SPRAY_MATERIAL_PATH):
+        material = unreal.EditorAssetLibrary.load_asset(SPRAY_MATERIAL_PATH)
+        MEL.delete_all_material_expressions(material)
+    else:
+        directory, name = SPRAY_MATERIAL_PATH.rsplit("/", 1)
+        material = unreal.AssetToolsHelpers.get_asset_tools().create_asset(
+            name, directory, unreal.Material, unreal.MaterialFactoryNew())
+    material.set_editor_property("blend_mode", unreal.BlendMode.BLEND_TRANSLUCENT)
+    material.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_UNLIT)
+    material.set_editor_property("two_sided", True)
+
+    def expression(cls, x, y):
+        return MEL.create_material_expression(material, cls, x, y)
+
+    def scalar(name, value, x, y):
+        node = expression(unreal.MaterialExpressionScalarParameter, x, y)
+        node.set_editor_property("parameter_name", name)
+        node.set_editor_property("default_value", value)
+        return node
+
+    def connect(source, target, input_name, source_output=""):
+        if not MEL.connect_material_expressions(source, source_output, target, input_name):
+            raise RuntimeError(f"Could not connect {source.get_name()} -> {target.get_name()}.{input_name}")
+
+    spray = expression(unreal.MaterialExpressionCustom, -500, 0)
+    spray.set_editor_property("description", "Ocean Spray")
+    spray.set_editor_property("include_file_paths", ["/Makar/Ocean.ush"])
+    spray.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT1)
+    spray.set_editor_property("code", "return OceanSpray(WorldPos, Time, Rock, ShoreMap, ShoreMapSampler, ShoreMapOrigin, "
+                                      "ShoreMapSize, SwellHeight, SwellPeriod, ToSun, ToCamera, Shoreward, Radiance);")
+    inputs = []
+    for name in ("WorldPos", "Time", "Rock", "ShoreMap", "ShoreMapOrigin", "ShoreMapSize", "SwellHeight", "SwellPeriod",
+                 "ToSun", "ToCamera", "Shoreward"):
+        custom_input = unreal.CustomInput()
+        custom_input.set_editor_property("input_name", name)
+        inputs.append(custom_input)
+    spray.set_editor_property("inputs", inputs)
+    radiance_output = unreal.CustomOutput()
+    radiance_output.set_editor_property("output_name", "Radiance")
+    radiance_output.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT1)
+    spray.set_editor_property("additional_outputs", [radiance_output])
+
+    connect(expression(unreal.MaterialExpressionWorldPosition, -900, -200), spray, "WorldPos")
+    connect(expression(unreal.MaterialExpressionTime, -900, -120), spray, "Time")
+    vertex_color = expression(unreal.MaterialExpressionVertexColor, -1100, -40)
+    rock = expression(unreal.MaterialExpressionComponentMask, -900, -40)
+    rock.set_editor_property("r", True)
+    rock.set_editor_property("g", False)
+    rock.set_editor_property("b", False)
+    rock.set_editor_property("a", False)
+    connect(vertex_color, rock, "")
+    connect(rock, spray, "Rock")
+    shore_map = expression(unreal.MaterialExpressionTextureObjectParameter, -900, 40)
+    shore_map.set_editor_property("parameter_name", "ShoreMap")
+    shore_map.set_editor_property("texture", unreal.load_asset("/Engine/EngineResources/Black.Black"))
+    connect(shore_map, spray, "ShoreMap")
+    shore_origin = expression(unreal.MaterialExpressionVectorParameter, -900, 140)
+    shore_origin.set_editor_property("parameter_name", "ShoreMapOrigin")
+    connect(shore_origin, spray, "ShoreMapOrigin")
+    connect(scalar("ShoreMapSize", 0.0, -900, 220), spray, "ShoreMapSize")
+    connect(scalar("ShoreSwellHeight", SHORE_SWELL_HEIGHT_M, -900, 300), spray, "SwellHeight")
+    connect(scalar("ShoreSwellPeriod", SHORE_SWELL_PERIOD_S, -900, 380), spray, "SwellPeriod")
+    connect(expression(unreal.MaterialExpressionSkyAtmosphereLightDirection, -900, 460), spray, "ToSun")
+    connect(expression(unreal.MaterialExpressionCameraVectorWS, -900, 540), spray, "ToCamera")
+    connect(expression(unreal.MaterialExpressionVertexNormalWS, -900, 620), spray, "Shoreward")
+
+    # Light: radiance relative to the sun's illuminance, a faintly blue-white mist.
+    lit = expression(unreal.MaterialExpressionMultiply, -250, 200)
+    connect(spray, lit, "A", "Radiance")
+    connect(expression(unreal.MaterialExpressionSkyAtmosphereLightIlluminance, -500, 300), lit, "B")
+    tint = expression(unreal.MaterialExpressionVectorParameter, -500, 380)
+    tint.set_editor_property("parameter_name", "SprayColor")
+    tint.set_editor_property("default_value", unreal.LinearColor(0.95, 0.97, 1.0, 1.0))
+    emissive = expression(unreal.MaterialExpressionMultiply, -100, 250)
+    connect(lit, emissive, "A")
+    connect(tint, emissive, "B")
+    MEL.connect_material_property(emissive, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
+    # Soft where the curtain meets the water and the rocks.
+    fade = expression(unreal.MaterialExpressionDepthFade, -200, 0)
+    fade.set_editor_property("fade_distance_default", 60.0)
+    connect(spray, fade, "Opacity")
+    strength = scalar("SprayStrength", 1.0, -350, 80)
+    opacity = expression(unreal.MaterialExpressionMultiply, -60, 0)
+    connect(fade, opacity, "A")
+    connect(strength, opacity, "B")
+    MEL.connect_material_property(opacity, "", unreal.MaterialProperty.MP_OPACITY)
+    MEL.recompile_material(material)
+    unreal.EditorAssetLibrary.save_asset(SPRAY_MATERIAL_PATH)
+
+
 def seabed_material():
     """Bright, slightly warm coral sand: it is what turns the clear water turquoise."""
     if unreal.EditorAssetLibrary.does_asset_exist(SEABED_MATERIAL_PATH):
@@ -378,6 +476,7 @@ def build():
     # --- Island, beach, shallow shelf and reef drop-off (AOceanBathymetry). Its coastal data also calms
     # the waves in shallow water, for rendering and water queries alike. Must sit at Z = 0. ---
     seabed_material()  # the terrain's material (sand + caustics)
+    spray_material()   # the spray along the line where the swell breaks
     island = spawn(load_class("/Script/Makar.OceanBathymetry"), (ISLAND_CENTRE_M[0] * 100.0, ISLAND_CENTRE_M[1] * 100.0, 0.0),
                    label="Island")
     island.set_editor_property("island_radius", ISLAND_RADIUS_M)

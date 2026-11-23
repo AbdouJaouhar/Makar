@@ -187,6 +187,24 @@ protected:
 	UPROPERTY(VisibleAnywhere, Category = "Rendering")
 	TObjectPtr<UOceanMeshComponent> Terrain;
 
+	/** Sea spray: vertical strips along the line where the swell breaks, drawn by M_OceanSpray (OceanSpray). */
+	UPROPERTY(VisibleAnywhere, Category = "Rendering")
+	TObjectPtr<UOceanMeshComponent> Spray;
+
+	UPROPERTY(EditAnywhere, Category = "Rendering")
+	TSoftObjectPtr<UMaterialInterface> SprayMaterial;
+
+	/**
+	 * Depth where the swell breaks (shoaled height ~0.78 x depth: ~1.2 m for the 0.6 m trade-wind swell of
+	 * OceanShoreWave): the spray curtain follows this isobath.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Spray", meta = (ClampMin = "0.2", Units = "Meters"))
+	float SprayBreakDepth = 1.2f;
+
+	/** Height of the spray curtain (the splashes on the rocky points reach a few metres). */
+	UPROPERTY(EditAnywhere, Category = "Spray", meta = (ClampMin = "1", Units = "Meters"))
+	float SprayCurtainHeight = 6.f;
+
 private:
 	void Build();
 	void BuildShoreTexture(const FOceanShoreData& Data);
@@ -225,6 +243,12 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<class UMaterialInstanceDynamic> TerrainMaterialInstance;
+
+	UPROPERTY(Transient)
+	TObjectPtr<class UMaterialInstanceDynamic> SprayMaterialInstance;
+
+	/** The spray curtain: marching squares on the shore data's depth at SprayBreakDepth, a few strips deep. */
+	void BuildSprayCurtain(const FOceanShoreData& Data);
 
 	/** Settings the footprint texture was built with, to rebuild it only when they change. */
 	int32 BuiltFootprintTrails = -1;

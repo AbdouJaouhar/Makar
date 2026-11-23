@@ -231,7 +231,13 @@ AOceanBathymetry::AOceanBathymetry()
 	Terrain->SetupAttachment(RootComponent);
 	Terrain->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
+	Spray = CreateDefaultSubobject<UOceanMeshComponent>(TEXT("Spray"));
+	Spray->SetupAttachment(RootComponent);
+	Spray->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Spray->SetCastShadow(false);
+
 	TerrainMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/M_Seabed.M_Seabed")));
+	SprayMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/M_OceanSpray.M_OceanSpray")));
 }
 
 void AOceanBathymetry::OnConstruction(const FTransform& Transform)
@@ -786,7 +792,108 @@ void AOceanBathymetry::Build()
 			Terrain->SetMaterial(Section, TerrainMaterialInstance);
 		}
 	}
+	BuildSprayCurtain(*Data);
 	bBuilt = true;
+}
+
+void AOceanBathymetry::BuildSprayCurtain(const FOceanShoreData& Data)
+{
+	UMaterialInterface* Material = SprayMaterial.LoadSynchronous();
+	if (!Material || !ShoreTexture)
+	{
+		Spray->ClearAllMeshSections();
+		return;
+	}
+	const int32 N = Data.Resolution;
+	const float Texel = Data.SizeM / N;
+	const FVector2f Center(float(GetActorLocation().X * 0.01), float(GetActorLocation().Y * 0.01));
+	const double ActorZ = GetActorLocation().Z;
+	auto Depth = [&](int32 X, int32 Y) { return Data.Texels[Y * N + X].X; };
+	auto Position = [&](float X, float Y) { return Data.OriginM + FVector2f((X + 0.5f) * Texel, (Y + 0.5f) * Texel); };
+
+	TArray<FVector> Vertices;
+	TArray<FVector> Normals;
+	TArray<FVector2D> UVs;
+	TArray<FLinearColor> Colors;
+	TArray<int32> Triangles;
+	int32 Segments = 0;
+	const float Break = SprayBreakDepth;
+	for (int32 Y = 0; Y + 1 < N; ++Y)
+	{
+		for (int32 X = 0; X + 1 < N; ++X)
+		{
+			const float D[4] = { Depth(X, Y), Depth(X + 1, Y), Depth(X + 1, Y + 1), Depth(X, Y + 1) };
+			const bool bAbove = D[0] > Break;
+			if (bAbove == (D[1] > Break) && bAbove == (D[2] > Break) && bAbove == (D[3] > Break))
+			{
+				continue;
+			}
+			// Only near the island: the shore within ~80 m (signed distance, + at sea).
+			if (Data.Texels[Y * N + X].Y > 80.f)
+			{
+				continue;
+			}
+			// Marching squares: the isobath crosses the cell's edges where the depth passes Break.
+			const FVector2f Corner[4] = { Position(X, Y), Position(X + 1, Y), Position(X + 1, Y + 1), Position(X, Y + 1) };
+			FVector2f Crossings[4];
+			int32 Count = 0;
+			for (int32 Edge = 0; Edge < 4; ++Edge)
+			{
+				const int32 A = Edge;
+				const int32 B = (Edge + 1) % 4;
+				if ((D[A] > Break) != (D[B] > Break))
+				{
+					const float T = (Break - D[A]) / (D[B] - D[A]);
+					Crossings[Count++] = FMath::Lerp(Corner[A], Corner[B], T);
+				}
+			}
+			// Shoreward: down the depth gradient.
+			const FVector2f Gradient(((D[1] - D[0]) + (D[2] - D[3])) * 0.5f / Texel, ((D[3] - D[0]) + (D[2] - D[1])) * 0.5f / Texel);
+			const FVector2f Shoreward = (-Gradient).GetSafeNormal();
+			if (Shoreward.IsNearlyZero())
+			{
+				continue;
+			}
+			// The waves burst much higher against the rocky points: the rockiness a few metres shoreward.
+			const FVector2f CellCenter = (Corner[0] + Corner[2]) * 0.5f;
+			const float Rock = SampleTerrain(CellCenter + Shoreward * 6.f).Rock;
+			for (int32 Pair = 0; Pair + 1 < Count; Pair += 2)
+			{
+				++Segments;
+				// One strip, on the line itself: its ends are shared with the neighbouring cells, so it is continuous
+				// (strips offset along each cell's own normal overlapped and showed as bands).
+				for (const float Offset : { 0.f })
+				{
+					const FVector2f P0 = Crossings[Pair] + Shoreward * Offset - Center;
+					const FVector2f P1 = Crossings[Pair + 1] + Shoreward * Offset - Center;
+					const int32 First = Vertices.Num();
+					const FVector Normal(Shoreward.X, Shoreward.Y, 0.f);
+					const FLinearColor Color(Rock, 0.5f, 0.f, 1.f);
+					for (const FVector3f& Corner3 : { FVector3f(P0.X, P0.Y, -0.5f), FVector3f(P1.X, P1.Y, -0.5f),
+						FVector3f(P1.X, P1.Y, SprayCurtainHeight), FVector3f(P0.X, P0.Y, SprayCurtainHeight) })
+					{
+						Vertices.Add(FVector(Corner3.X * 100.0, Corner3.Y * 100.0, Corner3.Z * 100.0 - ActorZ));
+						Normals.Add(Normal);
+						Colors.Add(Color);
+					}
+					UVs.Append({ FVector2D(0.0, 0.0), FVector2D(1.0, 0.0), FVector2D(1.0, 1.0), FVector2D(0.0, 1.0) });
+					Triangles.Append({ First, First + 1, First + 2, First, First + 2, First + 3 });
+				}
+			}
+		}
+	}
+	TArray<FProcMeshTangent> Tangents;
+	Tangents.Init(FProcMeshTangent(1.f, 0.f, 0.f), Vertices.Num());
+	Spray->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, UVs, Colors, Tangents, false);
+	if (!SprayMaterialInstance || SprayMaterialInstance->Parent != Material)
+	{
+		SprayMaterialInstance = UMaterialInstanceDynamic::Create(Material, this);
+	}
+	SprayMaterialInstance->SetTextureParameterValue(TEXT("ShoreMap"), ShoreTexture);
+	SprayMaterialInstance->SetVectorParameterValue(TEXT("ShoreMapOrigin"), FLinearColor(Data.OriginM.X, Data.OriginM.Y, 0.f, 0.f));
+	SprayMaterialInstance->SetScalarParameterValue(TEXT("ShoreMapSize"), Data.SizeM);
+	Spray->SetMaterial(0, SprayMaterialInstance);
+	UE_LOG(LogTemp, Display, TEXT("OceanBathymetry: spray curtain along %d segments of the %.1f m isobath"), Segments, Break);
 }
 
 void AOceanBathymetry::BuildFootprintTexture()
