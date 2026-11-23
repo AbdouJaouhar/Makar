@@ -107,6 +107,23 @@ float OceanGradientNoise(float2 P)
 	return Sum;
 }
 
+// Perlin gradient noise around 0.5 (spread like OceanGradientNoise, rarely beyond 0..1): zero-crossing at every lattice node, so unlike the value terms above
+// it draws no grid of cells when a surface lies along the lattice (the flat tops of stones in triplanar mapping).
+float OceanPerlinNoise(float2 P)
+{
+	const float2 Cell = floor(P);
+	const float2 T = P - Cell;
+	const float2 U = T * T * T * (T * (T * 6.0 - 15.0) + 10.0);
+	float Corner[4];
+	[unroll] for (int K = 0; K < 4; ++K)
+	{
+		const int2 Offset = int2(K & 1, K >> 1);
+		const float Angle = float(OceanShoreHash(uint(int(Cell.x) + Offset.x) * 1597334677u ^ OceanShoreHash(uint(int(Cell.y) + Offset.y)))) * (6.2831853 / 4294967295.0);
+		Corner[K] = dot(float2(cos(Angle), sin(Angle)), T - float2(Offset));
+	}
+	return 0.5 + 0.75 * lerp(lerp(Corner[0], Corner[1], U.x), lerp(Corner[2], Corner[3], U.x), U.y);
+}
+
 // Swash on the beach, identical to OceanShoreData.h.
 static const float OceanSwashMaxHeightM = 1.5;
 

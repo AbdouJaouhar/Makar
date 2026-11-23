@@ -177,6 +177,14 @@ void AOceanIslandFlora::Build()
 	{
 		Bushes.Add(AddInstancer(TwoLevels([&](bool b3D, float LeafScale) { return OceanFlora::MakeCoastalBush(Seed * 400 + Variant, b3D, LeafScale); }, BroadleafLeaves, 0.2f), 1500.f));
 	}
+	// Single-section meshes (stones, coconuts) moved to a second section, built like the small plants (two slots, colour
+	// section 1): built with one section, their vertex colours drew white; with the duplicate triangle of
+	// FillDescription in one slot, the default material.
+	auto AsSecondSection = [](FOceanMeshData Data)
+	{
+		Data.Sections.Insert(TArray<int32>(), 0);
+		return Data;
+	};
 	// Smaller plants, all 3D: stems in M_Bark, leaves in M_Foliage; culled with distance.
 	auto SmallPlants = [&](TFunctionRef<FOceanMeshData(int32)> Make, int32 SeedBase, float CullM)
 	{
@@ -207,7 +215,7 @@ void AOceanIslandFlora::Build()
 		UStaticMesh* Frond = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeFallenFrond(Seed * 500 + Variant), { PalmFrond });
 		Meshes.Add(Frond);
 		FallenFronds.Add(AddInstancer(Frond, 250.f));
-		UStaticMesh* Nut = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeCoconut(Seed * 600 + Variant), { Bark }, 0);
+		UStaticMesh* Nut = OceanFlora::BuildStaticMesh(this, AsSecondSection(OceanFlora::MakeCoconut(Seed * 600 + Variant)), { Bark, Bark }, 1);
 		Meshes.Add(Nut);
 		Coconuts.Add(AddInstancer(Nut, 150.f));
 		if (GrassTuft)
@@ -255,7 +263,7 @@ void AOceanIslandFlora::Build()
 	{
 		for (int32 Variant = 0; Variant < VariantsPerKind[Kind]; ++Variant)
 		{
-			UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeCaribbeanRock(ERockKind(Kind), Seed * 400 + Variant), { Stone }, 0);
+			UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, AsSecondSection(OceanFlora::MakeCaribbeanRock(ERockKind(Kind), Seed * 400 + Variant)), { Stone, Stone }, 1);
 			Meshes.Add(Mesh);
 			RockVariants[Kind].Add(Rocks.Num());
 			Rocks.Add(AddInstancer(Mesh, RockCullM[Kind]));

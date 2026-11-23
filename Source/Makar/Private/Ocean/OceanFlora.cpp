@@ -1337,7 +1337,7 @@ namespace OceanFlora
 		{
 		case ERockKind::Limestone:   // a broken block of bedded limestone: angular, layered, pitted by dissolution
 			Square = Random.FRandRange(3.5f, 6.f);
-			Light = FLinearColor(0.46f, 0.43f, 0.37f); Dark = FLinearColor(0.22f, 0.21f, 0.19f);
+			Light = FLinearColor(0.42f, 0.39f, 0.33f); Dark = FLinearColor(0.2f, 0.19f, 0.17f);
 			break;
 		case ERockKind::Ironshore:   // low, wide, black-grey and razor-jagged (biokarst of the spray zone)
 			Axes = FVector3f(1.f, Random.FRandRange(0.6f, 1.f), Random.FRandRange(0.22f, 0.38f));
@@ -1355,7 +1355,7 @@ namespace OceanFlora
 			break;
 		case ERockKind::CoralRubble: // a bleached lump of dead coral, knobbly
 			Axes = FVector3f(1.f, Random.FRandRange(0.6f, 0.9f), Random.FRandRange(0.4f, 0.7f));
-			Light = FLinearColor(0.8f, 0.77f, 0.7f); Dark = FLinearColor(0.5f, 0.47f, 0.42f);
+			Light = FLinearColor(0.66f, 0.62f, 0.55f); Dark = FLinearColor(0.38f, 0.35f, 0.31f);
 			break;
 		case ERockKind::Cobble:      // a water-worn pebble
 		default:
@@ -1533,7 +1533,17 @@ namespace OceanFlora
 				Tangents[Instance] = FVector3f::CrossProduct(Helper, Vertex.Normal).GetSafeNormal();
 				BinormalSigns[Instance] = 1.f;
 				UVs.Set(Instance, 0, Vertex.UV);
-				Colors[Instance] = FVector4f(Vertex.Color.R, Vertex.Color.G, Vertex.Color.B, 1.f);
+				// The mesh build stores the colours sRGB-encoded (FLinearColor::ToFColor(true)) and the material's Vertex
+				// Color reads those bytes as they are: decoded here, the material gets the linear albedo it was given
+				// (encoded, a 0.2 albedo drew as 0.48: the stones and coconuts white, every plant pale). Only for the
+				// meshes whose colour is their albedo (those with a ColorSection): the textured cards' colours are tints
+				// tuned on screen as they draw.
+				auto Decode = [bAlbedo = Data.Sections.IsValidIndex(ColorSection)](float C)
+				{
+					C = FMath::Clamp(C, 0.f, 1.f);
+					return !bAlbedo ? C : C <= 0.04045f ? C / 12.92f : FMath::Pow((C + 0.055f) / 1.055f, 2.4f);
+				};
+				Colors[Instance] = FVector4f(Decode(Vertex.Color.R), Decode(Vertex.Color.G), Decode(Vertex.Color.B), 1.f);
 				Instances.Add(Instance);
 			}
 			TArray<int32> Order;
