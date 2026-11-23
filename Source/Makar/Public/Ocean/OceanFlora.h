@@ -38,9 +38,22 @@ struct MAKAR_API FOceanMeshData
 namespace OceanFlora
 {
 	MAKAR_API FOceanMeshData MakeCoconutPalm(int32 Seed);
-	MAKAR_API FOceanMeshData MakeBroadleafTree(int32 Seed);
-	MAKAR_API FOceanMeshData MakeSeaGrape(int32 Seed);
-	MAKAR_API FOceanMeshData MakeCoastalBush(int32 Seed);
+	/**
+	 * b3DLeaves: real leaves in section 2 (the near levels of detail) instead of leaf cards in section 1; LeafScale > 1
+	 * gives fewer, larger leaves for a middle level.
+	 */
+	MAKAR_API FOceanMeshData MakeBroadleafTree(int32 Seed, bool b3DLeaves = false, float LeafScale = 1.f);
+	MAKAR_API FOceanMeshData MakeTropicalAlmond(int32 Seed, bool b3DLeaves = false, float LeafScale = 1.f);
+	MAKAR_API FOceanMeshData MakeSeaGrape(int32 Seed, bool b3DLeaves = false, float LeafScale = 1.f);
+	MAKAR_API FOceanMeshData MakeCoastalBush(int32 Seed, bool b3DLeaves = false, float LeafScale = 1.f);
+	/** Solid 3D plants: section 0 stems (M_Bark), section 1 leaves (M_Foliage). Cacti: section 0 only. */
+	MAKAR_API FOceanMeshData MakeAgave(int32 Seed);
+	MAKAR_API FOceanMeshData MakeTurksCap(int32 Seed);
+	MAKAR_API FOceanMeshData MakeColumnCactus(int32 Seed);
+	MAKAR_API FOceanMeshData MakeBromeliad(int32 Seed);
+	MAKAR_API FOceanMeshData MakeFern(int32 Seed);
+	MAKAR_API FOceanMeshData MakeHeliconia(int32 Seed);
+	MAKAR_API FOceanMeshData MakeBeachCreeper(int32 Seed);
 	/** Ground litter under the palms: a dead frond lying on the sand (M_PalmFrond), a fallen coconut (M_Bark). */
 	MAKAR_API FOceanMeshData MakeFallenFrond(int32 Seed);
 	MAKAR_API FOceanMeshData MakeCoconut(int32 Seed);
@@ -62,4 +75,8 @@ namespace OceanFlora
 
 	/** Builds a transient static mesh (works in the editor and in a cooked game). One material per section. */
 	MAKAR_API UStaticMesh* BuildStaticMesh(UObject* Outer, const FOceanMeshData& Data, const TArray<UMaterialInterface*>& Materials);
+
+	/** The same with levels of detail (Lods[0] nearest); ScreenSizes[i]: screen share below which level i takes over. */
+	MAKAR_API UStaticMesh* BuildStaticMeshLods(UObject* Outer, const TArray<const FOceanMeshData*>& Lods,
+		const TArray<UMaterialInterface*>& Materials, const TArray<float>& ScreenSizes);
 }

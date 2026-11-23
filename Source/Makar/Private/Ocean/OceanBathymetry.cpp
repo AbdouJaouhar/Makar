@@ -450,7 +450,7 @@ void AOceanBathymetry::BuildErosion()
 FString AOceanBathymetry::ErosionCachePath() const
 {
 	// Every setting the erosion depends on, and a version to bump whenever SampleShape or OceanErosion change.
-	const FString Key = FString::Printf(TEXT("v3|%.2f|%.2f|%.2f|%.2f|%.2f|%.3f|%d|%.3f|%.3f|%.3f|%.3f|%.3f|%.2f|%.2f|%.3f|%d|%.3f|%d|%d|%.1f|%.1f|%.3f|%.3f|%.2f|%.2f|%.2f"),
+	const FString Key = FString::Printf(TEXT("v4|%.2f|%.2f|%.2f|%.2f|%.2f|%.3f|%d|%.3f|%.3f|%.3f|%.3f|%.3f|%.2f|%.2f|%.3f|%d|%.3f|%d|%d|%.1f|%.1f|%.3f|%.3f|%.2f|%.2f|%.2f"),
 		IslandRadius, IslandAspect, IslandAngle, CoastlineVariation, CoastlineDetail, CoastlinePersistence, CoastlineOctaves,
 		SandyCoastDetail, MassifWidth, CliffHeight, BermHeight, LandSlope, HillHeight, Rockiness, ErosionStrength,
 		ErosionDroplets, UnderstoryRelief, LandscapeIterations, Seed, GetActorLocation().X, GetActorLocation().Y,
@@ -555,11 +555,12 @@ FOceanTerrainSample AOceanBathymetry::SampleShape(const FVector2f& PositionM, bo
 		// Rocky points: the ground rises steeply right from the water (~70 degrees, shaded as rock by slope) to a
 		// headland that joins the massif: the cliff fades out where the hills are already higher. Added over the
 		// whole land, the rock mask raised terraces along its contours far inland.
+		// The headland is a plateau: the cliff rises almost sheer to its top, which stays flat (scrub, agaves) until the
+		// hills behind rise above it (a maximum, not a sum: added to the hills, the cliff made round domes).
 		const float LocalCliff = CliffHeight * (0.6f + 0.8f * OceanGradientNoise(Seeded / 140.f + 6.1f));
-		const float CliffMask = Rock * FMath::SmoothStep(0.5f, 2.f + 0.3f * LocalCliff, Inland)
-			* (1.f - FMath::SmoothStep(0.25f * LocalCliff, LocalCliff, Hills));
+		const float CliffMask = Rock * FMath::SmoothStep(0.3f, 1.f + 0.15f * LocalCliff, Inland);
 		const float Cliff = LocalCliff * CliffMask;
-		float Ground = Beach + Hills + Cliff;
+		float Ground = Beach + FMath::Max(Hills, Cliff);
 		if (bFineDetail)
 		{
 			// Bedding: the limestone lies in near-horizontal layers ~0.9 m thick, which the sea and the rain etch into

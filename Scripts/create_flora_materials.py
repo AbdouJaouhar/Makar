@@ -20,7 +20,11 @@ def fresh_material(name):
     path = f"{DIRECTORY}/{name}"
     if unreal.EditorAssetLibrary.does_asset_exist(path):
         unreal.EditorAssetLibrary.delete_asset(path)
-    return unreal.AssetToolsHelpers.get_asset_tools().create_asset(name, DIRECTORY, unreal.Material, unreal.MaterialFactoryNew())
+    material = unreal.AssetToolsHelpers.get_asset_tools().create_asset(name, DIRECTORY, unreal.Material, unreal.MaterialFactoryNew())
+    # Set the usages up front: the flora is drawn by instancers (and the near trees by static meshes); without the flag
+    # the editor sets it while rendering and shows the default material until the shaders are rebuilt.
+    material.set_editor_property("used_with_instanced_static_meshes", True)
+    return material
 
 
 def node(material, cls, x, y):
@@ -92,17 +96,20 @@ def rock():
     custom.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
     custom.set_editor_property("code", (
         "const float3 P = WorldPos * 0.01;"
-        "float3 Tex, N;"
-        "const float Mix = smoothstep(0.35, 0.65, OceanValueNoise(P.xy / 3.0 + 41.0));"
-        "OceanGroundTriplanar(AlbedoTex, AlbedoTexSampler, NormalTex, NormalTexSampler, P * 2.0, VertexNormal, Mix, 1.8, Tex, N);"
-        "const float Luma = dot(Tex, float3(0.3, 0.5, 0.2));"
-        "float3 Base = Color.rgb * lerp(1.0, Luma / 0.42, 0.85);"
-        # Spray zone: the black band of cyanobacteria a metre above the sea; wet and darker just above the water.
+        # Procedural, triplanar: mottling at two scales and dark pits (the sampled limestone tile read as black here).
+        "float3 W = pow(abs(VertexNormal), 4.0); W /= W.x + W.y + W.z;"
+        "const float3 Q = P * 2.5;"
+        "const float Mottle = W.x * OceanValueNoise(Q.yz) + W.y * OceanValueNoise(Q.xz + 7.0) + W.z * OceanValueNoise(Q.xy + 13.0);"
+        "const float3 F = P * 11.0;"
+        "const float Grain = W.x * OceanValueNoise(F.yz) + W.y * OceanValueNoise(F.xz + 3.0) + W.z * OceanValueNoise(F.xy + 5.0);"
+        "const float3 G = P * 26.0;"
+        "const float Pits = W.x * OceanValueNoise(G.yz) + W.y * OceanValueNoise(G.xz + 9.0) + W.z * OceanValueNoise(G.xy + 11.0);"
+        "float3 Base = Color.rgb * (0.75 + 0.45 * Mottle) * (0.85 + 0.3 * Grain) * (1.0 - 0.3 * smoothstep(0.68, 0.84, Pits));"
         "const float Spray = (1.0 - smoothstep(0.4, 1.4, P.z)) * smoothstep(-0.3, 0.1, P.z);"
-        "Base *= lerp(1.0, 0.4, Spray);"
+        "Base *= lerp(1.0, 0.6, Spray);"
         "const float Under = 1.0 - smoothstep(-0.4, -0.05, P.z);"
         "Base *= lerp(float3(1.0, 1.0, 1.0), float3(0.55, 0.7, 0.45), Under * 0.8);"
-        "Normal = N;"
+        "Normal = VertexNormal;"
         "Roughness = lerp(0.88, 0.45, max(Spray * (1.0 - smoothstep(0.1, 0.6, P.z)), Under));"
         "return Base;"))
     inputs = []

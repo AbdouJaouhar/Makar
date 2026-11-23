@@ -11,7 +11,9 @@
 namespace
 {
 	constexpr int32 NumPalmVariants = 4;
-	constexpr int32 NumTreeVariants = 3;
+	constexpr int32 NumTreeVariants = 5;
+	constexpr int32 NumAlmondVariants = 3;
+	constexpr int32 NumSmallPlantVariants = 3; // of each of the 3D plants (agave, cacti, bromeliad, fern, heliconia, creeper)
 	constexpr int32 NumShrubVariants = 3;
 	constexpr int32 NumBushVariants = 4;
 	constexpr int32 NumGroundVariants = 3; // fallen fronds, coconuts, grass tufts
@@ -142,24 +144,55 @@ void AOceanIslandFlora::Build()
 		Meshes.Add(Mesh);
 		Palms.Add(AddInstancer(Mesh, 3000.f));
 	}
+	// The L-system plants in two levels of detail: real 3D leaves up close (M_Foliage), leaf cards further away (the
+	// cards show a rendered cluster of leaves, which up close read as flat rosettes).
+	// Three levels: dense real leaves, then fewer and larger ones, then cards only where they are a few pixels wide.
+	auto TwoLevels = [&](TFunctionRef<FOceanMeshData(bool, float)> Make, UMaterialInterface* Cards, float NearScreenSize)
+	{
+		const FOceanMeshData Near = Make(true, 1.f);
+		const FOceanMeshData Middle = Make(true, 2.4f);
+		const FOceanMeshData Far = Make(false, 1.f);
+		UStaticMesh* Mesh = OceanFlora::BuildStaticMeshLods(this, { &Near, &Middle, &Far }, { Bark, Cards, Foliage },
+			{ 1.f, NearScreenSize, 0.3f * NearScreenSize });
+		Meshes.Add(Mesh);
+		return Mesh;
+	};
 	for (int32 Variant = 0; Variant < NumTreeVariants; ++Variant)
 	{
-		UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeBroadleafTree(Seed * 200 + Variant), { Bark, BroadleafLeaves });
-		Meshes.Add(Mesh);
-		Trees.Add(AddInstancer(Mesh, 3000.f));
+		Trees.Add(AddInstancer(TwoLevels([&](bool b3D, float LeafScale) { return OceanFlora::MakeBroadleafTree(Seed * 200 + Variant, b3D, LeafScale); }, BroadleafLeaves, 0.35f), 3000.f));
+	}
+	TArray<UHierarchicalInstancedStaticMeshComponent*> Almonds;
+	for (int32 Variant = 0; Variant < NumAlmondVariants; ++Variant)
+	{
+		Almonds.Add(AddInstancer(TwoLevels([&](bool b3D, float LeafScale) { return OceanFlora::MakeTropicalAlmond(Seed * 250 + Variant, b3D, LeafScale); }, BroadleafLeaves, 0.35f), 3000.f));
 	}
 	for (int32 Variant = 0; Variant < NumShrubVariants; ++Variant)
 	{
-		UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeSeaGrape(Seed * 300 + Variant), { Bark, SeaGrapeLeaves });
-		Meshes.Add(Mesh);
-		Shrubs.Add(AddInstancer(Mesh, 1500.f));
+		Shrubs.Add(AddInstancer(TwoLevels([&](bool b3D, float LeafScale) { return OceanFlora::MakeSeaGrape(Seed * 300 + Variant, b3D, LeafScale); }, SeaGrapeLeaves, 0.2f), 1500.f));
 	}
 	for (int32 Variant = 0; Variant < NumBushVariants; ++Variant)
 	{
-		UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, OceanFlora::MakeCoastalBush(Seed * 400 + Variant), { Bark, BroadleafLeaves });
-		Meshes.Add(Mesh);
-		Bushes.Add(AddInstancer(Mesh, 1500.f));
+		Bushes.Add(AddInstancer(TwoLevels([&](bool b3D, float LeafScale) { return OceanFlora::MakeCoastalBush(Seed * 400 + Variant, b3D, LeafScale); }, BroadleafLeaves, 0.2f), 1500.f));
 	}
+	// Smaller plants, all 3D: stems in M_Bark, leaves in M_Foliage; culled with distance.
+	auto SmallPlants = [&](TFunctionRef<FOceanMeshData(int32)> Make, int32 SeedBase, float CullM)
+	{
+		TArray<UHierarchicalInstancedStaticMeshComponent*> Set;
+		for (int32 Variant = 0; Variant < NumSmallPlantVariants; ++Variant)
+		{
+			UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, Make(Seed * SeedBase + Variant), { Bark, Foliage });
+			Meshes.Add(Mesh);
+			Set.Add(AddInstancer(Mesh, CullM));
+		}
+		return Set;
+	};
+	TArray<UHierarchicalInstancedStaticMeshComponent*> Agaves = SmallPlants(OceanFlora::MakeAgave, 810, 600.f);
+	TArray<UHierarchicalInstancedStaticMeshComponent*> TurksCaps = SmallPlants(OceanFlora::MakeTurksCap, 820, 120.f);
+	TArray<UHierarchicalInstancedStaticMeshComponent*> Columns = SmallPlants(OceanFlora::MakeColumnCactus, 830, 600.f);
+	TArray<UHierarchicalInstancedStaticMeshComponent*> Bromeliads = SmallPlants(OceanFlora::MakeBromeliad, 840, 150.f);
+	TArray<UHierarchicalInstancedStaticMeshComponent*> Ferns = SmallPlants(OceanFlora::MakeFern, 850, 200.f);
+	TArray<UHierarchicalInstancedStaticMeshComponent*> Heliconias = SmallPlants(OceanFlora::MakeHeliconia, 860, 400.f);
+	TArray<UHierarchicalInstancedStaticMeshComponent*> Creepers = SmallPlants(OceanFlora::MakeBeachCreeper, 870, 150.f);
 	// Ground cover: dead fronds and coconuts under the palms, grass tufts (yellower in the last variant, for the sunny
 	// beach top). Small: culled sooner.
 	UMaterialInterface* GrassTuft = GrassTuftMaterial.LoadSynchronous();
@@ -464,6 +497,104 @@ void AOceanIslandFlora::Build()
 		});
 	}
 
+	// --- The other plants of the island ---
+	TArray<TArray<FTransform>> AlmondTransforms, AgaveTransforms, TurksCapTransforms, ColumnTransforms, BromeliadTransforms,
+		FernTransforms, HeliconiaTransforms, CreeperTransforms;
+	for (TArray<TArray<FTransform>>* Set : { &AlmondTransforms, &AgaveTransforms, &TurksCapTransforms, &ColumnTransforms,
+		&BromeliadTransforms, &FernTransforms, &HeliconiaTransforms, &CreeperTransforms })
+	{
+		Set->SetNum(NumSmallPlantVariants);
+	}
+	auto Plant = [&](TArray<TArray<FTransform>>& Set, const FVector2f& Position, float HeightM, float MinScale, float MaxScale, float SinkCm)
+	{
+		Set[Random.RandRange(0, Set.Num() - 1)].Add(FTransform(FRotator(0.f, Random.FRandRange(0.f, 360.f), 0.f),
+			Ground(Position, HeightM, SinkCm), FVector(Random.FRandRange(MinScale, MaxScale))));
+	};
+	// Tropical almonds: with the palms along the back of the beaches, and here and there in the coastal forest.
+	Scatter(9.f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
+	{
+		if (Terrain.Ground < 1.f || Terrain.Rock > 0.35f || Terrain.Inland > 120.f)
+		{
+			return;
+		}
+		const float Edge = Terrain.Understory > 0.02f ? 1.f - Smooth(0.6f, 2.f, Terrain.Understory) : 0.f;
+		if (Random.FRand() < TreeDensity * (0.45f * Edge + 0.06f))
+		{
+			Plant(AlmondTransforms, Position, Terrain.Ground, 0.8f, 1.2f, 20.f);
+		}
+	});
+	// Dry, rocky ground near the sea (the rocky points' tops, the scrub behind them): agaves, Turk's caps among the
+	// stones, and clumps of columnar cactus.
+	Scatter(4.f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
+	{
+		if (Terrain.Ground < 1.f || Terrain.Ground > 40.f || Terrain.Inland > 150.f)
+		{
+			return;
+		}
+		const float Dry = FMath::Max(Smooth(0.15f, 0.4f, Terrain.Rock), 0.25f * (1.f - Smooth(0.3f, 1.2f, Terrain.Understory)));
+		if (Dry <= 0.f)
+		{
+			return;
+		}
+		const float Patch = Smooth(0.35f, 0.65f, OceanGradientNoise(Position / 30.f + FVector2f(71.f, 13.f)));
+		const float Roll = Random.FRand();
+		if (Roll < 0.22f * Dry * Patch)
+		{
+			Plant(AgaveTransforms, Position, Surface(Position), 0.7f, 1.4f, 8.f);
+		}
+		else if (Roll < 0.3f * Dry * Patch)
+		{
+			Plant(ColumnTransforms, Position, Surface(Position), 0.75f, 1.25f, 5.f);
+		}
+		else if (Roll < 0.5f * Dry * Patch && Terrain.Rock > 0.2f)
+		{
+			// Turk's caps come in small groups.
+			const int32 Count = Random.RandRange(2, 6);
+			for (int32 Index = 0; Index < Count; ++Index)
+			{
+				const FVector2f At = Position + FVector2f(Random.FRandRange(-1.5f, 1.5f), Random.FRandRange(-1.5f, 1.5f));
+				Plant(TurksCapTransforms, At, Surface(At), 0.7f, 1.3f, 3.f);
+			}
+		}
+	});
+	// The forest floor: ferns everywhere under the canopy, thickest in the damp valleys (Flow); bromeliads in clumps;
+	// heliconias along the valleys and the forest edges inland.
+	Scatter(2.5f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
+	{
+		if (Terrain.Understory < 0.3f || Terrain.Rock > 0.5f)
+		{
+			return;
+		}
+		const float Damp = FMath::Max(Smooth(0.15f, 0.6f, Terrain.Flow), Smooth(15.f, 40.f, Terrain.Ground) * 0.5f);
+		const float Roll = Random.FRand();
+		const float Height = Surface(Position);
+		if (Roll < GroundCoverDensity * (0.18f + 0.35f * Damp))
+		{
+			Plant(FernTransforms, Position, Height, 0.7f, 1.4f, 5.f);
+		}
+		else if (Roll < GroundCoverDensity * (0.24f + 0.35f * Damp) && OceanValueNoise(Position / 14.f + FVector2f(5.f, 77.f)) > 0.55f)
+		{
+			Plant(BromeliadTransforms, Position, Height, 0.8f, 1.3f, 3.f);
+		}
+		else if (Roll < GroundCoverDensity * (0.24f + 0.35f * Damp + 0.12f * Damp) && Terrain.Ground > 6.f)
+		{
+			Plant(HeliconiaTransforms, Position, Height, 0.8f, 1.25f, 5.f);
+		}
+	});
+	// Beach morning glory over the upper beach, in patches between the berm and the vegetation line.
+	Scatter(2.f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
+	{
+		if (Terrain.Ground < 1.1f || Terrain.Rock > 0.2f || Terrain.Understory > 0.3f || Terrain.Inland > 80.f)
+		{
+			return;
+		}
+		const float Patch = Smooth(0.45f, 0.7f, OceanGradientNoise(Position / 18.f + FVector2f(23.f, 51.f)));
+		if (Random.FRand() < 0.35f * GroundCoverDensity * Patch)
+		{
+			Plant(CreeperTransforms, Position, Surface(Position), 0.8f, 1.3f, 0.f);
+		}
+	});
+
 	// --- Stones, by kind and setting ---
 	auto PlaceRock = [&](ERockKind Kind, const FVector2f& Position, float HeightM, float SizeM, float Yaw, float Tilt, float SinkShare)
 	{
@@ -667,5 +798,16 @@ void AOceanIslandFlora::Build()
 		Count(PalmTransforms), Count(TreeTransforms), Count(ShrubTransforms), Count(BushTransforms),
 		Count(RockTransforms), Count(CoralTransforms), Count(UrchinTransforms), Count(ShellTransforms),
 		Count(FrondTransforms), Count(CoconutTransforms), Count(TuftTransforms));
+	AddAll(Almonds, AlmondTransforms);
+	AddAll(Agaves, AgaveTransforms);
+	AddAll(TurksCaps, TurksCapTransforms);
+	AddAll(Columns, ColumnTransforms);
+	AddAll(Bromeliads, BromeliadTransforms);
+	AddAll(Ferns, FernTransforms);
+	AddAll(Heliconias, HeliconiaTransforms);
+	AddAll(Creepers, CreeperTransforms);
+	UE_LOG(LogTemp, Display, TEXT("OceanIslandFlora: %d almond, %d agave, %d turk's cap, %d column cactus, %d bromeliad, %d fern, %d heliconia, %d creeper instances"),
+		Count(AlmondTransforms), Count(AgaveTransforms), Count(TurksCapTransforms), Count(ColumnTransforms), Count(BromeliadTransforms),
+		Count(FernTransforms), Count(HeliconiaTransforms), Count(CreeperTransforms));
 	bBuilt = true;
 }

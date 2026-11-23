@@ -752,8 +752,13 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 		// A narrow, ragged line along the beach, thick in places and broken in others; within it, a tangled mat
 		// with holes (fractal noise, not discs), fresh golden weed and darker dried weed.
 		const float WrackHeight = 0.6 * SwellHeight * 1.1 * 1.25 + 0.12 + 0.03 * OceanFractalNoise(PosM, 6.0, 4, 0.6);
-		const float Band = 1.0 - smoothstep(0.012, 0.035, abs(HeightM - WrackHeight));
-		const float Density = Band * smoothstep(0.35, 0.6, OceanGradientNoise(PosM / 18.0 + 5.0));
+		// The line wanders up and down the beach (each storm left its own), thick in clumps, broken into gaps: a
+		// continuous band of even width read as a stripe painted along the contour.
+		const float Wander = 0.06 * (OceanGradientNoise(PosM / 7.0 + 21.0) - 0.5);
+		const float Width = lerp(0.006, 0.03, smoothstep(0.3, 0.8, OceanGradientNoise(PosM / 4.0 + 33.0)));
+		const float Band = 1.0 - smoothstep(Width * 0.5, Width * 1.5, abs(HeightM - WrackHeight - Wander));
+		const float Density = Band * smoothstep(0.45, 0.62, OceanGradientNoise(PosM / 18.0 + 5.0))
+			* smoothstep(0.3, 0.55, OceanGradientNoise(PosM / 2.5 + 17.0));
 		if (Density > 0.01)
 		{
 			// The mat: a tile of heaped sargassum sprigs (Scripts/infinigen/render_wrack_tile.py: golden fresh weed,

@@ -149,7 +149,7 @@ protected:
 	 * (AOceanIslandFlora): a full mass reads as smooth green mounds between them.
 	 */
 	UPROPERTY(EditAnywhere, Category = "Island", meta = (ClampMin = "0", ClampMax = "1"))
-	float UnderstoryRelief = 0.2f;
+	float UnderstoryRelief = 0.1f;
 
 	/** Carves the land with rain and gravity (OceanErosion) when the island is built. */
 	UPROPERTY(EditAnywhere, Category = "Island|Erosion")

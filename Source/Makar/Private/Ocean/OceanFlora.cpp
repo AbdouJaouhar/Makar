@@ -21,6 +21,9 @@ namespace
 	constexpr int32 SectionFoliage = 1;
 	// Palms only: their foliage material is a textured leaf card, so the coconuts get a vertex-coloured section.
 	constexpr int32 SectionNuts = 2;
+	// Plants with real leaves (near level of detail): the leaves in their own section, with their own material (the
+	// far level's cards keep section 1).
+	constexpr int32 SectionLeaves = 2;
 
 	// --- 3D value noise -------------------------------------------------------------------------------------
 
@@ -284,6 +287,85 @@ namespace
 		}
 	}
 
+	/**
+	 * A leaf mass of real leaves (the near level of detail, instead of cards showing a rendered cluster): each leaf a
+	 * small blade folded along its midrib (5 vertices, 4 triangles), on a short petiole pointing out of the mass,
+	 * mostly facing up and out, bent a little by its own weight. Leaves fill a flattened ball, mostly towards its
+	 * surface; their normals lean outwards from the mass so it is lit as one soft volume. Width = blade width over length;
+	 * RedChance of them turning red (sea grape, tropical almond).
+	 */
+	void AddLeafSpray(FOceanMeshData& Data, int32 Section, const FVector3f& Center, float Radius, float LeafSize, float Width,
+		const FLinearColor& Green, const FLinearColor& Accent, float AccentAmount, float RedChance, FRandomStream& Random)
+	{
+		// Leaves come in rosettes at the twig tips (6-10 radiating from one point, in all directions but mostly out and
+		// up): clumps and gaps, as on a real crown, rather than an even confetti.
+		const int32 Leaves = FMath::Clamp(FMath::RoundToInt(36.f * FMath::Square(Radius / LeafSize)), 24, 1600);
+		const FVector3f Below = Center - FVector3f(0.f, 0.f, 0.35f * Radius);
+		FVector3f Direction = FVector3f::UpVector, TwigPoint = Center;
+		float Depth = 1.f;
+		int32 LeftInTwig = 0;
+		for (int32 Leaf = 0; Leaf < Leaves; ++Leaf)
+		{
+			if (LeftInTwig-- <= 0)
+			{
+				LeftInTwig = Random.RandRange(5, 9);
+				Direction = FVector3f(Random.GetUnitVector());
+				Depth = FMath::Sqrt(Random.FRandRange(0.2f, 1.f));
+				TwigPoint = Center + FVector3f(Direction.X, Direction.Y, Direction.Z * 0.7f) * (Radius * Depth);
+			}
+			const FVector3f Spoke(Random.GetUnitVector());
+			const FVector3f Base = TwigPoint + Spoke * (0.08f * LeafSize);
+			// Blade facing: up and out, with scatter; axis: out from the twig, drooping a little.
+			const FVector3f Face = (Direction * 0.5f + FVector3f::UpVector * 0.7f + Spoke * 0.5f).GetSafeNormal();
+			FVector3f Axis = (FVector3f(Spoke.X, Spoke.Y, 0.f).GetSafeNormal() * 0.8f + Direction * 0.5f
+				- FVector3f::UpVector * 0.25f);
+			Axis = (Axis - Face * FVector3f::DotProduct(Axis, Face)).GetSafeNormal();
+			if (Axis.IsNearlyZero())
+			{
+				continue;
+			}
+			const FVector3f Side = FVector3f::CrossProduct(Face, Axis);
+			const float Length = LeafSize * Random.FRandRange(0.7f, 1.25f);
+			const float Half = 0.5f * Width * Length;
+			const float Fold = 0.25f * Half; // the edges sit below the midrib: a V cross-section
+			const float Sag = 0.12f * Length;  // the tip bends down
+			const FVector3f Root = Base + Axis * (0.12f * Length);
+			const FVector3f Mid = Root + Axis * (0.5f * Length) + Face * (0.02f * Length);
+			const FVector3f Tip = Root + Axis * Length - FVector3f::UpVector * Sag;
+			const FVector3f Left = Root + Axis * (0.45f * Length) - Side * Half - Face * Fold;
+			const FVector3f Right = Root + Axis * (0.45f * Length) + Side * Half - Face * Fold;
+			FLinearColor Color = FMath::Lerp(Green, Accent, AccentAmount * Random.FRand()) * Random.FRandRange(0.8f, 1.2f);
+			if (Random.FRand() < RedChance)
+			{
+				Color = FMath::Lerp(FLinearColor(0.32f, 0.07f, 0.03f), FLinearColor(0.38f, 0.2f, 0.03f), Random.FRand());
+			}
+			// Inner leaves are darker (shaded by the mass).
+			Color *= FMath::Lerp(0.55f, 1.f, Depth);
+			const FVector3f Radial = (Base - Below).GetSafeNormal();
+			auto Normal = [&](const FVector3f& Blade) { return (Blade * 0.45f + Radial * 0.55f).GetSafeNormal(); };
+			const int32 First = Data.Vertices.Num();
+			Data.AddVertex(Root, Normal(Face), FVector2f(0.5f, 1.f), Color * 0.85f);
+			Data.AddVertex(Left, Normal((Face - Side * 0.5f).GetSafeNormal()), FVector2f(0.f, 0.5f), Color);
+			Data.AddVertex(Mid, Normal(Face), FVector2f(0.5f, 0.5f), Color * 1.05f);
+			Data.AddVertex(Right, Normal((Face + Side * 0.5f).GetSafeNormal()), FVector2f(1.f, 0.5f), Color);
+			Data.AddVertex(Tip, Normal(Face), FVector2f(0.5f, 0.f), Color);
+			Data.AddTriangle(Section, First, First + 2, First + 1);
+			Data.AddTriangle(Section, First + 1, First + 2, First + 4);
+			Data.AddTriangle(Section, First, First + 3, First + 2);
+			Data.AddTriangle(Section, First + 3, First + 4, First + 2);
+			// The petiole: a thin sliver from the twig.
+			if (Leaf % 3 == 0)
+			{
+				const FVector3f Twig = Base - Axis * (0.1f * Length) - FVector3f::UpVector * (0.05f * Length);
+				const int32 P = Data.Vertices.Num();
+				Data.AddVertex(Twig, Normal(Face), FVector2f(0.5f, 1.f), Color * 0.6f);
+				Data.AddVertex(Root - Side * 0.04f * Length, Normal(Face), FVector2f(0.4f, 1.f), Color * 0.7f);
+				Data.AddVertex(Root + Side * 0.04f * Length, Normal(Face), FVector2f(0.6f, 1.f), Color * 0.7f);
+				Data.AddTriangle(Section, P, P + 2, P + 1);
+			}
+		}
+	}
+
 	// --- L-system ---------------------------------------------------------------------------------------------
 
 	struct FLSystemRule
@@ -353,6 +435,11 @@ namespace
 		bool bLeafCards = false;
 		float CardSize = 140.f;    // cm
 		FLinearColor CardTint = FLinearColor(0.5f, 0.5f, 0.5f);
+		// Real leaves instead (AddLeafSpray, the near level of detail), in section SectionLeaves: Leaf / LeafAccent colours.
+		bool b3DLeaves = false;
+		float LeafSize = 22.f;     // cm, blade length
+		float LeafWidth = 0.55f;   // blade width over length
+		float RedChance = 0.f;
 	};
 
 	/**
@@ -447,14 +534,22 @@ namespace
 			case TEXT('L'):
 			case TEXT('A'):
 			{
-				const float Radius = Params.LeafRadius * Random.FRandRange(0.75f, 1.2f);
-				if (Params.bLeafCards)
+					const float Radius = Params.LeafRadius * Random.FRandRange(0.75f, 1.2f);
+				// Its own stream: the branches that follow grow the same whichever way the leaves are drawn.
+				FRandomStream LeafRandom(int32(Random.GetUnsignedInt() & 0x7fffffff));
+				const FVector3f LeafCenter = State.Position + FVector3f(0.f, 0.f, Radius * 0.3f);
+				if (Params.b3DLeaves)
 				{
-					AddLeafCards(Data, SectionFoliage, State.Position + FVector3f(0.f, 0.f, Radius * 0.3f), Radius, Params.CardSize, Random, Params.CardTint);
+					AddLeafSpray(Data, SectionLeaves, LeafCenter, Radius, Params.LeafSize, Params.LeafWidth, Params.Leaf, Params.LeafAccent,
+						Params.AccentAmount, Params.RedChance, LeafRandom);
+				}
+				else if (Params.bLeafCards)
+				{
+					AddLeafCards(Data, SectionFoliage, LeafCenter, Radius, Params.CardSize, LeafRandom, Params.CardTint);
 				}
 				else
 				{
-					AddLeafCluster(Data, State.Position + FVector3f(0.f, 0.f, Radius * 0.3f), Radius, Random, Params.Leaf, Params.LeafAccent, Params.AccentAmount);
+					AddLeafCluster(Data, LeafCenter, Radius, LeafRandom, Params.Leaf, Params.LeafAccent, Params.AccentAmount);
 				}
 				break;
 			}
@@ -506,17 +601,20 @@ namespace OceanFlora
 			AddLeafCluster(Data, Center, 11.f, NutRandom, FLinearColor(0.16f, 0.15f, 0.04f), FLinearColor(0.25f, 0.17f, 0.06f), 0.6f, SectionNuts);
 		}
 
-		// Fronds: an arching rachis with leaflets hanging on both sides; older, lower fronds droop and yellow.
-		const int32 Fronds = Random.RandRange(14, 18);
+		// Fronds: an arching rachis with leaflets hanging on both sides. The crown is a sphere, not a flat star: in a
+		// spiral (golden angle) the young fronds rise almost straight up in its middle, the mature ones arch out, the old
+		// ones droop below the horizontal and yellow, the dead ones hang along the trunk; each twisted about its rachis.
+		const int32 Fronds = Random.RandRange(22, 30);
+		const float Spiral = Random.FRandRange(0.f, 2.f * UE_PI);
 		for (int32 Frond = 0; Frond < Fronds; ++Frond)
 		{
-			const float Azimuth = 2.f * UE_PI * Frond / Fronds + Random.FRandRange(-0.2f, 0.2f);
-			const float Age = Random.FRand(); // 0 = young, upright; 1 = old, drooping
-			// The oldest fronds die back: brown, dry, hanging straight down along the trunk.
-			const bool bDead = Age > 0.88f;
-			const float Length = Random.FRandRange(380.f, 500.f);
-			const float StartPitch = FMath::DegreesToRadians(bDead ? -60.f : FMath::Lerp(55.f, -5.f, Age));
-			const float Droop = FMath::DegreesToRadians(bDead ? 40.f : FMath::Lerp(55.f, 95.f, Age));
+			const float Azimuth = Spiral + Frond * 2.39996f + Random.FRandRange(-0.15f, 0.15f);
+			const float Age = FMath::Clamp((Frond + Random.FRand()) / Fronds, 0.f, 1.f); // 0 = young, upright; 1 = old
+			const bool bDead = Age > 0.9f && Random.FRand() < 0.7f;
+			const float Length = Random.FRandRange(380.f, 500.f) * FMath::Lerp(0.6f, 1.f, FMath::SmoothStep(0.f, 0.35f, Age));
+			const float StartPitch = FMath::DegreesToRadians(bDead ? -70.f : FMath::Lerp(78.f, -22.f, Age));
+			const float Droop = FMath::DegreesToRadians(bDead ? 25.f : FMath::Lerp(35.f, 110.f, Age));
+			const float Roll = FMath::DegreesToRadians(Random.FRandRange(-28.f, 28.f));
 			const FVector3f Outward(FMath::Cos(Azimuth), FMath::Sin(Azimuth), 0.f);
 			// Vertex colour = tint over the rendered frond (M_PalmFrond divides by the young green (0.12, 0.2, 0.04)):
 			// young fronds a little yellower than the render, old ones yellow, dead ones straw-brown.
@@ -530,14 +628,18 @@ namespace OceanFlora
 			const FLinearColor Color = Green * Random.FRandRange(0.85f, 1.15f);
 			const float HalfWidth = 0.24f * Length;
 			const int32 Steps = 12;
-			FVector3f Position = Top;
+			// Older fronds spring from lower on the crown shaft.
+			FVector3f Position = Top + Outward * 8.f - FVector3f(0.f, 0.f, 35.f * Age);
 			int32 Previous[3] = { INDEX_NONE, INDEX_NONE, INDEX_NONE };
 			for (int32 Step = 0; Step <= Steps; ++Step)
 			{
 				const float S = float(Step) / Steps;
 				const float Pitch = StartPitch - Droop * FMath::Pow(S, 1.5f);
 				const FVector3f Direction = (Outward * FMath::Cos(Pitch) + FVector3f(0.f, 0.f, FMath::Sin(Pitch))).GetSafeNormal();
-				const FVector3f Side = FVector3f::CrossProduct(Direction, FVector3f::UpVector).GetSafeNormal();
+				const FVector3f Flat = FVector3f::CrossProduct(Direction, FVector3f::UpVector).GetSafeNormal();
+				const FVector3f FlatUp = FVector3f::CrossProduct(Flat, Direction).GetSafeNormal();
+				const float Twist = Roll * (0.4f + 0.6f * S);
+				const FVector3f Side = Flat * FMath::Cos(Twist) + FlatUp * FMath::Sin(Twist);
 				const FVector3f Up = FVector3f::CrossProduct(Side, Direction).GetSafeNormal();
 				const float Sag = HalfWidth * FMath::Lerp(0.25f, 0.6f, S);
 				const float V = FMath::Lerp(0.99f, 0.01f, S);
@@ -564,10 +666,10 @@ namespace OceanFlora
 		return Data;
 	}
 
-	FOceanMeshData MakeBroadleafTree(int32 Seed)
+	FOceanMeshData MakeBroadleafTree(int32 Seed, bool b3DLeaves, float LeafScale)
 	{
 		FRandomStream Random(Seed);
-		FOceanMeshData Data(2);
+		FOceanMeshData Data(3);
 		// The broadleaf trees behind Caribbean beaches (tropical almond, seaside mahoe, sea grape trees) fork low into
 		// a few crooked limbs that spread wide before turning up: a broad, umbrella-like crown on a short, leaning,
 		// thick trunk. Apices branch in two or three, with leaves along the upper limbs too, so the crown is one dense,
@@ -594,14 +696,59 @@ namespace OceanFlora
 		Params.bLeafCards = true;
 		Params.CardSize = Random.FRandRange(125.f, 150.f);
 		Params.CardTint = FLinearColor(0.5f * Random.FRandRange(0.9f, 1.05f), 0.5f * Random.FRandRange(0.92f, 1.08f), 0.5f * Random.FRandRange(0.85f, 1.f));
+		// Near: real leaves ~25 cm, each tree its own green (from the card tint), a few turning yellow.
+		Params.b3DLeaves = b3DLeaves;
+		Params.LeafSize = Random.FRandRange(20.f, 28.f) * LeafScale;
+		Params.LeafWidth = 0.5f;
+		Params.Leaf = FLinearColor(0.05f, 0.12f, 0.025f) * (Params.CardTint.G / 0.5f);
+		Params.LeafAccent = FLinearColor(0.14f, 0.16f, 0.03f);
+		Params.AccentAmount = 0.3f;
 		InterpretLSystem(Data, Program, Params, Random);
 		return Data;
 	}
 
-	FOceanMeshData MakeSeaGrape(int32 Seed)
+	FOceanMeshData MakeTropicalAlmond(int32 Seed, bool b3DLeaves, float LeafScale)
+	{
+		// Terminalia catappa, the tropical almond (amandier-pays) of every Caribbean beach: a straight trunk with tiers of
+		// near-horizontal limbs (a pagoda), big leaves in rosettes at the twig tips, some of them turned red.
+		FRandomStream Random(Seed);
+		FOceanMeshData Data(3);
+		const TArray<FLSystemRule> Rules = {
+			{ TEXT('A'), 0.8f, TEXT("FF'![&&B]///[&&B]///[&&B]///[&&B]A") },
+			{ TEXT('A'), 0.2f, TEXT("FF'![&&B]////[&&B]////[&&B]L") },
+			{ TEXT('B'), 0.7f, TEXT("F'L[&FL]////[&FL]") },
+			{ TEXT('B'), 0.3f, TEXT("F'[&FL]FL") },
+		};
+		const FString Program = RewriteLSystem(TEXT("FA"), Rules, 3, Random);
+		FTurtleParams Params;
+		Params.Length = Random.FRandRange(110.f, 150.f);
+		Params.Radius = Random.FRandRange(16.f, 22.f);
+		Params.LengthScale = 0.86f;
+		Params.BranchAngle = Random.FRandRange(38.f, 44.f); // twice that from the trunk: near-horizontal tiers
+		Params.RollAngle = 22.f;
+		Params.Phototropism = 0.025f;
+		Params.Lean = 6.f;
+		Params.Wobble = 6.f;
+		Params.RootFlare = 0.6f;
+		Params.LeafRadius = Random.FRandRange(80.f, 110.f);
+		Params.bLeafCards = true;
+		Params.CardSize = Random.FRandRange(110.f, 135.f);
+		Params.CardTint = FLinearColor(0.52f * Random.FRandRange(0.95f, 1.1f), 0.48f * Random.FRandRange(0.95f, 1.05f), 0.42f);
+		Params.b3DLeaves = b3DLeaves;
+		Params.LeafSize = Random.FRandRange(26.f, 32.f) * LeafScale;
+		Params.LeafWidth = 0.55f;
+		Params.Leaf = FLinearColor(0.06f, 0.13f, 0.025f);
+		Params.LeafAccent = FLinearColor(0.16f, 0.15f, 0.03f);
+		Params.AccentAmount = 0.35f;
+		Params.RedChance = Random.FRandRange(0.06f, 0.2f);
+		InterpretLSystem(Data, Program, Params, Random);
+		return Data;
+	}
+
+	FOceanMeshData MakeSeaGrape(int32 Seed, bool b3DLeaves, float LeafScale)
 	{
 		FRandomStream Random(Seed);
-		FOceanMeshData Data(2);
+		FOceanMeshData Data(3);
 		// Coccoloba uvifera: a sprawling shrub of many low, spreading stems with big round leaves,
 		// some of them turning red.
 		const TArray<FLSystemRule> Rules = {
@@ -626,14 +773,19 @@ namespace OceanFlora
 		Params.bLeafCards = true;
 		Params.CardSize = Random.FRandRange(95.f, 115.f);
 		Params.CardTint = FLinearColor(0.4f * Random.FRandRange(0.92f, 1.05f), 0.44f * Random.FRandRange(0.95f, 1.05f), 0.48f); // less yellow than the render
+		// Near: the sea grape's big round leathery leaves, ~18 cm, a few red.
+		Params.b3DLeaves = b3DLeaves;
+		Params.LeafSize = 17.f * LeafScale;
+		Params.LeafWidth = 0.95f;
+		Params.RedChance = 0.08f;
 		InterpretLSystem(Data, Program, Params, Random);
 		return Data;
 	}
 
-	FOceanMeshData MakeCoastalBush(int32 Seed)
+	FOceanMeshData MakeCoastalBush(int32 Seed, bool b3DLeaves, float LeafScale)
 	{
 		FRandomStream Random(Seed);
-		FOceanMeshData Data(2);
+		FOceanMeshData Data(3);
 		// The evergreen scrub of the coastal forest edge (seaside mahoe, bay cedar, young tropical almonds): three
 		// stems from the ground, each forking into leafy masses, so the bush is a mound of foliage from knee height
 		// up, ~2-2.5 m tall.
@@ -655,6 +807,11 @@ namespace OceanFlora
 		Params.bLeafCards = true;
 		Params.CardSize = Random.FRandRange(85.f, 105.f);
 		Params.CardTint = FLinearColor(0.5f * Random.FRandRange(0.85f, 1.f), 0.5f * Random.FRandRange(0.9f, 1.05f), 0.5f * Random.FRandRange(0.85f, 1.f));
+		Params.b3DLeaves = b3DLeaves;
+		Params.LeafSize = Random.FRandRange(9.f, 14.f) * LeafScale;
+		Params.LeafWidth = 0.45f;
+		Params.Leaf = FLinearColor(0.05f, 0.11f, 0.03f) * (Params.CardTint.G / 0.5f);
+		Params.LeafAccent = FLinearColor(0.1f, 0.14f, 0.04f);
 		InterpretLSystem(Data, Program, Params, Random);
 		return Data;
 	}
@@ -799,6 +956,367 @@ namespace OceanFlora
 		return Data;
 	}
 
+	// --- More Caribbean plants, all in 3D (no flat cards) ------------------------------------------------------
+
+	/**
+	 * A leaf blade along an arching curve from Base, heading Out (horizontal) at StartPitch and bending down by Droop
+	 * towards its tip; Roll turns its plane about the midrib. Three vertices across, the edges raised by Fold x the
+	 * half width (channelled, > 0) or lowered (< 0). Shape: 0 = tapering strap (agave, bromeliad), 1 = paddle on a
+	 * petiole (heliconia), 2 = narrow lance (pinna). Returns the tip.
+	 */
+	FVector3f AddBlade(FOceanMeshData& Data, int32 Section, const FVector3f& Base, const FVector3f& Out, float Length,
+		float StartPitch, float Droop, float Width, float Fold, float Roll, int32 Shape, int32 Steps,
+		const FLinearColor& Color, const FLinearColor& EdgeColor)
+	{
+		FVector3f Position = Base;
+		int32 Previous[3] = { INDEX_NONE, INDEX_NONE, INDEX_NONE };
+		for (int32 Step = 0; Step <= Steps; ++Step)
+		{
+			const float S = float(Step) / Steps;
+			const float Pitch = StartPitch - Droop * S * S;
+			const FVector3f Direction = (Out * FMath::Cos(Pitch) + FVector3f(0.f, 0.f, FMath::Sin(Pitch))).GetSafeNormal();
+			FVector3f Side = FVector3f::CrossProduct(Direction, FVector3f::UpVector).GetSafeNormal();
+			if (Side.IsNearlyZero())
+			{
+				Side = FVector3f::CrossProduct(Direction, FVector3f::ForwardVector).GetSafeNormal();
+			}
+			FVector3f Up = FVector3f::CrossProduct(Side, Direction).GetSafeNormal();
+			const float R = Roll * S;
+			const FVector3f RolledSide = Side * FMath::Cos(R) + Up * FMath::Sin(R);
+			Up = FVector3f::CrossProduct(RolledSide, Direction).GetSafeNormal();
+			Side = RolledSide;
+			float W = 0.f;
+			switch (Shape)
+			{
+			case 0: W = Width * FMath::Pow(1.f - S, 0.8f); break;
+			case 1: W = S < 0.25f ? 0.06f * Width : Width * FMath::Pow(FMath::Max(FMath::Sin(UE_PI * (S - 0.25f) / 0.75f), 0.f), 0.6f); break;
+			default: W = Width * FMath::Pow(FMath::Max(FMath::Sin(UE_PI * FMath::Min(S * 1.1f, 1.f)), 0.f), 0.8f); break; // Max: sin(pi) < 0 by a hair, and Pow of it is NaN
+			}
+			W *= 0.5f;
+			const FVector3f Left = Position - Side * W + Up * (Fold * W);
+			const FVector3f Right = Position + Side * W + Up * (Fold * W);
+			const int32 Row[3] = {
+				Data.AddVertex(Left, (Up - Side * 0.3f * FMath::Sign(Fold + 0.001f)).GetSafeNormal(), FVector2f(0.f, S), EdgeColor),
+				Data.AddVertex(Position, Up, FVector2f(0.5f, S), Color),
+				Data.AddVertex(Right, (Up + Side * 0.3f * FMath::Sign(Fold + 0.001f)).GetSafeNormal(), FVector2f(1.f, S), EdgeColor) };
+			if (Step > 0)
+			{
+				for (int32 Column = 0; Column < 2; ++Column)
+				{
+					Data.AddTriangle(Section, Previous[Column], Previous[Column + 1], Row[Column]);
+					Data.AddTriangle(Section, Previous[Column + 1], Row[Column + 1], Row[Column]);
+				}
+			}
+			FMemory::Memcpy(Previous, Row, sizeof(Row));
+			if (Step < Steps)
+			{
+				Position += Direction * (Length / Steps);
+			}
+		}
+		return Position;
+	}
+
+	/** A ribbed column (cactus) along a curve: Ribs ridges of relative depth RibDepth, rounded top. */
+	template <typename CurveType, typename RadiusType>
+	void AddRibbedColumn(FOceanMeshData& Data, int32 Section, const CurveType& Curve, const RadiusType& Radius, int32 Ribs,
+		float RibDepth, int32 Rings, int32 Sides, const FLinearColor& Color, const FLinearColor& RibColor)
+	{
+		const int32 First = Data.Vertices.Num();
+		const int32 Row = Sides + 1;
+		FVector3f SideX = FVector3f::ZeroVector;
+		for (int32 Ring = 0; Ring <= Rings; ++Ring)
+		{
+			const float T = float(Ring) / Rings;
+			const FVector3f Point = Curve(T);
+			const FVector3f Tangent = (Curve(FMath::Min(T + 0.01f, 1.f)) - Curve(FMath::Max(T - 0.01f, 0.f))).GetSafeNormal();
+			if (Ring == 0)
+			{
+				const FVector3f Helper = FMath::Abs(Tangent.Z) < 0.9f ? FVector3f::UpVector : FVector3f::ForwardVector;
+				SideX = FVector3f::CrossProduct(Tangent, Helper).GetSafeNormal();
+			}
+			else
+			{
+				SideX = (SideX - Tangent * FVector3f::DotProduct(SideX, Tangent)).GetSafeNormal();
+			}
+			const FVector3f SideY = FVector3f::CrossProduct(Tangent, SideX);
+			// Rounded top: the last tenth closes in.
+			const float Close = T > 0.9f ? FMath::Sqrt(FMath::Max(1.f - FMath::Square((T - 0.9f) / 0.1f), 0.f)) : 1.f;
+			const float R = Radius(T) * FMath::Max(Close, 0.05f);
+			for (int32 Side = 0; Side <= Sides; ++Side)
+			{
+				const float Angle = 2.f * UE_PI * Side / Sides;
+				const float Rib = FMath::Pow(FMath::Abs(FMath::Cos(0.5f * Ribs * Angle)), 0.6f); // 1 on a ridge, 0 in a groove
+				const FVector3f Out = SideX * FMath::Cos(Angle) + SideY * FMath::Sin(Angle);
+				const float Radial = R * (1.f - RibDepth + RibDepth * Rib);
+				Data.AddVertex(Point + Out * Radial, (Out + Tangent * (1.f - Close) * 2.f).GetSafeNormal(),
+					FVector2f(float(Side) / Sides, T), FMath::Lerp(Color, RibColor, Rib));
+			}
+			if (Ring > 0)
+			{
+				const int32 Below = First + (Ring - 1) * Row, Above = First + Ring * Row;
+				for (int32 Side = 0; Side < Sides; ++Side)
+				{
+					Data.AddTriangle(Section, Below + Side, Above + Side, Below + Side + 1);
+					Data.AddTriangle(Section, Below + Side + 1, Above + Side, Above + Side + 1);
+				}
+			}
+		}
+	}
+
+	FOceanMeshData MakeAgave(int32 Seed)
+	{
+		// Agave (A. karatto, A. antillarum): the century plant of Caribbean limestone coasts. A rosette of thick, rigid,
+		// channelled grey-green leaves, the inner ones erect, the outer ones spreading and recurved, the oldest dry. Now
+		// and then the tall flowering pole with its candelabra of yellow flower clusters.
+		FRandomStream Random(Seed);
+		FOceanMeshData Data(2);
+		const int32 Leaves = Random.RandRange(24, 36);
+		const float Size = Random.FRandRange(60.f, 110.f);
+		const float Spiral = Random.FRandRange(0.f, 2.f * UE_PI);
+		const FLinearColor Blue(0.13f, 0.2f, 0.15f), Edge(0.1f, 0.13f, 0.08f), Dry(0.24f, 0.18f, 0.1f);
+		for (int32 Leaf = 0; Leaf < Leaves; ++Leaf)
+		{
+			const float Age = (Leaf + Random.FRand()) / Leaves; // 0 = inner, young
+			const float Azimuth = Spiral + Leaf * 2.39996f;
+			const FVector3f Out(FMath::Cos(Azimuth), FMath::Sin(Azimuth), 0.f);
+			const bool bDead = Age > 0.9f && Random.FRand() < 0.6f;
+			const float Length = Size * FMath::Lerp(0.55f, 1.f, FMath::Sqrt(Age)) * Random.FRandRange(0.9f, 1.1f);
+			const float Pitch = FMath::DegreesToRadians(bDead ? -5.f : FMath::Lerp(80.f, 12.f, Age));
+			const float Droop = FMath::DegreesToRadians(bDead ? 50.f : FMath::Lerp(5.f, 40.f, Age * Age));
+			const FLinearColor Color = (bDead ? Dry : Blue) * Random.FRandRange(0.85f, 1.15f);
+			const FVector3f Base = Out * (3.f + 6.f * Age) + FVector3f(0.f, 0.f, 4.f + 8.f * (1.f - Age));
+			AddBlade(Data, 1, Base, Out, Length, Pitch, Droop, 0.17f * Length, 0.45f, FMath::DegreesToRadians(Random.FRandRange(-10.f, 10.f)),
+				0, 6, Color, bDead ? Dry * 0.8f : Edge);
+		}
+		if (Random.FRand() < 0.3f)
+		{
+			const float PoleHeight = Random.FRandRange(300.f, 600.f);
+			const float Lean = Random.FRandRange(-0.08f, 0.08f);
+			auto Pole = [&](float T) { return FVector3f(Lean * PoleHeight * T * T, 0.f, 10.f + PoleHeight * T); };
+			AddBarkTube(Data, 0, Pole, [](float T) { return FMath::Lerp(6.f, 2.f, T); }, 10, 6, FLinearColor(0.2f, 0.2f, 0.1f));
+			const int32 Branches = Random.RandRange(6, 10);
+			for (int32 Branch = 0; Branch < Branches; ++Branch)
+			{
+				const float T = FMath::Lerp(0.6f, 0.95f, float(Branch) / Branches);
+				const float Azimuth = Branch * 2.39996f;
+				const FVector3f Start = Pole(T);
+				const FVector3f End = Start + FVector3f(FMath::Cos(Azimuth), FMath::Sin(Azimuth), 0.35f) * FMath::Lerp(55.f, 20.f, T);
+				AddTube(Data, 0, Start, End, 1.6f, 1.f, 5, FLinearColor(0.2f, 0.2f, 0.1f), FLinearColor(0.2f, 0.2f, 0.1f));
+				FRandomStream Flower(Seed * 13 + Branch);
+				AddLeafCluster(Data, End + FVector3f(0.f, 0.f, 6.f), 11.f, Flower, FLinearColor(0.55f, 0.45f, 0.05f), FLinearColor(0.35f, 0.33f, 0.08f), 0.5f, 1);
+			}
+		}
+		return Data;
+	}
+
+	FOceanMeshData MakeTurksCap(int32 Seed)
+	{
+		// Turk's cap cactus (Melocactus intortus), on the limestone of Pointe des Chateaux and the Grenadines: a ribbed
+		// green globe crowned with a woolly red cephalium. Bark section (vertex colour).
+		FRandomStream Random(Seed);
+		FOceanMeshData Data(1);
+		const float R = Random.FRandRange(12.f, 19.f);
+		const int32 Ribs = Random.RandRange(12, 15);
+		const FLinearColor Green(0.04f, 0.09f, 0.04f), Rib(0.08f, 0.14f, 0.07f);
+		AddRibbedColumn(Data, 0, [&](float T) { return FVector3f(0.f, 0.f, -3.f + 1.8f * R * T); },
+			[&](float T) { return R * FMath::Max(FMath::Sin(UE_PI * FMath::Lerp(0.18f, 0.92f, T)), 0.35f); }, Ribs, 0.14f, 10, 3 * Ribs, Green, Rib);
+		const float CapHeight = R * Random.FRandRange(0.5f, 1.3f);
+		AddRibbedColumn(Data, 0, [&](float T) { return FVector3f(0.f, 0.f, 1.5f * R + CapHeight * T); },
+			[&](float T) { return 0.55f * R; }, 24, 0.08f, 6, 24, FLinearColor(0.35f, 0.08f, 0.07f), FLinearColor(0.5f, 0.3f, 0.26f));
+		return Data;
+	}
+
+	FOceanMeshData MakeColumnCactus(int32 Seed)
+	{
+		// Dildo cactus (Pilosocereus royenii): a clump of ribbed, glaucous columns 2-4 m tall, curving up from the base,
+		// on dry limestone and in the coastal scrub. Bark section (vertex colour).
+		FRandomStream Random(Seed);
+		FOceanMeshData Data(1);
+		const int32 Stems = Random.RandRange(3, 7);
+		const FLinearColor Glaucous(0.035f, 0.07f, 0.05f), Rib(0.07f, 0.11f, 0.08f);
+		for (int32 Stem = 0; Stem < Stems; ++Stem)
+		{
+			const float Azimuth = Random.FRandRange(0.f, 2.f * UE_PI);
+			const FVector3f Out(FMath::Cos(Azimuth), FMath::Sin(Azimuth), 0.f);
+			const float Height = Stem == 0 ? Random.FRandRange(250.f, 420.f) : Random.FRandRange(120.f, 330.f);
+			const float Spread = Stem == 0 ? 0.f : Random.FRandRange(25.f, 70.f);
+			const float Radius = Random.FRandRange(6.5f, 9.f);
+			AddRibbedColumn(Data, 0, [&](float T)
+				{
+					// Out from the base, then up.
+					return Out * (Spread * FMath::Sqrt(T) + 8.f * (Stem > 0 ? 1.f : 0.f)) + FVector3f(0.f, 0.f, Height * T - 5.f);
+				},
+				[&](float T) { return Radius * (1.f - 0.15f * T); }, Random.RandRange(8, 11), 0.22f, 14, 30, Glaucous, Rib);
+		}
+		return Data;
+	}
+
+	FOceanMeshData MakeBromeliad(int32 Seed)
+	{
+		// Ground and rock bromeliads of the Antillean forests (Hohenbergia, Guzmania): a funnel rosette of arching strap
+		// leaves, some with a red heart.
+		FRandomStream Random(Seed);
+		FOceanMeshData Data(2);
+		const int32 Leaves = Random.RandRange(14, 22);
+		const float Size = Random.FRandRange(35.f, 70.f);
+		const bool bRed = Random.FRand() < 0.45f;
+		const FLinearColor Green(0.09f, 0.18f, 0.05f), Heart(0.36f, 0.06f, 0.04f);
+		const float Spiral = Random.FRandRange(0.f, 2.f * UE_PI);
+		for (int32 Leaf = 0; Leaf < Leaves; ++Leaf)
+		{
+			const float Age = (Leaf + Random.FRand()) / Leaves;
+			const float Azimuth = Spiral + Leaf * 2.39996f;
+			const FVector3f Out(FMath::Cos(Azimuth), FMath::Sin(Azimuth), 0.f);
+			const float Length = Size * FMath::Lerp(0.6f, 1.f, Age) * Random.FRandRange(0.9f, 1.1f);
+			const FLinearColor Color = (bRed && Age < 0.35f ? Heart : Green * Random.FRandRange(0.85f, 1.2f));
+			AddBlade(Data, 1, Out * 2.f + FVector3f(0.f, 0.f, 3.f), Out, Length, FMath::DegreesToRadians(FMath::Lerp(72.f, 30.f, Age)),
+				FMath::DegreesToRadians(FMath::Lerp(40.f, 95.f, Age)), Random.FRandRange(4.5f, 7.f), 0.35f,
+				FMath::DegreesToRadians(Random.FRandRange(-20.f, 20.f)), 0, 6, Color, Color * 0.8f);
+		}
+		return Data;
+	}
+
+	FOceanMeshData MakeFern(int32 Seed)
+	{
+		// A forest fern (Nephrolepis, Thelypteris): a crown of arching fronds, each a rachis with narrow pinnae on both
+		// sides, longest mid-frond; the outer fronds paler and drooping.
+		FRandomStream Random(Seed);
+		FOceanMeshData Data(2);
+		const int32 Fronds = Random.RandRange(8, 14);
+		const float Size = Random.FRandRange(60.f, 140.f);
+		const float Spiral = Random.FRandRange(0.f, 2.f * UE_PI);
+		for (int32 Frond = 0; Frond < Fronds; ++Frond)
+		{
+			const float Age = (Frond + Random.FRand()) / Fronds;
+			const float Azimuth = Spiral + Frond * 2.39996f;
+			const FVector3f Out(FMath::Cos(Azimuth), FMath::Sin(Azimuth), 0.f);
+			const float Length = Size * FMath::Lerp(0.6f, 1.f, Age) * Random.FRandRange(0.85f, 1.1f);
+			const float StartPitch = FMath::DegreesToRadians(FMath::Lerp(72.f, 32.f, Age));
+			const float Droop = FMath::DegreesToRadians(FMath::Lerp(70.f, 115.f, Age));
+			const FLinearColor Color = FMath::Lerp(FLinearColor(0.06f, 0.15f, 0.03f), FLinearColor(0.13f, 0.17f, 0.04f), Age * Age) * Random.FRandRange(0.85f, 1.15f);
+			const int32 Steps = 20;
+			FVector3f Position = Out * 2.f;
+			for (int32 Step = 0; Step < Steps; ++Step)
+			{
+				const float S = (Step + 0.5f) / Steps;
+				const float Pitch = StartPitch - Droop * S * S;
+				const FVector3f Direction = (Out * FMath::Cos(Pitch) + FVector3f(0.f, 0.f, FMath::Sin(Pitch))).GetSafeNormal();
+				const FVector3f Side = FVector3f::CrossProduct(Direction, FVector3f::UpVector).GetSafeNormal();
+				Position += Direction * (Length / Steps);
+				if (S < 0.12f)
+				{
+					continue; // the bare stipe
+				}
+				const float PinnaLength = 0.3f * Length * FMath::Pow(FMath::Max(FMath::Sin(UE_PI * FMath::Min((S - 0.12f) / 0.9f, 1.f)), 0.f), 0.7f);
+				for (int32 Sign = -1; Sign <= 1; Sign += 2)
+				{
+					// Pinnae lean forward along the rachis and droop a little.
+					const FVector3f PinnaOut = (Side * float(Sign) + Direction * 0.45f).GetSafeNormal();
+					AddBlade(Data, 1, Position, FVector3f(PinnaOut.X, PinnaOut.Y, 0.f).GetSafeNormal(), PinnaLength,
+						FMath::Asin(FMath::Clamp(PinnaOut.Z, -1.f, 1.f)) - 0.15f, 0.35f, 0.22f * PinnaLength, 0.15f, 0.f, 2, 2, Color, Color * 0.85f);
+				}
+			}
+		}
+		return Data;
+	}
+
+	FOceanMeshData MakeHeliconia(int32 Seed)
+	{
+		// Heliconia caribaea, the balisier of the Lesser Antilles' forests: a clump of pseudostems with huge paddle leaves
+		// on long petioles, two ranks to a stem, and on some the zigzag of red and yellow bracts.
+		FRandomStream Random(Seed);
+		FOceanMeshData Data(2);
+		const int32 Stems = Random.RandRange(4, 8);
+		const FLinearColor Stem(0.1f, 0.17f, 0.06f), Leaf(0.07f, 0.17f, 0.035f), Rib(0.12f, 0.2f, 0.06f);
+		for (int32 Index = 0; Index < Stems; ++Index)
+		{
+			const FVector3f Root(Random.FRandRange(-30.f, 30.f), Random.FRandRange(-30.f, 30.f), -5.f);
+			const float Height = Random.FRandRange(110.f, 230.f);
+			const FVector3f Lean(Random.FRandRange(-0.12f, 0.12f), Random.FRandRange(-0.12f, 0.12f), 1.f);
+			const FVector3f Top = Root + Lean.GetSafeNormal() * Height;
+			AddTube(Data, 0, Root, Top, 2.6f, 2.f, 6, Stem, Stem);
+			const float Rank = Random.FRandRange(0.f, 2.f * UE_PI);
+			const int32 Leaves = Random.RandRange(2, 4);
+			for (int32 L = 0; L < Leaves; ++L)
+			{
+				const float Azimuth = Rank + (L % 2) * UE_PI + Random.FRandRange(-0.3f, 0.3f);
+				const FVector3f Out(FMath::Cos(Azimuth), FMath::Sin(Azimuth), 0.f);
+				const FVector3f Base = FMath::Lerp(Root, Top, FMath::Lerp(0.55f, 1.f, float(L) / Leaves));
+				AddBlade(Data, 1, Base, Out, Random.FRandRange(120.f, 190.f), FMath::DegreesToRadians(Random.FRandRange(50.f, 72.f)),
+					FMath::DegreesToRadians(Random.FRandRange(35.f, 70.f)), Random.FRandRange(26.f, 36.f), -0.15f,
+					FMath::DegreesToRadians(Random.FRandRange(-25.f, 25.f)), 1, 10, Leaf * Random.FRandRange(0.85f, 1.15f), Rib);
+			}
+			if (Random.FRand() < 0.4f)
+			{
+				// The inflorescence: boat-shaped bracts alternating along a zigzag axis, red with yellow lips.
+				FVector3f Bract = Top;
+				for (int32 B = 0; B < 7; ++B)
+				{
+					const FVector3f Next = Bract + FVector3f((B % 2 ? 6.f : -6.f), 0.f, 9.f);
+					FRandomStream BractRandom(Seed * 17 + Index * 7 + B);
+					AddLeafCluster(Data, Next, 6.f, BractRandom, FLinearColor(0.45f, 0.04f, 0.03f), FLinearColor(0.5f, 0.35f, 0.03f), 0.35f, 1);
+					Bract = Next;
+				}
+			}
+		}
+		return Data;
+	}
+
+	FOceanMeshData MakeBeachCreeper(int32 Seed)
+	{
+		// Beach morning glory (Ipomoea pes-caprae), the creeper of the upper beach: runners radiating over the sand with
+		// leathery leaves folded along the midrib, standing up on their petioles, and pink-purple trumpets here and there.
+		FRandomStream Random(Seed);
+		FOceanMeshData Data(2);
+		const int32 Runners = Random.RandRange(5, 9);
+		const FLinearColor Vine(0.2f, 0.12f, 0.08f), Leaf(0.07f, 0.15f, 0.035f);
+		for (int32 Runner = 0; Runner < Runners; ++Runner)
+		{
+			const float Azimuth = Random.FRandRange(0.f, 2.f * UE_PI);
+			const float Length = Random.FRandRange(140.f, 340.f);
+			const float Wiggle = Random.FRandRange(0.15f, 0.4f);
+			const float Phase = Random.FRandRange(0.f, 6.f);
+			auto Curve = [&](float T)
+			{
+				const float A = Azimuth + Wiggle * FMath::Sin(Phase + 7.f * T);
+				return FVector3f(FMath::Cos(A), FMath::Sin(A), 0.f) * (Length * T) + FVector3f(0.f, 0.f, 1.f);
+			};
+			AddBarkTube(Data, 0, Curve, [](float) { return 0.6f; }, 16, 4, Vine);
+			for (float T = 0.05f; T < 0.98f; T += Random.FRandRange(0.04f, 0.08f))
+			{
+				const FVector3f At = Curve(T);
+				const FVector3f Side(Random.GetUnitVector());
+				const FVector3f Face = (FVector3f::UpVector * 0.9f + FVector3f(Side.X, Side.Y, 0.f) * 0.5f).GetSafeNormal();
+				FVector3f Axis = FVector3f(Side.X, Side.Y, 0.f).GetSafeNormal();
+				Axis = (Axis - Face * FVector3f::DotProduct(Axis, Face)).GetSafeNormal();
+				const FVector3f Across = FVector3f::CrossProduct(Face, Axis);
+				const float Size = Random.FRandRange(6.f, 10.f) * FMath::Lerp(1.f, 0.6f, T);
+				const FVector3f Root = At + FVector3f(0.f, 0.f, Random.FRandRange(4.f, 12.f));
+				AddTube(Data, 0, At, Root, 0.25f, 0.2f, 3, Vine, Vine);
+				// A round, notched leaf folded up along its midrib.
+				const FLinearColor Color = Leaf * Random.FRandRange(0.85f, 1.2f);
+				const int32 First = Data.Vertices.Num();
+				Data.AddVertex(Root, Face, FVector2f(0.5f, 1.f), Color);
+				Data.AddVertex(Root + Axis * (0.45f * Size) - Across * (0.55f * Size) + Face * (0.25f * Size), Face, FVector2f(0.f, 0.5f), Color);
+				Data.AddVertex(Root + Axis * (0.5f * Size), Face, FVector2f(0.5f, 0.5f), Color * 1.1f);
+				Data.AddVertex(Root + Axis * (0.45f * Size) + Across * (0.55f * Size) + Face * (0.25f * Size), Face, FVector2f(1.f, 0.5f), Color);
+				Data.AddVertex(Root + Axis * (0.95f * Size) - Across * (0.15f * Size) + Face * (0.1f * Size), Face, FVector2f(0.3f, 0.f), Color);
+				Data.AddVertex(Root + Axis * (0.95f * Size) + Across * (0.15f * Size) + Face * (0.1f * Size), Face, FVector2f(0.7f, 0.f), Color);
+				Data.AddTriangle(1, First, First + 2, First + 1);
+				Data.AddTriangle(1, First, First + 3, First + 2);
+				Data.AddTriangle(1, First + 1, First + 2, First + 4);
+				Data.AddTriangle(1, First + 2, First + 3, First + 5);
+				Data.AddTriangle(1, First + 2, First + 5, First + 4);
+				if (Random.FRand() < 0.07f)
+				{
+					FRandomStream Flower(Seed * 29 + Runner * 101 + int32(T * 100.f));
+					AddLeafCluster(Data, Root + FVector3f(0.f, 0.f, 4.f), 3.5f, Flower, FLinearColor(0.42f, 0.1f, 0.32f), FLinearColor(0.55f, 0.3f, 0.45f), 0.4f, 1);
+				}
+			}
+		}
+		return Data;
+	}
+
 	FOceanMeshData MakeCaribbeanRock(ERockKind Kind, int32 Seed)
 	{
 		FRandomStream Random(Seed * 7919 + int32(Kind) * 104729);
@@ -882,7 +1400,7 @@ namespace OceanFlora
 				const float Facing = D.X * Plane.X + D.Y * Plane.Y + D.Z * Plane.Z;
 				if (Facing > 0.05f)
 				{
-					R = FMath::Min(R, Plane.W * R / FMath::Pow(Facing, 0.15f) + (1.f - Facing) * 0.02f);
+					R = FMath::Min(R, Plane.W / Facing); // the flat fracture face
 				}
 			}
 			const FVector3f S = D * R;
@@ -897,7 +1415,7 @@ namespace OceanFlora
 				const float Pits = FMath::SmoothStep(0.62f, 0.8f, Fractal3(S * 6.f + Offset * 1.3f, 3));
 				const float Rills = Ridged(FVector3f(S.X * 9.f, S.Y * 9.f, S.Z * 1.5f) + Offset, 2) * FMath::Max(D.Z, 0.f);
 				const float Lumps = Fractal3(S * 2.2f + Offset, 4) - 0.5f;
-				R += 0.1f * Lumps - 0.045f * Notch * (1.f - FMath::Abs(D.Z)) - 0.06f * Pits - 0.025f * Rills;
+				R += 0.18f * Lumps - 0.07f * Notch * (1.f - FMath::Abs(D.Z)) - 0.1f * Pits - 0.04f * Rills;
 				Hollow = 0.8f * Notch * (1.f - FMath::Abs(D.Z)) + Pits;
 				break;
 			}
@@ -906,7 +1424,7 @@ namespace OceanFlora
 				const float Jag = Ridged(S * 7.f + Offset, 4);
 				const float Basins = FMath::SmoothStep(0.55f, 0.75f, Fractal3(S * 3.f + Offset * 0.7f, 3));
 				const float Top = FMath::SmoothStep(-0.2f, 0.6f, D.Z);
-				R += 0.12f * (Fractal3(S * 1.6f + Offset, 3) - 0.5f) + Top * (0.09f * Jag - 0.1f * Basins);
+				R += 0.2f * (Fractal3(S * 1.6f + Offset, 3) - 0.5f) + Top * (0.2f * Jag - 0.14f * Basins);
 				Hollow = Top * (Basins + 0.6f * (1.f - Jag));
 				break;
 			}
@@ -924,7 +1442,7 @@ namespace OceanFlora
 			case ERockKind::Volcanic:
 			{
 				const float Vesicles = FMath::SmoothStep(0.7f, 0.85f, Fractal3(S * 14.f + Offset, 2));
-				R += 0.14f * (Fractal3(S * 1.5f + Offset, 4) - 0.5f) + 0.03f * (Fractal3(S * 6.f + Offset, 3) - 0.5f) - 0.015f * Vesicles;
+				R += 0.22f * (Fractal3(S * 1.5f + Offset, 4) - 0.5f) + 0.05f * (Fractal3(S * 6.f + Offset, 3) - 0.5f) - 0.02f * Vesicles;
 				Hollow = Vesicles;
 				break;
 			}
@@ -970,56 +1488,89 @@ namespace OceanFlora
 
 	UStaticMesh* BuildStaticMesh(UObject* Outer, const FOceanMeshData& Data, const TArray<UMaterialInterface*>& Materials)
 	{
-		FMeshDescription Description;
-		FStaticMeshAttributes Attributes(Description);
-		Attributes.Register();
+		return BuildStaticMeshLods(Outer, { &Data }, Materials, { 1.f });
+	}
 
-		TVertexAttributesRef<FVector3f> Positions = Attributes.GetVertexPositions();
-		TVertexInstanceAttributesRef<FVector3f> Normals = Attributes.GetVertexInstanceNormals();
-		TVertexInstanceAttributesRef<FVector3f> Tangents = Attributes.GetVertexInstanceTangents();
-		TVertexInstanceAttributesRef<float> BinormalSigns = Attributes.GetVertexInstanceBinormalSigns();
-		TVertexInstanceAttributesRef<FVector2f> UVs = Attributes.GetVertexInstanceUVs();
-		TVertexInstanceAttributesRef<FVector4f> Colors = Attributes.GetVertexInstanceColors();
-		TPolygonGroupAttributesRef<FName> SlotNames = Attributes.GetPolygonGroupMaterialSlotNames();
-
-		Description.ReserveNewVertices(Data.Vertices.Num());
-		Description.ReserveNewVertexInstances(Data.Vertices.Num());
-		TArray<FVertexInstanceID> Instances;
-		Instances.Reserve(Data.Vertices.Num());
-		for (const FOceanMeshData::FVertex& Vertex : Data.Vertices)
+	namespace
+	{
+		void FillDescription(FMeshDescription& Description, const FOceanMeshData& Data)
 		{
-			const FVertexID VertexID = Description.CreateVertex();
-			Positions[VertexID] = Vertex.Position;
-			const FVertexInstanceID Instance = Description.CreateVertexInstance(VertexID);
-			Normals[Instance] = Vertex.Normal;
-			const FVector3f Helper = FMath::Abs(Vertex.Normal.Z) < 0.9f ? FVector3f::UpVector : FVector3f::ForwardVector;
-			Tangents[Instance] = FVector3f::CrossProduct(Helper, Vertex.Normal).GetSafeNormal();
-			BinormalSigns[Instance] = 1.f;
-			UVs.Set(Instance, 0, Vertex.UV);
-			Colors[Instance] = FVector4f(Vertex.Color.R, Vertex.Color.G, Vertex.Color.B, 1.f);
-			Instances.Add(Instance);
-		}
-
-		UStaticMesh* Mesh = NewObject<UStaticMesh>(Outer, NAME_None, RF_Transient);
-		for (int32 Section = 0; Section < Data.Sections.Num(); ++Section)
-		{
-			const FName SlotName(*FString::Printf(TEXT("Slot%d"), Section));
-			const FPolygonGroupID Group = Description.CreatePolygonGroup();
-			SlotNames[Group] = SlotName;
-			const TArray<int32>& Indices = Data.Sections[Section];
-			for (int32 I = 0; I + 2 < Indices.Num(); I += 3)
+			FStaticMeshAttributes Attributes(Description);
+			Attributes.Register();
+			TVertexAttributesRef<FVector3f> Positions = Attributes.GetVertexPositions();
+			TVertexInstanceAttributesRef<FVector3f> Normals = Attributes.GetVertexInstanceNormals();
+			TVertexInstanceAttributesRef<FVector3f> Tangents = Attributes.GetVertexInstanceTangents();
+			TVertexInstanceAttributesRef<float> BinormalSigns = Attributes.GetVertexInstanceBinormalSigns();
+			TVertexInstanceAttributesRef<FVector2f> UVs = Attributes.GetVertexInstanceUVs();
+			TVertexInstanceAttributesRef<FVector4f> Colors = Attributes.GetVertexInstanceColors();
+			TPolygonGroupAttributesRef<FName> SlotNames = Attributes.GetPolygonGroupMaterialSlotNames();
+			Description.ReserveNewVertices(Data.Vertices.Num());
+			Description.ReserveNewVertexInstances(Data.Vertices.Num());
+			TArray<FVertexInstanceID> Instances;
+			Instances.Reserve(Data.Vertices.Num());
+			for (const FOceanMeshData::FVertex& Vertex : Data.Vertices)
 			{
-				Description.CreateTriangle(Group, { Instances[Indices[I]], Instances[Indices[I + 1]], Instances[Indices[I + 2]] });
+				const FVertexID VertexID = Description.CreateVertex();
+				Positions[VertexID] = Vertex.Position;
+				const FVertexInstanceID Instance = Description.CreateVertexInstance(VertexID);
+				Normals[Instance] = Vertex.Normal;
+				const FVector3f Helper = FMath::Abs(Vertex.Normal.Z) < 0.9f ? FVector3f::UpVector : FVector3f::ForwardVector;
+				Tangents[Instance] = FVector3f::CrossProduct(Helper, Vertex.Normal).GetSafeNormal();
+				BinormalSigns[Instance] = 1.f;
+				UVs.Set(Instance, 0, Vertex.UV);
+				Colors[Instance] = FVector4f(Vertex.Color.R, Vertex.Color.G, Vertex.Color.B, 1.f);
+				Instances.Add(Instance);
 			}
-			Mesh->GetStaticMaterials().Add(FStaticMaterial(Materials.IsValidIndex(Section) ? Materials[Section] : nullptr, SlotName, SlotName));
+			for (int32 Section = 0; Section < Data.Sections.Num(); ++Section)
+			{
+				const TArray<int32>& Indices = Data.Sections[Section];
+				if (Indices.Num() < 3)
+				{
+					continue;
+				}
+				const FPolygonGroupID Group = Description.CreatePolygonGroup();
+				SlotNames[Group] = FName(*FString::Printf(TEXT("Slot%d"), Section));
+				for (int32 I = 0; I + 2 < Indices.Num(); I += 3)
+				{
+					Description.CreateTriangle(Group, { Instances[Indices[I]], Instances[Indices[I + 1]], Instances[Indices[I + 2]] });
+				}
+			}
 		}
+	}
 
+	UStaticMesh* BuildStaticMeshLods(UObject* Outer, const TArray<const FOceanMeshData*>& Lods, const TArray<UMaterialInterface*>& Materials,
+		const TArray<float>& ScreenSizes)
+	{
+		TArray<FMeshDescription> Descriptions;
+		Descriptions.SetNum(Lods.Num());
+		TArray<const FMeshDescription*> Pointers;
+		int32 Slots = 0;
+		for (int32 Lod = 0; Lod < Lods.Num(); ++Lod)
+		{
+			FillDescription(Descriptions[Lod], *Lods[Lod]);
+			Pointers.Add(&Descriptions[Lod]);
+			Slots = FMath::Max(Slots, Lods[Lod]->Sections.Num());
+		}
+		UStaticMesh* Mesh = NewObject<UStaticMesh>(Outer, NAME_None, RF_Transient);
+		for (int32 Slot = 0; Slot < Slots; ++Slot)
+		{
+			const FName SlotName(*FString::Printf(TEXT("Slot%d"), Slot));
+			Mesh->GetStaticMaterials().Add(FStaticMaterial(Materials.IsValidIndex(Slot) ? Materials[Slot] : nullptr, SlotName, SlotName));
+		}
 		UStaticMesh::FBuildMeshDescriptionsParams Params;
 		Params.bFastBuild = true; // the runtime path: works in the editor and in a cooked game
 		Params.bBuildSimpleCollision = false;
 		Params.bCommitMeshDescription = false;
 		Params.bMarkPackageDirty = false;
-		Mesh->BuildFromMeshDescriptions({ &Description }, Params);
+		Mesh->BuildFromMeshDescriptions(Pointers, Params);
+		// Screen size (share of the screen height) below which each level is replaced by the next.
+		if (FStaticMeshRenderData* RenderData = Mesh->GetRenderData())
+		{
+			for (int32 Lod = 1; Lod < Lods.Num() && Lod < MAX_STATIC_MESH_LODS; ++Lod)
+			{
+				RenderData->ScreenSize[Lod].Default = ScreenSizes.IsValidIndex(Lod) ? ScreenSizes[Lod] : FMath::Pow(0.5f, float(Lod));
+			}
+		}
 		return Mesh;
 	}
 }
