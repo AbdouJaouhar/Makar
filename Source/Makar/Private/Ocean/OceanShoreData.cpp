@@ -124,7 +124,7 @@ FOceanShoreWaveSample OceanShoreWave(const FOceanShoreData& Shore, const FVector
 	}
 
 	// Gaps along the wavefronts, drifting slowly (real sets never break as one straight wall).
-	const float Gaps = SmoothStep01(0.35f, 0.6f, ValueNoiseImpl(PositionM / 60.f + FVector2f(0.01f, 0.007f) * TimeS));
+	const float Gaps = 0.45f + 0.55f * SmoothStep01(0.3f, 0.65f, ValueNoiseImpl(PositionM / 60.f + FVector2f(0.01f, 0.007f) * TimeS)); // = OceanSwellGaps
 
 	// Swash: after each bore reaches the beach, a thin sheet of water runs up the sand and drains back.
 	// The sea surface itself rises over the beach (where it is lower than the water, the sand hides it),
