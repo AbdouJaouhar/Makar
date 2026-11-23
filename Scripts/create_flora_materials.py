@@ -43,8 +43,8 @@ def connect(source, target, input_name, source_output=""):
 
 
 # Wind (Shaders/Flora.ush): every plant part bends with the same law, so leaves stay on their twigs; WIND_BEND in cm
-# per square metre of height above the plant's foot (a 10 m palm sways ~20 cm), flutter in cm per metre from its axis.
-WIND_BEND = 0.2
+# per square metre of height above the plant's foot (a 10 m palm sways ~35 cm), flutter in cm per metre from its axis.
+WIND_BEND = 0.35  # trade wind ~25 km/h: a 10 m palm sways ~35 cm (0.2 was barely visible)
 
 
 def add_wind(material, flutter):
@@ -64,7 +64,7 @@ def add_wind(material, flutter):
     connect(node(material, unreal.MaterialExpressionTime, -900, 1060), wind, "Time")
     MEL.connect_material_property(wind, "", unreal.MaterialProperty.MP_WORLD_POSITION_OFFSET)
     # Bounds: the crowns move up to a few decimetres.
-    material.set_editor_property("max_world_position_offset_displacement", 60.0)
+    material.set_editor_property("max_world_position_offset_displacement", 120.0)
 
 
 def save(material, name, flutter=None):
@@ -84,7 +84,7 @@ def bark():
     save(material, "M_Bark", flutter=0.0)
 
 
-def foliage(name="M_Foliage", tint=(0.35, 0.5, 0.1), roughness=0.6, flutter=0.5):
+def foliage(name="M_Foliage", tint=(0.35, 0.5, 0.1), roughness=0.6, flutter=0.8):
     """Leaves let light through: two-sided foliage shading, the transmitted light a warmer, yellower green.
     M_StemF (the generated stems, trunks and coconuts) is the same with next to no light through. Built from scratch:
     a duplicate of M_Foliage drew the vertex colours white. Roughness 0.6: tropical leaves are waxy, a little of the sky shows on
@@ -181,7 +181,7 @@ def leaf_blade():
     connect(occluded, specular, "A")
     connect(constant(material, 0.35, -450, 500), specular, "B")
     MEL.connect_material_property(specular, "", unreal.MaterialProperty.MP_SPECULAR)
-    save(material, "M_LeafBlade", flutter=0.6)
+    save(material, "M_LeafBlade", flutter=1.2)
 
 
 def rock():
@@ -491,7 +491,7 @@ foliage()
 foliage("M_StemF", (0.06, 0.06, 0.03), 0.85, flutter=0.0)
 # Coconut palm leaflets (OceanFlora::MakeCoconutPalm, near levels): waxy and glossy, the sky sheen shows on them; the
 # light through them a warm yellow-green.
-foliage("M_PalmLeaflet", (0.5, 0.6, 0.15), 0.42, flutter=1.6)  # the frond tips flap
+foliage("M_PalmLeaflet", (0.5, 0.6, 0.15), 0.42, flutter=5.0)  # the frond tips toss, 25 cm and more
 leaf_blade()
 rock()
 palm_frond()

@@ -29,12 +29,19 @@ float3 FloraWind(float3 WorldPos, float3 Pivot, float Time, float Bend, float Fl
 	// Crosswind wobble, a third as large.
 	Offset += float3(-FloraWindDirection.y, FloraWindDirection.x, 0.0) * (0.3 * Bend * Height * Height * sin(Time * 1.3 + 4.0 * Seed));
 
-	// Flutter: each leaf on its own phase (from its position), faster and stronger in the gusts.
+	// Flutter, stronger in the gusts and further from the axis. Mostly coherent: everything on one side of the plant (one
+	// frond, one branch) lifts and swings together, its phase set by its direction around the axis, the tips moving the
+	// most; plus a small flicker of each leaf on its own phase (all per-vertex, the fronds snaked like ribbons).
 	if (Flutter > 0.0)
 	{
-		const float Phase = dot(WorldPos, float3(0.031, 0.027, 0.043));
-		const float3 Shake = float3(sin(Time * 7.1 + Phase), cos(Time * 6.3 + 1.3 * Phase), sin(Time * 8.7 + 0.7 * Phase));
-		Offset += Shake * (Flutter * (0.25 + Reach) * (0.4 + 0.6 * Gust));
+		const float2 Around = WorldPos.xy - Pivot.xy;
+		const float Azimuth = atan2(Around.y, Around.x);
+		const float Strength = Flutter * (0.25 + Reach) * (0.4 + 0.6 * Gust);
+		const float Swing = Time * 2.3 + 3.0 * Azimuth + 6.2832 * Seed;
+		Offset += float3(0.35 * sin(Swing) * FloraWindDirection.xy, sin(Swing + 1.1)) * Strength
+			+ FloraWindDirection * (0.5 * Strength * (0.5 + 0.5 * sin(Swing * 0.5)));
+		const float Phase = dot(WorldPos, float3(0.11, 0.09, 0.13));
+		Offset += float3(sin(Time * 9.1 + Phase), cos(Time * 8.3 + 1.3 * Phase), sin(Time * 10.7 + 0.7 * Phase)) * (0.12 * Strength);
 	}
 	return Offset;
 }
