@@ -14,10 +14,11 @@ run() { # category count factory
 }
 
 run rocks 4 BoulderFactory
-run corals 2 BrainCoralFactory
+# Brain and fan corals are not in the CLI's short-name list: full module path.
+run corals 2 infinigen.assets.objects.corals.generate.BrainCoralFactory
 run corals 2 ElkhornCoralFactory
 run corals 2 StarCoralFactory
-run corals 2 FanCoralFactory
+run corals 2 infinigen.assets.objects.corals.generate.FanCoralFactory
 run shells 2 ConchFactory
 run shells 2 UrchinFactory
 

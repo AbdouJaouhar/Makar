@@ -1082,9 +1082,11 @@ float OceanFoamCoverage(float2 PosM, float Amount, out float Height)
 	const float LargeEdge = max(0.035, 1.5 * fwidth(Large));
 	const float MediumEdge = max(0.035, 1.5 * fwidth(Medium));
 	const float SmallEdge = max(0.04, 1.5 * fwidth(Small));
-	const float LargeNet = 1.0 - smoothstep(Wall - LargeEdge, Wall + LargeEdge, Large);
-	const float MediumNet = 1.0 - smoothstep(Wall * 0.9 - MediumEdge, Wall * 0.9 + MediumEdge, Medium);
-	const float SmallNet = 1.0 - smoothstep(Wall * 0.8 - SmallEdge, Wall * 0.8 + SmallEdge, Small);
+	// A wall thinner than its antialiased edge covers that share of the pixel: it fades with its width instead of
+	// being drawn at the edge's width (which left a net of fine lines, like cracked glass, wherever the foam was thin).
+	const float LargeNet = (1.0 - smoothstep(Wall - LargeEdge, Wall + LargeEdge, Large)) * saturate(Wall / LargeEdge);
+	const float MediumNet = (1.0 - smoothstep(Wall * 0.9 - MediumEdge, Wall * 0.9 + MediumEdge, Medium)) * saturate(Wall * 0.9 / MediumEdge);
+	const float SmallNet = (1.0 - smoothstep(Wall * 0.8 - SmallEdge, Wall * 0.8 + SmallEdge, Small)) * saturate(Wall * 0.8 / SmallEdge);
 	const float Detailed = saturate(max(LargeNet, MediumNet * 0.85) * lerp(0.6, 1.0, SmallNet));
 	const float Detail = saturate(0.3 / Footprint / 6.0 - 0.5);
 	float Coverage = lerp(A * (0.4 + 0.6 * A), Detailed, Detail);

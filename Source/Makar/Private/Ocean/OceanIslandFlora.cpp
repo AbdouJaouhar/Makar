@@ -47,8 +47,13 @@ AOceanIslandFlora::AOceanIslandFlora()
 		}
 	};
 	Infinigen(RockMeshes, TEXT("rocks"), TEXT("BoulderFactory"), 4);
+	// Caribbean reef builders: elkhorn, star and brain corals, and sea fans (Gorgonia).
 	Infinigen(CoralMeshes, TEXT("corals"), TEXT("ElkhornCoralFactory"), 2);
 	Infinigen(CoralMeshes, TEXT("corals"), TEXT("StarCoralFactory"), 2);
+	// Brain corals: the tan ones (Infinigen's _001 came out pink, not a Caribbean brain coral's colour).
+	CoralMeshes.Add(TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(TEXT("/Game/Ocean/Infinigen/corals/BrainCoralFactory_000.BrainCoralFactory_000"))));
+	CoralMeshes.Add(TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(TEXT("/Game/Ocean/Infinigen/corals/BrainCoralFactory_002.BrainCoralFactory_002"))));
+	Infinigen(CoralMeshes, TEXT("corals"), TEXT("FanCoralFactory"), 3);
 	Infinigen(UrchinMeshes, TEXT("shells"), TEXT("UrchinFactory"), 2);
 	Infinigen(ShellMeshes, TEXT("shells"), TEXT("ConchFactory"), 2);
 }
@@ -509,8 +514,11 @@ void AOceanIslandFlora::Build()
 			}
 			const int32 Variant = Random.RandRange(0, Corals.Num() - 1);
 			const float SizeM = FMath::Lerp(0.6f, 2.f, Random.FRand());
+			const float Scale = SizeM / CoralSizes[Variant];
+			// Brain corals grow as low domes, wider than tall (Infinigen's stand upright).
+			const bool bBrain = Corals[Variant]->GetStaticMesh() && Corals[Variant]->GetStaticMesh()->GetName().Contains(TEXT("Brain"));
 			CoralTransforms[Variant].Add(FTransform(FRotator(Random.FRandRange(-8.f, 8.f), Random.FRandRange(0.f, 360.f), Random.FRandRange(-8.f, 8.f)),
-				Ground(Position, Terrain.Ground, 10.f), FVector(SizeM / CoralSizes[Variant])));
+				Ground(Position, Terrain.Ground, 10.f), bBrain ? FVector(Scale, Scale, Scale * 0.5f) : FVector(Scale)));
 		});
 	}
 	if (Urchins.Num() > 0)
