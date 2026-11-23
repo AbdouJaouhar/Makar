@@ -9,17 +9,21 @@
 // Towards where the trade wind blows (from the east-north-east, over the windward beaches).
 static const float3 FloraWindDirection = float3(-0.97, -0.24, 0.0);
 
-// World position offset (cm). Pivot = the instance's position (its foot), WorldPos in cm, Time in s.
+// World position offset (cm). Local = the vertex in its mesh (cm, the plant's foot at the origin): its height and its
+// distance from the plant's axis, the same with or without Nanite (whose ObjectPositionWS is the component's, not the
+// instance's: leaves hundreds of metres "from their axis" were flung metres away). WorldPos in cm, Time in s.
 // Bend: sway in cm per square metre of height (a plant bends like a cantilever: ~height^2).
 // Flutter: cm of fast motion per metre away from the plant's axis (leaves, frond tips); 0 for bark.
-float3 FloraWind(float3 WorldPos, float3 Pivot, float Time, float Bend, float Flutter)
+float3 FloraWind(float3 WorldPos, float3 Local, float Time, float Bend, float Flutter)
 {
-	const float Height = max(WorldPos.z - Pivot.z, 0.0) * 0.01;
-	const float Reach = length(WorldPos.xy - Pivot.xy) * 0.01;
-	const float Seed = frac(sin(dot(floor(Pivot.xy), float2(12.9898, 78.233))) * 43758.5453);
+	const float Height = max(Local.z, 0.0) * 0.01;
+	const float Reach = length(Local.xy) * 0.01;
+	// Phases from a field varying slowly over the island (near constant across one plant, which must not tear apart).
+	const float2 Coarse = WorldPos.xy * 0.0001; // per 100 m
+	const float Seed = 0.5 + 0.5 * sin(dot(Coarse, float2(5.3, 3.7)) * 6.2832 + 1.3 * sin(Coarse.x * 4.1));
 
 	// Gusts travelling downwind at ~5 m/s: two incommensurate waves, 0.3..1.
-	const float Along = dot(Pivot.xy * 0.01, FloraWindDirection.xy);
+	const float Along = dot(WorldPos.xy * 0.01, FloraWindDirection.xy);
 	const float Gust = saturate(0.65 + 0.25 * sin(0.21 * Along - 1.05 * Time) + 0.15 * sin(0.083 * Along - 0.41 * Time + 1.7));
 
 	// The sway: leaning downwind with the gust, plus the plant's own slow rocking (~0.3 Hz, its own phase).
@@ -34,7 +38,7 @@ float3 FloraWind(float3 WorldPos, float3 Pivot, float Time, float Bend, float Fl
 	// most; plus a small flicker of each leaf on its own phase (all per-vertex, the fronds snaked like ribbons).
 	if (Flutter > 0.0)
 	{
-		const float2 Around = WorldPos.xy - Pivot.xy;
+		const float2 Around = Local.xy;
 		const float Azimuth = atan2(Around.y, Around.x);
 		const float Strength = Flutter * (0.25 + Reach) * (0.4 + 0.6 * Gust);
 		const float Swing = Time * 2.3 + 3.0 * Azimuth + 6.2832 * Seed;

@@ -52,15 +52,15 @@ def add_wind(material, flutter):
     wind.set_editor_property("description", "Flora Wind")
     wind.set_editor_property("include_file_paths", ["/Makar/Flora.ush"])
     wind.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
-    wind.set_editor_property("code", f"return FloraWind(WorldPos, Pivot, Time, {WIND_BEND}, {flutter});")
+    wind.set_editor_property("code", f"return FloraWind(WorldPos, Local, Time, {WIND_BEND}, {flutter});")
     inputs = []
-    for input_name in ("WorldPos", "Pivot", "Time"):
+    for input_name in ("WorldPos", "Local", "Time"):
         custom_input = unreal.CustomInput()
         custom_input.set_editor_property("input_name", input_name)
         inputs.append(custom_input)
     wind.set_editor_property("inputs", inputs)
     connect(node(material, unreal.MaterialExpressionWorldPosition, -900, 900), wind, "WorldPos")
-    connect(node(material, unreal.MaterialExpressionObjectPositionWS, -900, 980), wind, "Pivot")
+    connect(node(material, unreal.MaterialExpressionLocalPosition, -900, 980), wind, "Local")
     connect(node(material, unreal.MaterialExpressionTime, -900, 1060), wind, "Time")
     MEL.connect_material_property(wind, "", unreal.MaterialProperty.MP_WORLD_POSITION_OFFSET)
     # Bounds: the crowns move up to a few decimetres.

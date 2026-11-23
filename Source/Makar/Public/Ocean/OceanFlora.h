@@ -83,4 +83,20 @@ namespace OceanFlora
 		const TArray<UMaterialInterface*>& Materials, const TArray<float>& ScreenSizes, const TArray<int32>& ColorSections = {});
 	/** Moves section From's triangles into section To (one material, and their vertex colours show: see ColorSections). */
 	MAKAR_API void MergeSection(FOceanMeshData& Data, int32 From, int32 To);
+
+	/**
+	 * Version of the generators above, in the names of the baked meshes (AOceanIslandFlora::BakeMeshes): bump it when a
+	 * generator changes, so that stale baked meshes are not loaded (the flora then generates its meshes until re-baked).
+	 */
+	constexpr int32 GeneratorVersion = 1;
+
+#if WITH_EDITOR
+	/**
+	 * Saves Data as a Nanite static mesh asset at PackagePath (/Game/...): the flora built once in the editor instead of
+	 * on every load, rendered by Nanite (millions of triangles, no levels of detail to author). bFoliage: thin parts
+	 * simplified into voxels in the distance rather than thinning out (ENaniteShapePreservation::Voxelize).
+	 */
+	MAKAR_API UStaticMesh* BakeNaniteMesh(const FString& PackagePath, const FOceanMeshData& Data, const TArray<UMaterialInterface*>& Materials,
+		int32 ColorSection, bool bFoliage);
+#endif
 }

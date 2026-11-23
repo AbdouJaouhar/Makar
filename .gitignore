@@ -15,3 +15,6 @@ Build/
 
 # Python bytecode (the Infinigen scripts import each other in WSL)
 __pycache__/
+
+# Baked flora (Scripts/bake_flora.py): ~150 MB of Nanite meshes regenerated in minutes; not versioned.
+Content/Ocean/Flora/Baked/

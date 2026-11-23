@@ -93,6 +93,48 @@ UHierarchicalInstancedStaticMeshComponent* AOceanIslandFlora::AddInstancer(UStat
 	return Instancer;
 }
 
+UStaticMesh* AOceanIslandFlora::GetMesh(const FString& Name, TFunctionRef<TArray<FOceanMeshData>()> Generate,
+	const TArray<UMaterialInterface*>& Materials, const TArray<float>& ScreenSizes, const TArray<int32>& ColorSections, bool bFoliage)
+{
+	const FString AssetName = FString::Printf(TEXT("SM_%s_S%d_V%d"), *Name, Seed, OceanFlora::GeneratorVersion);
+	const FString PackagePath = TEXT("/Game/Ocean/Flora/Baked/") + AssetName;
+	UStaticMesh* Mesh = nullptr;
+#if WITH_EDITOR
+	if (bBaking)
+	{
+		// Nanite renders the full detail at every distance: only the nearest level is baked.
+		const TArray<FOceanMeshData> Lods = Generate();
+		Mesh = OceanFlora::BakeNaniteMesh(PackagePath, Lods[0], Materials, ColorSections.IsValidIndex(0) ? ColorSections[0] : -1, bFoliage);
+	}
+#endif
+	if (!Mesh && bUseBakedMeshes)
+	{
+		Mesh = LoadObject<UStaticMesh>(nullptr, *(PackagePath + TEXT(".") + AssetName), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	}
+	if (!Mesh)
+	{
+		const TArray<FOceanMeshData> Lods = Generate();
+		TArray<const FOceanMeshData*> Pointers;
+		for (const FOceanMeshData& Lod : Lods)
+		{
+			Pointers.Add(&Lod);
+		}
+		Mesh = OceanFlora::BuildStaticMeshLods(this, Pointers, Materials, ScreenSizes, ColorSections);
+	}
+	Meshes.Add(Mesh);
+	return Mesh;
+}
+
+void AOceanIslandFlora::BakeMeshes()
+{
+#if WITH_EDITOR
+	bBaking = true;
+	Build();
+	bBaking = false;
+	UE_LOG(LogTemp, Display, TEXT("OceanIslandFlora: baked %d Nanite meshes into /Game/Ocean/Flora/Baked"), Meshes.Num());
+#endif
+}
+
 void AOceanIslandFlora::Build()
 {
 	for (UHierarchicalInstancedStaticMeshComponent* Instancer : Instancers)
@@ -150,44 +192,37 @@ void AOceanIslandFlora::Build()
 	{
 		// Every leaflet modelled up close, a third of them further, a dozen broad strips a side in the distance (the same
 		// crown at every level).
-		const FOceanMeshData Near = OceanFlora::MakeCoconutPalm(Seed * 100 + Variant, 0);
-		const FOceanMeshData Middle = OceanFlora::MakeCoconutPalm(Seed * 100 + Variant, 1);
-		const FOceanMeshData Far = OceanFlora::MakeCoconutPalm(Seed * 100 + Variant, 2);
-		UStaticMesh* Mesh = OceanFlora::BuildStaticMeshLods(this, { &Near, &Middle, &Far }, { PalmBark, PalmLeaflet, Bark },
-			{ 1.f, 0.35f, 0.1f }, { 1, 1, 1 });
-		Meshes.Add(Mesh);
+		const int32 PalmSeed = Seed * 100 + Variant;
+		UStaticMesh* Mesh = GetMesh(FString::Printf(TEXT("Palm%d"), Variant), [&]() {
+			return TArray<FOceanMeshData>{ OceanFlora::MakeCoconutPalm(PalmSeed, 0), OceanFlora::MakeCoconutPalm(PalmSeed, 1), OceanFlora::MakeCoconutPalm(PalmSeed, 2) }; },
+			{ PalmBark, PalmLeaflet, Bark }, { 1.f, 0.35f, 0.1f }, { 1, 1, 1 }, true);
 		Palms.Add(AddInstancer(Mesh, 3000.f));
 	}
 	// The L-system plants in two levels of detail: real 3D leaves up close (M_LeafBlade), leaf cards further away (the
 	// cards show a rendered cluster of leaves, which up close read as flat rosettes).
 	// Three levels: dense real leaves, then fewer and larger ones, then cards only where they are a few pixels wide.
-	auto TwoLevels = [&](TFunctionRef<FOceanMeshData(bool, float)> Make, UMaterialInterface* Cards, float NearScreenSize)
+	auto TwoLevels = [&](const FString& Name, TFunctionRef<FOceanMeshData(bool, float)> Make, UMaterialInterface* Cards, float NearScreenSize)
 	{
 		// Branches keep their own section (M_Bark, vertex colours): the leaves' material cuts its quads into leaf shapes.
-		FOceanMeshData Near = Make(true, 1.f);
-		FOceanMeshData Middle = Make(true, 2.4f);
-		const FOceanMeshData Far = Make(false, 1.f);
-		UStaticMesh* Mesh = OceanFlora::BuildStaticMeshLods(this, { &Near, &Middle, &Far }, { Bark, Cards, LeafBlade },
-			{ 1.f, NearScreenSize, 0.3f * NearScreenSize }, { 2, 2, -1 });
-		Meshes.Add(Mesh);
-		return Mesh;
+		return GetMesh(Name, [&]() { return TArray<FOceanMeshData>{ Make(true, 1.f), Make(true, 2.4f), Make(false, 1.f) }; },
+			{ Bark, Cards, LeafBlade }, { 1.f, NearScreenSize, 0.3f * NearScreenSize }, { 2, 2, -1 }, true);
 	};
 	for (int32 Variant = 0; Variant < NumTreeVariants; ++Variant)
 	{
-		Trees.Add(AddInstancer(TwoLevels([&](bool b3D, float LeafScale) { return OceanFlora::MakeBroadleafTree(Seed * 200 + Variant, b3D, LeafScale); }, BroadleafLeaves, 0.35f), 3000.f));
+		Trees.Add(AddInstancer(TwoLevels(FString::Printf(TEXT("Tree%d"), Variant), [&](bool b3D, float LeafScale) { return OceanFlora::MakeBroadleafTree(Seed * 200 + Variant, b3D, LeafScale); }, BroadleafLeaves, 0.35f), 3000.f));
 	}
 	TArray<UHierarchicalInstancedStaticMeshComponent*> Almonds;
 	for (int32 Variant = 0; Variant < NumAlmondVariants; ++Variant)
 	{
-		Almonds.Add(AddInstancer(TwoLevels([&](bool b3D, float LeafScale) { return OceanFlora::MakeTropicalAlmond(Seed * 250 + Variant, b3D, LeafScale); }, BroadleafLeaves, 0.35f), 3000.f));
+		Almonds.Add(AddInstancer(TwoLevels(FString::Printf(TEXT("Almond%d"), Variant), [&](bool b3D, float LeafScale) { return OceanFlora::MakeTropicalAlmond(Seed * 250 + Variant, b3D, LeafScale); }, BroadleafLeaves, 0.35f), 3000.f));
 	}
 	for (int32 Variant = 0; Variant < NumShrubVariants; ++Variant)
 	{
-		Shrubs.Add(AddInstancer(TwoLevels([&](bool b3D, float LeafScale) { return OceanFlora::MakeSeaGrape(Seed * 300 + Variant, b3D, LeafScale); }, SeaGrapeLeaves, 0.2f), 1500.f));
+		Shrubs.Add(AddInstancer(TwoLevels(FString::Printf(TEXT("SeaGrape%d"), Variant), [&](bool b3D, float LeafScale) { return OceanFlora::MakeSeaGrape(Seed * 300 + Variant, b3D, LeafScale); }, SeaGrapeLeaves, 0.2f), 1500.f));
 	}
 	for (int32 Variant = 0; Variant < NumBushVariants; ++Variant)
 	{
-		Bushes.Add(AddInstancer(TwoLevels([&](bool b3D, float LeafScale) { return OceanFlora::MakeCoastalBush(Seed * 400 + Variant, b3D, LeafScale); }, BroadleafLeaves, 0.2f), 1500.f));
+		Bushes.Add(AddInstancer(TwoLevels(FString::Printf(TEXT("Bush%d"), Variant), [&](bool b3D, float LeafScale) { return OceanFlora::MakeCoastalBush(Seed * 400 + Variant, b3D, LeafScale); }, BroadleafLeaves, 0.2f), 1500.f));
 	}
 	// Single-section meshes (stones, coconuts) moved to a second section, built like the small plants (two slots, colour
 	// section 1): built with one section, their vertex colours drew white; with the duplicate triangle of
@@ -205,8 +240,9 @@ void AOceanIslandFlora::Build()
 		{
 			FOceanMeshData Data = Make(Seed * SeedBase + Variant);
 			OceanFlora::MergeSection(Data, 0, 1); // stems with the leaves: one section, its colours show
-			UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, Data, { Foliage, Foliage }, Data.Sections.Num() > 1 ? 1 : 0);
-			Meshes.Add(Mesh);
+			const int32 ColorSection = Data.Sections.Num() > 1 ? 1 : 0;
+			UStaticMesh* Mesh = GetMesh(FString::Printf(TEXT("Plant%d_%d"), SeedBase, Variant), [&]() { return TArray<FOceanMeshData>{ Data }; },
+				{ Foliage, Foliage }, { 1.f }, { ColorSection }, true);
 			Set.Add(AddInstancer(Mesh, CullM));
 		}
 		return Set;
@@ -226,13 +262,12 @@ void AOceanIslandFlora::Build()
 	{
 		// Modelled leaflets like the palms' (every one up close, a dozen broad strips a side further away), in the
 		// windless stem material: a frond lying on the sand does not flap.
-		const FOceanMeshData FrondNear = OceanFlora::MakeFallenFrond(Seed * 500 + Variant, 0);
-		const FOceanMeshData FrondFar = OceanFlora::MakeFallenFrond(Seed * 500 + Variant, 2);
-		UStaticMesh* Frond = OceanFlora::BuildStaticMeshLods(this, { &FrondNear, &FrondFar }, { Bark, Bark }, { 1.f, 0.08f }, { 1, 1 });
-		Meshes.Add(Frond);
+		UStaticMesh* Frond = GetMesh(FString::Printf(TEXT("FallenFrond%d"), Variant), [&]() {
+			return TArray<FOceanMeshData>{ OceanFlora::MakeFallenFrond(Seed * 500 + Variant, 0), OceanFlora::MakeFallenFrond(Seed * 500 + Variant, 2) }; },
+			{ Bark, Bark }, { 1.f, 0.08f }, { 1, 1 }, true);
 		FallenFronds.Add(AddInstancer(Frond, 250.f));
-		UStaticMesh* Nut = OceanFlora::BuildStaticMesh(this, AsSecondSection(OceanFlora::MakeCoconut(Seed * 600 + Variant)), { Bark, Bark }, 1);
-		Meshes.Add(Nut);
+		UStaticMesh* Nut = GetMesh(FString::Printf(TEXT("Coconut%d"), Variant), [&]() {
+			return TArray<FOceanMeshData>{ AsSecondSection(OceanFlora::MakeCoconut(Seed * 600 + Variant)) }; }, { Bark, Bark }, { 1.f }, { 1 }, false);
 		Coconuts.Add(AddInstancer(Nut, 150.f));
 		if (GrassTuft)
 		{
@@ -244,8 +279,8 @@ void AOceanIslandFlora::Build()
 					Vertex.Color *= FLinearColor(1.35f, 1.1f, 0.75f); // sun-dried, straw-tipped
 				}
 			}
-			UStaticMesh* Tuft = OceanFlora::BuildStaticMesh(this, TuftData, { GrassTuft });
-			Meshes.Add(Tuft);
+			UStaticMesh* Tuft = GetMesh(FString::Printf(TEXT("GrassTuft%d"), Variant), [&]() { return TArray<FOceanMeshData>{ TuftData }; },
+				{ GrassTuft }, { 1.f }, { -1 }, true);
 			Tufts.Add(AddInstancer(Tuft, 120.f));
 		}
 	}
@@ -279,8 +314,9 @@ void AOceanIslandFlora::Build()
 	{
 		for (int32 Variant = 0; Variant < VariantsPerKind[Kind]; ++Variant)
 		{
-			UStaticMesh* Mesh = OceanFlora::BuildStaticMesh(this, AsSecondSection(OceanFlora::MakeCaribbeanRock(ERockKind(Kind), Seed * 400 + Variant)), { Stone, Stone }, 1);
-			Meshes.Add(Mesh);
+			UStaticMesh* Mesh = GetMesh(FString::Printf(TEXT("Rock%d_%d"), Kind, Variant), [&]() {
+				return TArray<FOceanMeshData>{ AsSecondSection(OceanFlora::MakeCaribbeanRock(ERockKind(Kind), Seed * 400 + Variant)) }; },
+				{ Stone, Stone }, { 1.f }, { 1 }, false);
 			RockVariants[Kind].Add(Rocks.Num());
 			Rocks.Add(AddInstancer(Mesh, RockCullM[Kind]));
 			RockSizes.Add(FMath::Max(float(Mesh->GetBounds().BoxExtent.GetMax()) * 2.f * 0.01f, 0.01f));

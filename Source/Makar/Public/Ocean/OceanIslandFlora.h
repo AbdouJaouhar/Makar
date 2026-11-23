@@ -4,6 +4,10 @@
 #include "GameFramework/Actor.h"
 #include "OceanIslandFlora.generated.h"
 
+struct FOceanMeshData;
+class UMaterialInterface;
+class UStaticMesh;
+
 class AOceanBathymetry;
 class UHierarchicalInstancedStaticMeshComponent;
 class UMaterialInterface;
@@ -26,11 +30,22 @@ public:
 
 	virtual void OnConstruction(const FTransform& Transform) override;
 
+	/**
+	 * Builds every flora mesh once as a Nanite static mesh asset in /Game/Ocean/Flora/Baked (Scripts/bake_flora.py), then
+	 * rebuilds the flora from them. Editor only; the assets are named after Seed and OceanFlora::GeneratorVersion.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Flora")
+	void BakeMeshes();
+
 protected:
 	virtual void BeginPlay() override;
 
 	UPROPERTY(EditAnywhere, Category = "Flora")
 	int32 Seed = 11;
+
+	/** Use the baked Nanite meshes when they exist (BakeMeshes); otherwise every mesh is generated on load, without Nanite. */
+	UPROPERTY(EditAnywhere, Category = "Flora")
+	bool bUseBakedMeshes = true;
 
 	UPROPERTY(EditAnywhere, Category = "Flora", meta = (ClampMin = "0"))
 	float PalmDensity = 1.f;
@@ -115,6 +130,13 @@ protected:
 
 private:
 	void Build();
+	/**
+	 * The mesh called Name: the baked asset if there is one (or baked now, during BakeMeshes), else generated (Generate
+	 * returns its levels of detail, nearest first) and built at runtime. bFoliage: voxelized by Nanite in the distance.
+	 */
+	UStaticMesh* GetMesh(const FString& Name, TFunctionRef<TArray<FOceanMeshData>()> Generate, const TArray<UMaterialInterface*>& Materials,
+		const TArray<float>& ScreenSizes, const TArray<int32>& ColorSections, bool bFoliage);
+	bool bBaking = false;
 	UHierarchicalInstancedStaticMeshComponent* AddInstancer(UStaticMesh* Mesh, float CullDistanceM);
 
 	UPROPERTY(Transient)

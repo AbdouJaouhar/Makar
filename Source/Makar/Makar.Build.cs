@@ -24,7 +24,7 @@ public class Makar : ModuleRules
 		if (Target.bBuildEditor)
 		{
 			// The ocean follows the level editor's viewport camera when previewed in the editor.
-			PrivateDependencyModuleNames.Add("UnrealEd");
+			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry" }); // AssetRegistry: baking the flora (AOceanIslandFlora::BakeMeshes)
 		}
 	}
 }

@@ -4,6 +4,12 @@
 #include "Materials/MaterialInterface.h"
 #include "MeshDescription.h"
 #include "StaticMeshAttributes.h"
+#if WITH_EDITOR
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Misc/PackageName.h"
+#include "UObject/Package.h"
+#include "UObject/SavePackage.h"
+#endif
 
 int32 FOceanMeshData::AddVertex(const FVector3f& Position, const FVector3f& Normal, const FVector2f& UV, const FLinearColor& Color)
 {
@@ -1842,3 +1848,42 @@ namespace OceanFlora
 		return Mesh;
 	}
 }
+
+#if WITH_EDITOR
+UStaticMesh* OceanFlora::BakeNaniteMesh(const FString& PackagePath, const FOceanMeshData& Data, const TArray<UMaterialInterface*>& Materials,
+	int32 ColorSection, bool bFoliage)
+{
+	const FString AssetName = FPackageName::GetLongPackageAssetName(PackagePath);
+	UPackage* Package = CreatePackage(*PackagePath);
+	Package->FullyLoad();
+	UStaticMesh* Mesh = NewObject<UStaticMesh>(Package, *AssetName, RF_Public | RF_Standalone | RF_Transactional);
+	for (int32 Slot = 0; Slot < Data.Sections.Num(); ++Slot)
+	{
+		const FName SlotName(*FString::Printf(TEXT("Slot%d"), Slot));
+		Mesh->GetStaticMaterials().Add(FStaticMaterial(Materials.IsValidIndex(Slot) ? Materials[Slot] : nullptr, SlotName, SlotName));
+	}
+	FMeshDescription Description;
+	FillDescription(Description, Data, ColorSection);
+	FStaticMeshSourceModel& Source = Mesh->AddSourceModel();
+	// The generators give normals and tangents; the speck triangles that keep empty sections must survive.
+	Source.BuildSettings.bRecomputeNormals = false;
+	Source.BuildSettings.bRecomputeTangents = false;
+	Source.BuildSettings.bRemoveDegenerates = false;
+	Source.BuildSettings.bGenerateLightmapUVs = false;
+	Mesh->CreateMeshDescription(0, MoveTemp(Description));
+	Mesh->CommitMeshDescription(0);
+	FMeshNaniteSettings Nanite = Mesh->GetNaniteSettings();
+	Nanite.bEnabled = true;
+	Nanite.ShapePreservation = bFoliage ? ENaniteShapePreservation::Voxelize : ENaniteShapePreservation::None;
+	Mesh->SetNaniteSettings(Nanite);
+	Mesh->Build(true);
+	Mesh->PostEditChange();
+	Mesh->MarkPackageDirty();
+	FAssetRegistryModule::AssetCreated(Mesh);
+	FSavePackageArgs Args;
+	Args.TopLevelFlags = RF_Public | RF_Standalone;
+	Args.SaveFlags = SAVE_NoError;
+	UPackage::SavePackage(Package, Mesh, *FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension()), Args);
+	return Mesh;
+}
+#endif
