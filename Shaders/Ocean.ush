@@ -667,6 +667,44 @@ void OceanGroundTriplanar(Texture2D AlbedoTex, SamplerState AlbedoSampler, Textu
 	WorldNormal = normalize(NX.zxy * W.x + NY.xzy * W.y + NZ.xyz * W.z);
 }
 
+// Slope (height gradient per metre) of OceanGradientNoise(P / Scale) x Amplitude metres, by central differences.
+float2 OceanReliefSlope(float2 PosM, float Scale, float Amplitude)
+{
+	const float E = 0.08 * Scale;
+	return float2(OceanGradientNoise((PosM + float2(E, 0.0)) / Scale) - OceanGradientNoise((PosM - float2(E, 0.0)) / Scale),
+		OceanGradientNoise((PosM + float2(0.0, E)) / Scale) - OceanGradientNoise((PosM - float2(0.0, E)) / Scale)) * (Amplitude / (2.0 * E));
+}
+
+// What covers the ground above the beach (mirrored by OceanGroundCover in OceanShoreData.cpp, which places the grass
+// tufts where this paints grass): limestone on steep ground, vegetation behind a line that wanders with height and
+// noise, ragged at every scale (a smooth contour drew soft blobs of green on the sand), and in it litter, grass and
+// bare soil. Slope = 1 - cos(angle), FromShore = metres inland. Weights of the vegetation's three grounds sum to 1.
+void OceanGroundCoverWeights(float2 PosM, float HeightM, float Slope, float FromShore, out float RockMask, out float Vegetation,
+	out float WSoil, out float WLitter, out float WGrass)
+{
+	const float Large = OceanValueNoise(PosM / 40.0);
+	const float Medium = OceanValueNoise(PosM / 9.0 + 17.0);
+	const float Small = OceanValueNoise(PosM / 2.3 + 41.0);
+	const float Ragged = 0.45 * (OceanGradientNoise(PosM / 1.6 + 51.0) - 0.5) + 0.25 * (OceanGradientNoise(PosM / 0.55 + 73.0) - 0.5);
+	RockMask = smoothstep(0.12, 0.24, Slope + 0.08 * (Medium - 0.5)) * step(-3.0, HeightM);
+	const float VegetationLine = HeightM + 1.5 * (Large - 0.5) + 0.8 * (Medium - 0.5) + Ragged;
+	const float Scrub = smoothstep(1.55, 1.85, VegetationLine) * smoothstep(0.45, 0.6, Small + 0.3 * Ragged);
+	const float Dense = smoothstep(2.0, 2.8, VegetationLine);
+	Vegetation = saturate(max(Scrub, Dense)) * (1.0 - RockMask);
+	// Litter under the trees and along the forest edge; grass in the clearings (those of AOceanIslandFlora: no trees there),
+	// in patches of the open scrub and on the windswept coastal strip; bare soil on the steeper banks the rain washes clean.
+	const float Clearing = smoothstep(0.65, 0.8, OceanValueNoise(PosM / 80.0 + 3.0));
+	const float Bank = smoothstep(0.05, 0.11, Slope + 0.04 * (Small - 0.5));
+	const float Forest = smoothstep(12.0, 30.0, FromShore + 6.0 * (Medium - 0.5));
+	WLitter = (1.0 - Clearing) * lerp(0.6, 1.0, Dense) * Forest;
+	WGrass = Clearing + 0.3 * (1.0 - Dense) * smoothstep(0.5, 0.7, Medium) + 0.8 * (1.0 - Forest);
+	WSoil = 1.5 * Bank + 0.15 * smoothstep(0.6, 0.8, Small);
+	const float WSum = WLitter + WGrass + WSoil + 1e-3;
+	WLitter /= WSum;
+	WGrass /= WSum;
+	WSoil /= WSum;
+}
+
 // Island terrain and sea floor (M_Seabed): coral sand with wind ripples, wet sand below the swash, limestone on steep
 // ground, forest litter and bare soil inland (Infinigen ground textures), coral heads and seagrass patches on the
 // shallow floor. WorldPos in cm, sea level at Z = 0, VertexNormal in world space, ToSun and ToCamera unit vectors.
@@ -718,6 +756,12 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 		Color *= 1.0 - 0.18 * Trough;
 	}
 	Bump += OceanNoiseGradient(PosM, 3.0) * 0.08 * MediumDetail; // soft undulations
+	// Dry loose sand above the reach of the waves is never flat: hummocks and hollows a few centimetres deep, heaped and
+	// scoured by the wind, that catch the low sun (without them the back of the beach looked like smoothed plaster).
+	const float Loose = smoothstep(0.4, 1.1, HeightM);
+	const float2 Hummocks = OceanReliefSlope(PosM + 31.0, 1.4, 0.1) * saturate(1.5 - Footprint / 0.5)
+		+ OceanReliefSlope(PosM + 7.0, 0.5, 0.04) * saturate(1.5 - Footprint / 0.18);
+	Bump += Hummocks * Loose;
 	float2 GrainSlope;
 	Color *= OceanSandGrains(PosM, Footprint, GrainSlope);
 	Bump += GrainSlope;
@@ -866,11 +910,9 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 	// bare red-brown soil in the scrub and the clearings (the clearings of AOceanIslandFlora: no trees there). The
 	// plants themselves (AOceanIslandFlora) stand on it.
 	// Slope = 1 - cos(angle): 0.12 is ~28 degrees, 0.24 ~40 degrees.
-	const float RockMask = smoothstep(0.12, 0.24, Slope + 0.08 * (Medium - 0.5)) * step(-3.0, HeightM);
-	const float VegetationLine = HeightM + 1.5 * (Large - 0.5) + 0.8 * (Medium - 0.5);
-	const float Scrub = smoothstep(1.4, 2.2, VegetationLine) * smoothstep(0.45, 0.7, Small);
-	const float Dense = smoothstep(2.0, 3.4, VegetationLine);
-	const float Vegetation = saturate(max(Scrub, Dense)) * (1.0 - RockMask);
+	const float FromShore = -OceanShoreSample(PosM, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize).y;
+	float RockMask, Vegetation, WSoil, WLitter, WGrass;
+	OceanGroundCoverWeights(PosM, HeightM, Slope, FromShore, RockMask, Vegetation, WSoil, WLitter, WGrass);
 	const float GroundCover = max(RockMask, Vegetation);
 	float3 GroundNormal = VertexNormal;
 	if (GroundCover > 0.0)
@@ -887,23 +929,13 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 				LitterColor, LitterN);
 			OceanGroundTop(GrassAlbedo, GrassAlbedoSampler, GrassNormal, GrassNormalSampler, PosM + 11.1, VertexNormal, Mix, 2.5,
 				GrassColor, GrassN);
-			// Litter under the trees and along the forest edge; grass in the clearings (those of AOceanIslandFlora: no
-			// trees there) and in patches of the open scrub; bare soil on the steeper banks the rain washes clean.
-			const float Clearing = smoothstep(0.65, 0.8, OceanValueNoise(PosM / 80.0 + 3.0));
-			const float Bank = smoothstep(0.05, 0.11, Slope + 0.04 * (Small - 0.5));
-			// The windswept coastal strip (the rocky points' tops, the back of the beaches) is grass and scrub, not forest.
-			const float FromShore = -OceanShoreSample(PosM, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize).y;
-			const float Forest = smoothstep(12.0, 30.0, FromShore + 6.0 * (Medium - 0.5));
-			float WLitter = (1.0 - Clearing) * lerp(0.6, 1.0, Dense) * Forest;
-			float WGrass = Clearing + 0.3 * (1.0 - Dense) * smoothstep(0.5, 0.7, Medium) + 0.8 * (1.0 - Forest);
-			float WSoil = 1.5 * Bank + 0.15 * smoothstep(0.6, 0.8, Small);
-			const float WSum = WLitter + WGrass + WSoil + 1e-3;
-			WLitter /= WSum;
-			WGrass /= WSum;
-			WSoil /= WSum;
 			GroundColor = (SoilColor * SoilTint * WSoil + LitterColor * LitterTint * WLitter + GrassColor * GrassTint * WGrass)
 				* lerp(0.85, 1.1, Large);
 			VegetationNormal = normalize(SoilN * WSoil + LitterN * WLitter + GrassN * WGrass);
+			// Tussocks and clods: the grassy and earthy ground is bumpy at the scale of a hand to a stride.
+			const float2 Tussocks = OceanReliefSlope(PosM + 13.0, 0.6, 0.05) * saturate(1.5 - Footprint / 0.2)
+				+ OceanReliefSlope(PosM + 3.0, 0.22, 0.02) * saturate(1.5 - Footprint / 0.07);
+			VegetationNormal = normalize(VegetationNormal - float3(Tussocks * (WGrass + 0.6 * WSoil), 0.0));
 			GroundRoughness = 0.85 * WSoil + 0.75 * WLitter + 0.8 * WGrass;
 		}
 		float3 RockColor = 0.0, RockN = VertexNormal;

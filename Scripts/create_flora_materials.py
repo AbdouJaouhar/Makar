@@ -364,7 +364,7 @@ const float Fibre = (PALM_BARK_NOISE(220.0, 3.0, float2(9.9, 3.3)) - 0.5) * satu
 const float Weather = 0.65 * PALM_BARK_NOISE(5.0, 0.9, float2(9.3, 4.1)) + 0.35 * PALM_BARK_NOISE(17.0, 3.0, float2(2.7, 8.8));
 // Mottled: darker and paler patches a hand wide over the weathering.
 const float Mottle = PALM_BARK_NOISE(14.0, 4.0, float2(6.6, 2.2));
-float3 Bark = lerp(float3(0.12, 0.105, 0.09), float3(0.25, 0.24, 0.225), smoothstep(0.3, 0.75, Weather)) * lerp(0.75, 1.15, Mottle);
+float3 Bark = lerp(float3(0.17, 0.15, 0.13), float3(0.26, 0.25, 0.235), smoothstep(0.3, 0.75, Weather)) * lerp(0.88, 1.1, Mottle);
 Bark = lerp(Bark * float3(1.15, 1.05, 0.85) + float3(0.03, 0.025, 0.015), Bark, smoothstep(0.0, 0.9, V));
 Bark = lerp(Bark, Bark * float3(0.95, 0.78, 0.62), smoothstep(5.0, 10.0, V));
 Bark *= (1.0 + 0.2 * Fibre) * lerp(1.0, 0.4, Fissure) * lerp(1.0, 1.12, Ridge * Detail) * lerp(1.0, 0.45, Crease * Detail);

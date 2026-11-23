@@ -223,3 +223,30 @@ FVector4f FOceanShoreData::Sample(const FVector2f& PositionM) const
 	const FVector4f Top = FMath::Lerp(Texels[Y1 * Resolution + X0], Texels[Y1 * Resolution + X1], FracU);
 	return FMath::Lerp(Bottom, Top, FracV);
 }
+
+FOceanGroundCover OceanGroundCover(const FVector2f& P, float HeightM, float Slope, float FromShore)
+{
+	// Identical to OceanGroundCoverWeights in Shaders/Ocean.ush.
+	auto Smooth = [](float A, float B, float X) { return SmoothStep01(A, B, X); };
+	const float Large = OceanValueNoise(P / 40.f);
+	const float Medium = OceanValueNoise(P / 9.f + FVector2f(17.f));
+	const float Small = OceanValueNoise(P / 2.3f + FVector2f(41.f));
+	const float Ragged = 0.45f * (OceanGradientNoise(P / 1.6f + FVector2f(51.f)) - 0.5f) + 0.25f * (OceanGradientNoise(P / 0.55f + FVector2f(73.f)) - 0.5f);
+	FOceanGroundCover Out;
+	Out.Rock = Smooth(0.12f, 0.24f, Slope + 0.08f * (Medium - 0.5f)) * (HeightM >= -3.f ? 1.f : 0.f);
+	const float VegetationLine = HeightM + 1.5f * (Large - 0.5f) + 0.8f * (Medium - 0.5f) + Ragged;
+	const float Scrub = Smooth(1.55f, 1.85f, VegetationLine) * Smooth(0.45f, 0.6f, Small + 0.3f * Ragged);
+	const float Dense = Smooth(2.f, 2.8f, VegetationLine);
+	Out.Vegetation = FMath::Clamp(FMath::Max(Scrub, Dense), 0.f, 1.f) * (1.f - Out.Rock);
+	const float Clearing = Smooth(0.65f, 0.8f, OceanValueNoise(P / 80.f + FVector2f(3.f)));
+	const float Bank = Smooth(0.05f, 0.11f, Slope + 0.04f * (Small - 0.5f));
+	const float Forest = Smooth(12.f, 30.f, FromShore + 6.f * (Medium - 0.5f));
+	float Litter = (1.f - Clearing) * FMath::Lerp(0.6f, 1.f, Dense) * Forest;
+	float Grass = Clearing + 0.3f * (1.f - Dense) * Smooth(0.5f, 0.7f, Medium) + 0.8f * (1.f - Forest);
+	float Soil = 1.5f * Bank + 0.15f * Smooth(0.6f, 0.8f, Small);
+	const float Sum = Litter + Grass + Soil + 1e-3f;
+	Out.Litter = Litter / Sum;
+	Out.Grass = Grass / Sum;
+	Out.Soil = Soil / Sum;
+	return Out;
+}

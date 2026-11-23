@@ -55,6 +55,19 @@ MAKAR_API float OceanGradientNoise(const FVector2f& P);
 /** Fractal sum of OceanGradientNoise, centred on 0: octaves halve the wavelength, Persistence scales the amplitude. */
 MAKAR_API float OceanFractalNoise(const FVector2f& P, float WavelengthM, int32 Octaves, float Persistence);
 
+/** What covers the ground above the beach (shares of rock and vegetation; the vegetation's soil, litter and grass sum to 1). */
+struct FOceanGroundCover
+{
+	float Rock = 0.f;
+	float Vegetation = 0.f;
+	float Soil = 0.f;
+	float Litter = 0.f;
+	float Grass = 0.f;
+};
+
+/** Identical to OceanGroundCoverWeights in Shaders/Ocean.ush (what the terrain material paints). Slope = 1 - cos(angle), FromShore in m inland. */
+MAKAR_API FOceanGroundCover OceanGroundCover(const FVector2f& PositionM, float HeightM, float Slope, float FromShore);
+
 /** Highest point of the beach the swash can reach is well below this, m above sea level. */
 constexpr float OceanSwashMaxHeightM = 1.5f;
 

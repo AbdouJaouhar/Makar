@@ -503,36 +503,49 @@ void AOceanIslandFlora::Build()
 		}
 	}
 
-	// Grass tufts, in colonies of a few tussocks: along the vegetation line (the forest's fringe and the last metres of
-	// sand in front of it, straw-tipped on the sunny sand), and in the clearings (the same clearings as the trees' and
-	// the ground texture's: OceanValueNoise(P / 80 + 3)).
+	// Grass tufts wherever the terrain material paints grass (OceanGroundCover mirrors its masks): a sward as dense as the
+	// painted grass, thinning out towards its ragged edges, so the green ground has blades on it instead of looking flat;
+	// straw-tipped on the sunny coastal strip.
 	if (Tufts.Num() == NumGroundVariants)
 	{
+		// Slope and distance inland from the cell's centre (they vary slowly), the masks' noises at each tussock.
+		auto CellSlope = [&](const FVector2f& Position)
+		{
+			const float E = 0.5f;
+			const float GX = (Surface(Position + FVector2f(E, 0.f)) - Surface(Position - FVector2f(E, 0.f))) / (2.f * E);
+			const float GY = (Surface(Position + FVector2f(0.f, E)) - Surface(Position - FVector2f(0.f, E))) / (2.f * E);
+			return 1.f - 1.f / FMath::Sqrt(1.f + GX * GX + GY * GY);
+		};
+		auto GrassAt = [&](const FVector2f& Position, float HeightM, float Slope, float FromShore)
+		{
+			const FOceanGroundCover Cover = OceanGroundCover(Position, HeightM, Slope, FromShore);
+			return Cover.Vegetation * Cover.Grass;
+		};
 		Scatter(2.f, [&](const FVector2f& Position, const FOceanTerrainSample& Terrain)
 		{
-			if (Terrain.Ground < 1.f || Terrain.Rock > 0.4f)
+			if (Terrain.Ground < 0.8f || Terrain.Rock > 0.4f)
 			{
 				return;
 			}
-			const FVector2f Seaward = (Position - IslandCenter).GetSafeNormal();
-			const float Fringe = Terrain.Understory > 0.02f ? 1.f - Smooth(0.5f, 1.4f, Terrain.Understory)
-				: Smooth(0.1f, 0.5f, Island->SampleTerrain(Position - Seaward * 4.f).Understory);
-			const float Clearing = Smooth(0.65f, 0.8f, OceanValueNoise(Position / 80.f + FVector2f(3.f))) * Smooth(0.2f, 0.6f, Terrain.Understory);
-			const float Colonies = Smooth(0.45f, 0.7f, OceanValueNoise(Position / 9.f + FVector2f(31.f)));
-			// Along the edge in separate colonies; in the clearings, a sward broken only here and there.
-			if (Random.FRand() >= GroundCoverDensity * FMath::Max(0.9f * Fringe * Colonies, 0.85f * Clearing * FMath::Lerp(0.5f, 1.f, Colonies))
-				|| SlopeAt(Position, Terrain.Ground) > 0.7f)
+			const float Slope = CellSlope(Position);
+			const float FromShore = -Shore->Sample(Position).Y;
+			if (GrassAt(Position, Surface(Position), Slope, FromShore) < 0.05f)
 			{
 				return;
 			}
-			const bool bBeach = Terrain.Understory < 0.05f;
-			const int32 Count = Random.RandRange(3, 7);
-			for (int32 Index = 0; Index < Count; ++Index)
+			const bool bCoast = FromShore < 20.f;
+			const int32 Tries = FMath::RoundToInt(22.f * GroundCoverDensity); // up to ~5 tussocks per square metre: a sward, not dots
+			for (int32 Index = 0; Index < Tries; ++Index)
 			{
-				const FVector2f Tussock = Position + FVector2f(Random.FRandRange(-0.6f, 0.6f), Random.FRandRange(-0.6f, 0.6f));
-				const int32 Variant = bBeach && Random.FRand() < 0.6f ? NumGroundVariants - 1 : Random.RandRange(0, NumGroundVariants - 2);
-				TuftTransforms[Variant].Add(FTransform(FRotator(0.f, Random.FRandRange(0.f, 360.f), 0.f), Ground(Tussock, Surface(Tussock), 0.f),
-					FVector(Random.FRandRange(1.6f, 2.6f))));
+				const FVector2f Tussock = Position + FVector2f(Random.FRandRange(-1.f, 1.f), Random.FRandRange(-1.f, 1.f));
+				const float Height = Surface(Tussock);
+				if (Random.FRand() >= GrassAt(Tussock, Height, Slope, FromShore))
+				{
+					continue;
+				}
+				const int32 Variant = bCoast && Random.FRand() < 0.5f ? NumGroundVariants - 1 : Random.RandRange(0, NumGroundVariants - 2);
+				TuftTransforms[Variant].Add(FTransform(FRotator(0.f, Random.FRandRange(0.f, 360.f), 0.f), Ground(Tussock, Height, 0.f),
+					FVector(FMath::Lerp(1.1f, 3.f, FMath::Square(Random.FRand())))));
 			}
 		});
 	}
