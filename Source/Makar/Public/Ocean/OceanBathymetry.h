@@ -9,6 +9,7 @@
 class UMaterialInstanceDynamic;
 class UMaterialInterface;
 class UOceanMeshComponent;
+class UOceanSandDeformation;
 class UTexture2D;
 
 /** The island's shape at one point, m. */
@@ -58,12 +59,12 @@ public:
 	/** Share of the understory mass that is terrain (UnderstoryRelief). */
 	float GetUnderstoryRelief() const { return UnderstoryRelief; }
 
-	/** Ground height (without understory) under a world location, cm, for scripts placing cameras or props. */
+	/** Ground height (without understory) under a world location, cm, including what was dug or trodden in the sand. */
 	UFUNCTION(BlueprintPure, Category = "Island")
-	float GetGroundHeightAt(const FVector& WorldLocation) const
-	{
-		return SampleTerrain(FVector2f(float(WorldLocation.X * 0.01), float(WorldLocation.Y * 0.01))).Ground * 100.f;
-	}
+	float GetGroundHeightAt(const FVector& WorldLocation) const;
+
+	/** The sand the player changes (footprints, holes), around the viewer. */
+	UOceanSandDeformation* GetSandDeformation() const { return SandDeformation; }
 
 	/** Ground, understory, rockiness and distance inland, for placing vegetation and rocks. */
 	FOceanTerrainSample SampleTerrain(const FVector2f& PositionM) const;
@@ -213,6 +214,10 @@ protected:
 	UPROPERTY(VisibleAnywhere, Category = "Rendering")
 	TObjectPtr<UOceanMeshComponent> Terrain;
 
+	/** Footprints and holes in the sand around the viewer (UOceanSandDeformation), drawn by the terrain material. */
+	UPROPERTY(VisibleAnywhere, Category = "Sand")
+	TObjectPtr<UOceanSandDeformation> SandDeformation;
+
 	/** Sea spray: vertical strips along the line where the swell breaks, drawn by M_OceanSpray (OceanSpray). */
 	UPROPERTY(VisibleAnywhere, Category = "Rendering")
 	TObjectPtr<UOceanMeshComponent> Spray;
@@ -245,6 +250,8 @@ private:
 	void Build();
 	void BuildShoreTexture(const FOceanShoreData& Data);
 	void BuildFootprintTexture();
+	/** Passes the sand deformation window and texture to the terrain material. */
+	void UpdateSandDeformationParameters();
 
 	/**
 	 * The island's shape before erosion, analytic (coastline, beach, hills, rocky points, sea floor). Without fine detail

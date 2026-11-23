@@ -622,6 +622,39 @@ float2 OceanSandFootprints(float2 PosM, float Footprint, Texture2D Map, SamplerS
 	return Gradient / TexelM * Traffic * Detail;
 }
 
+// Sand changed by the player (UOceanSandDeformation, same values as its CPU queries): a window following the viewer,
+// R = height offset (m), G = disturbed (turned-over) sand. Window = lower corner (m), size (m; 0 = none). Returns the
+// offset's height gradient; faded out over the window's outer 5 %.
+float2 OceanSandDeformation(float2 PosM, Texture2D Map, SamplerState MapSampler, float3 Window, out float OffsetM, out float Disturbed)
+{
+	OffsetM = 0.0;
+	Disturbed = 0.0;
+	if (Window.z <= 0.0)
+	{
+		return 0.0;
+	}
+	const float2 Uv = (PosM - Window.xy) / Window.z;
+	const float Inside = saturate(min(min(Uv.x, Uv.y), min(1.0 - Uv.x, 1.0 - Uv.y)) / 0.05);
+	if (Inside <= 0.0)
+	{
+		return 0.0;
+	}
+	uint Width, Height;
+	Map.GetDimensions(Width, Height);
+	const float TexelUv = 1.0 / max(float(Width), 1.0);
+	const float2 Here = Map.SampleLevel(MapSampler, Uv, 0.0).rg;
+	OffsetM = Here.x * Inside;
+	Disturbed = Here.y * Inside;
+	const float XP = Map.SampleLevel(MapSampler, Uv + float2(TexelUv, 0.0), 0.0).r;
+	const float XM = Map.SampleLevel(MapSampler, Uv - float2(TexelUv, 0.0), 0.0).r;
+	const float YP = Map.SampleLevel(MapSampler, Uv + float2(0.0, TexelUv), 0.0).r;
+	const float YM = Map.SampleLevel(MapSampler, Uv - float2(0.0, TexelUv), 0.0).r;
+	return float2(XP - XM, YP - YM) / (2.0 * TexelUv * Window.z) * Inside;
+}
+
+// Height of the water table under the beach (UOceanSandDeformation::WaterTable): a hole dug below it fills with water.
+static const float OceanWaterTableM = 0.08;
+
 // ------------------------------------------------------------------------------------------------------------
 // Ground textures rendered from Infinigen's procedural terrain materials (Scripts/infinigen/render_ground_tiles.py):
 // seamless 4 m tiles of limestone, soil and forest litter seen from above. Albedo in RGB; normal maps (BC5, RG) in the
@@ -692,6 +725,7 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 	Texture2D GrassAlbedo, SamplerState GrassAlbedoSampler, Texture2D GrassNormal, SamplerState GrassNormalSampler,
 	Texture2D WrackAlbedo, SamplerState WrackAlbedoSampler, Texture2D WrackNormal, SamplerState WrackNormalSampler,
 	float3 RockTint, float3 SoilTint, float3 LitterTint, float3 GrassTint,
+	Texture2D Deform, SamplerState DeformSampler, float3 DeformWindow,
 	out float Roughness, out float3 Normal, out float Glint)
 {
 	const float2 PosM = WorldPos.xy * 0.01;
@@ -709,13 +743,16 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 	// --- Sand: colour patches (shell and coral fragments), wind ripples above water, wave ripples below ---
 	float3 Color = SandColor * (0.88 + 0.18 * Large + 0.08 * Medium);
 	float2 Bump = 0.0;
+	// What the player trod and dug (its relief is added after the swash, at full strength).
+	float DeformOffset, Disturbed;
+	const float2 DeformSlope = OceanSandDeformation(PosM, Deform, DeformSampler, DeformWindow, DeformOffset, Disturbed);
 	float2 WaveRipples = 0.0;
 	if (HeightM > 0.0)
 	{
 		// Footprints break the ripples where people walked; the turned-over sand is a little darker (moister).
 		float Trampled;
 		const float2 Prints = OceanSandFootprints(PosM, Footprint, Footprints, FootprintsSampler, FootprintTileSize, Trampled);
-		Bump += OceanWindRipples(PosM, Footprint) * (1.0 - Trampled) + Prints;
+		Bump += OceanWindRipples(PosM, Footprint) * (1.0 - max(Trampled, Disturbed)) + Prints;
 		Color *= 1.0 - 0.06 * Trampled;
 	}
 	else
@@ -816,6 +853,20 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 				Bump = lerp(Bump, -N / max(NZ, 0.35) * 0.6, Cover);
 			}
 		}
+	}
+
+	// --- The player's footprints and holes: their relief; the turned-over sand is damp and darker, more so the deeper
+	// it comes from (the beach is moist a few centimetres down), which also stands in for the shade inside a hole; and
+	// a hole dug below the water table holds a pool of seawater, a dark mirror ---
+	if (DeformWindow.z > 0.0)
+	{
+		Bump += DeformSlope;
+		Color *= (1.0 - 0.1 * Disturbed) * lerp(1.0, 0.62, smoothstep(0.03, 0.3, -DeformOffset));
+		const float Pool = smoothstep(0.0, 0.015, OceanWaterTableM - (HeightM + DeformOffset)) * smoothstep(0.02, 0.05, -DeformOffset);
+		Color *= lerp(1.0, 0.55, Pool);
+		Roughness = lerp(Roughness, 0.04, Pool);
+		Bump *= 1.0 - Pool; // a level water surface
+		SandMask *= 1.0 - max(Pool, Disturbed);
 	}
 
 	// --- Coral heads and seagrass on the shallow floor: the dark patches seen through clear lagoon water ---

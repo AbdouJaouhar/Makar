@@ -17,6 +17,7 @@
 #include "Materials/MaterialInterface.h"
 #include "Ocean/OceanMeshComponent.h"
 #include "Ocean/OceanSandFootprints.h"
+#include "Ocean/OceanSandDeformation.h"
 #include "TextureResource.h"
 
 namespace
@@ -247,6 +248,8 @@ AOceanBathymetry::AOceanBathymetry()
 	Spray->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Spray->SetCastShadow(false);
 
+	SandDeformation = CreateDefaultSubobject<UOceanSandDeformation>(TEXT("SandDeformation"));
+
 	TerrainMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/M_Seabed.M_Seabed")));
 	SprayMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/M_OceanSpray.M_OceanSpray")));
 }
@@ -262,6 +265,9 @@ void AOceanBathymetry::BeginPlay()
 	Super::BeginPlay();
 	// OnConstruction does not run again in a cooked game, and the mesh is not saved.
 	EnsureBuilt();
+	// The sand deformation reads the analytic ground (its offsets are relative to it) and shows through the terrain material.
+	SandDeformation->GroundHeight = [this](const FVector2f& PositionM) { return SampleTerrain(PositionM).Ground; };
+	SandDeformation->OnWindowChanged.AddUObject(this, &AOceanBathymetry::UpdateSandDeformationParameters);
 }
 
 #if WITH_EDITOR
@@ -271,6 +277,24 @@ void AOceanBathymetry::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
 	Build();
 }
 #endif
+
+float AOceanBathymetry::GetGroundHeightAt(const FVector& WorldLocation) const
+{
+	const float Ground = SampleTerrain(FVector2f(float(WorldLocation.X * 0.01), float(WorldLocation.Y * 0.01))).Ground * 100.f;
+	return Ground + (SandDeformation ? SandDeformation->GetHeightOffsetAt(WorldLocation) : 0.f);
+}
+
+void AOceanBathymetry::UpdateSandDeformationParameters()
+{
+	UE_LOG(LogTemp, Verbose, TEXT("OceanBathymetry: sand deformation window %s, material %s"),
+		SandDeformation ? *SandDeformation->GetWindow().ToString() : TEXT("none"), TerrainMaterialInstance ? *TerrainMaterialInstance->GetName() : TEXT("none"));
+	if (TerrainMaterialInstance && SandDeformation && SandDeformation->GetTexture())
+	{
+		const FVector3f Window = SandDeformation->GetWindow();
+		TerrainMaterialInstance->SetTextureParameterValue(TEXT("SandDeformation"), SandDeformation->GetTexture());
+		TerrainMaterialInstance->SetVectorParameterValue(TEXT("SandDeformationWindow"), FLinearColor(Window.X, Window.Y, Window.Z, 0.f));
+	}
+}
 
 void AOceanBathymetry::EnsureBuilt()
 {
@@ -731,6 +755,7 @@ void AOceanBathymetry::Build()
 		{
 			Tile->SetMaterial(0, TerrainMaterialInstance);
 		}
+		UpdateSandDeformationParameters();
 	}
 	BuildSprayCurtain(*Data);
 	bBuilt = true;

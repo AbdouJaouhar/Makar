@@ -263,10 +263,16 @@ def seabed_material():
     surface.set_editor_property(
         "code", "return OceanTerrainSurface(WorldPos, VertexNormal, Time, SwellHeight, SandColor, ToSun, ToCamera, Footprints, FootprintsSampler, FootprintTileSize, "
         "ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, SwellPeriod, SwellMaxDepth, "
-        "RockAlbedo, RockAlbedoSampler, RockNormal, RockNormalSampler, SoilAlbedo, SoilAlbedoSampler, SoilNormal, SoilNormalSampler, "
-        "LitterAlbedo, LitterAlbedoSampler, LitterNormal, LitterNormalSampler, GrassAlbedo, GrassAlbedoSampler, GrassNormal, GrassNormalSampler, "
-        "WrackAlbedo, WrackAlbedoSampler, WrackNormal, WrackNormalSampler, "
-        "RockTint, SoilTint, LitterTint, GrassTint, Roughness, Normal, Glint);")
+        "RockAlbedo, GS, RockNormal, GS, SoilAlbedo, GS, SoilNormal, GS, "
+        "LitterAlbedo, GS, LitterNormal, GS, GrassAlbedo, GS, GrassNormal, GS, "
+        "WrackAlbedo, GS, WrackNormal, GS, "
+        "RockTint, SoilTint, LitterTint, GrassTint, Deform, DeformSampler, DeformWindow, Roughness, Normal, Glint);")
+    # The ground textures share the material's wrap sampler (GS): with one sampler each the pixel shader exceeded its
+    # 16 sampler registers (the per-texture samplers are then unused and compiled out).
+    gs_define = unreal.CustomDefine()
+    gs_define.set_editor_property("define_name", "GS")
+    gs_define.set_editor_property("define_value", "Material.Wrap_WorldGroupSettings")
+    surface.set_editor_property("additional_defines", [gs_define])
     surface.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
     surface.set_editor_property("include_file_paths", ["/Makar/Ocean.ush"])
     surface_inputs = []
@@ -274,7 +280,7 @@ def seabed_material():
                  "ShoreMap", "ShoreMapOrigin", "ShoreMapSize", "SwellPeriod", "SwellMaxDepth",
                  "RockAlbedo", "RockNormal", "SoilAlbedo", "SoilNormal", "LitterAlbedo", "LitterNormal", "GrassAlbedo", "GrassNormal",
                  "WrackAlbedo", "WrackNormal",
-                 "RockTint", "SoilTint", "LitterTint", "GrassTint"):
+                 "RockTint", "SoilTint", "LitterTint", "GrassTint", "Deform", "DeformWindow"):
         custom_input = unreal.CustomInput()
         custom_input.set_editor_property("input_name", name)
         surface_inputs.append(custom_input)
@@ -326,6 +332,8 @@ def seabed_material():
             texture.set_editor_property("parameter_name", f"Ground{prefix}{input_suffix}")
             texture.set_editor_property("texture", ground.get((kind, suffix)) or unreal.load_asset(
                 "/Engine/EngineResources/Black.Black" if suffix == "BaseColor" else "/Engine/EngineMaterials/FlatNormal.FlatNormal"))
+            # Shared wrap sampler: the material would otherwise exceed the 16 samplers of a pixel shader.
+            texture.set_editor_property("sampler_source", unreal.SamplerSourceMode.SSM_WRAP_WORLD_GROUP_SETTINGS)
             if suffix == "Normal":
                 texture.set_editor_property("sampler_type", unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL)
             connect(texture, surface, f"{prefix}{input_suffix}")
@@ -335,6 +343,16 @@ def seabed_material():
         node.set_editor_property("parameter_name", f"Ground{prefix}Tint")
         node.set_editor_property("default_value", unreal.LinearColor(*tint, 1.0))
         connect(node, surface, f"{prefix}Tint")
+    # The sand the player changed (UOceanSandDeformation, set on the dynamic instance by AOceanBathymetry): footprints,
+    # holes. Window = lower corner and size, m; size 0 = nothing changed.
+    deform = expression(unreal.MaterialExpressionTextureObjectParameter, -1300, 1440)
+    deform.set_editor_property("parameter_name", "SandDeformation")
+    deform.set_editor_property("texture", unreal.load_asset("/Engine/EngineResources/Black.Black"))
+    connect(deform, surface, "Deform")
+    deform_window = expression(unreal.MaterialExpressionVectorParameter, -1300, 1520)
+    deform_window.set_editor_property("parameter_name", "SandDeformationWindow")
+    deform_window.set_editor_property("default_value", unreal.LinearColor(0.0, 0.0, 0.0, 0.0))
+    connect(deform_window, surface, "DeformWindow")
     MEL.connect_material_property(surface, "", unreal.MaterialProperty.MP_BASE_COLOR)
     MEL.connect_material_property(surface, "Roughness", unreal.MaterialProperty.MP_ROUGHNESS)
     MEL.connect_material_property(surface, "Normal", unreal.MaterialProperty.MP_NORMAL)
