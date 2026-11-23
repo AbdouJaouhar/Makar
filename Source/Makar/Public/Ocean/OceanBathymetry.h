@@ -203,14 +203,6 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Rendering")
 	TSoftObjectPtr<UMaterialInterface> TerrainMaterial;
 
-	/** Trails of footprints simulated in the sand tile (OceanSimulateSandFootprints); 0 = untouched beach. */
-	UPROPERTY(EditAnywhere, Category = "Sand", meta = (ClampMin = "0", ClampMax = "40"))
-	int32 FootprintTrails = 14;
-
-	/** Width of the periodic footprint tile laid over the beach. */
-	UPROPERTY(EditAnywhere, Category = "Sand", meta = (ClampMin = "2", Units = "Meters"))
-	float FootprintTileSize = 8.f;
-
 	UPROPERTY(VisibleAnywhere, Category = "Rendering")
 	TObjectPtr<UOceanMeshComponent> Terrain;
 
@@ -249,7 +241,6 @@ protected:
 private:
 	void Build();
 	void BuildShoreTexture(const FOceanShoreData& Data);
-	void BuildFootprintTexture();
 	/** Passes the sand deformation window and texture to the terrain material. */
 	void UpdateSandDeformationParameters();
 
@@ -308,10 +299,6 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> ShoreTexture;
 
-	/** RG16F: height offset (m), disturbance; tiled by the terrain material (SandFootprints). */
-	UPROPERTY(Transient)
-	TObjectPtr<UTexture2D> FootprintTexture;
-
 	UPROPERTY(Transient)
 	TObjectPtr<class UMaterialInstanceDynamic> TerrainMaterialInstance;
 
@@ -321,9 +308,6 @@ private:
 	/** The spray curtain: marching squares on the shore data's depth at SprayBreakDepth, a few strips deep. */
 	void BuildSprayCurtain(const FOceanShoreData& Data);
 
-	/** Settings the footprint texture was built with, to rebuild it only when they change. */
-	int32 BuiltFootprintTrails = -1;
-	float BuiltFootprintTileSize = 0.f;
 
 	TSharedPtr<const FOceanShoreData> ShoreData;
 	bool bBuilt = false;

@@ -578,50 +578,6 @@ float OceanSwashFilm(float HeightM, float Runup, float Cycle, float Period)
 	return exp(-Since / 2.0);
 }
 
-// Footprints simulated in sand (OceanSimulateSandFootprints, Sumner et al. 1999): a periodic tile, RG = height
-// offset (m) and disturbance. Laid twice with different orientations and offsets, picked in patches, so the tile
-// does not show; more trails in the busy stretches. Returns the height gradient; Disturbance = trampled (0..1).
-float2 OceanSandFootprintSample(float2 Uv, Texture2D Map, SamplerState MapSampler, float TexelUv, out float Disturbance)
-{
-	const float2 Here = Map.SampleLevel(MapSampler, Uv, 0.0).rg;
-	Disturbance = Here.y;
-	return float2(Map.SampleLevel(MapSampler, Uv + float2(TexelUv, 0.0), 0.0).r - Here.x,
-		Map.SampleLevel(MapSampler, Uv + float2(0.0, TexelUv), 0.0).r - Here.x);
-}
-
-float2 OceanSandFootprints(float2 PosM, float Footprint, Texture2D Map, SamplerState MapSampler, float TileM, out float Disturbance)
-{
-	Disturbance = 0.0;
-	// Prints ~25 cm long with rims of a few cm: drawn while a pixel is under ~3 cm, gone at 6 cm.
-	const float Detail = saturate(2.0 - Footprint / 0.03);
-	if (TileM <= 0.0 || Detail <= 0.0)
-	{
-		return 0.0;
-	}
-	uint Width, Height;
-	Map.GetDimensions(Width, Height);
-	const float TexelUv = 1.0 / max(float(Width), 1.0);
-	const float TexelM = TileM * TexelUv;
-
-	// Two layouts of the tile: one as is, one turned by 90 degrees and shifted.
-	const float Pick = smoothstep(0.45, 0.55, OceanGradientNoise(PosM / 11.0 + 6.1));
-	float2 Gradient;
-	if (Pick < 0.5)
-	{
-		Gradient = OceanSandFootprintSample(PosM / TileM, Map, MapSampler, TexelUv, Disturbance);
-	}
-	else
-	{
-		const float2 Turned = float2(-PosM.y, PosM.x) / TileM + float2(0.37, 0.71);
-		const float2 G = OceanSandFootprintSample(Turned, Map, MapSampler, TexelUv, Disturbance);
-		Gradient = float2(G.y, -G.x); // back to world axes
-	}
-	// Busier and quieter stretches of beach.
-	const float Traffic = lerp(0.35, 1.0, smoothstep(0.3, 0.6, OceanGradientNoise(PosM / 30.0 + 2.9)));
-	Disturbance *= Traffic * Detail;
-	return Gradient / TexelM * Traffic * Detail;
-}
-
 // Sand changed by the player (UOceanSandDeformation, same values as its CPU queries): a window following the viewer,
 // R = height offset (m), G = disturbed (turned-over) sand. Window = lower corner (m), size (m; 0 = none). Returns the
 // offset's height gradient; faded out over the window's outer 5 %.
@@ -716,7 +672,7 @@ void OceanGroundTriplanar(Texture2D AlbedoTex, SamplerState AlbedoSampler, Textu
 // shallow floor. WorldPos in cm, sea level at Z = 0, VertexNormal in world space, ToSun and ToCamera unit vectors.
 // Returns the base colour; Glint = sand sparkles, radiance relative to the sun (added as emissive).
 float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, float SwellHeight, float3 SandColor,
-	float3 ToSun, float3 ToCamera, Texture2D Footprints, SamplerState FootprintsSampler, float FootprintTileSize,
+	float3 ToSun, float3 ToCamera,
 	Texture2D ShoreMap, SamplerState ShoreMapSampler, float3 ShoreMapOrigin, float ShoreMapSize, float SwellPeriod,
 	float SwellMaxDepth,
 	Texture2D RockAlbedo, SamplerState RockAlbedoSampler, Texture2D RockNormal, SamplerState RockNormalSampler,
@@ -749,11 +705,8 @@ float3 OceanTerrainSurface(float3 WorldPos, float3 VertexNormal, float Time, flo
 	float2 WaveRipples = 0.0;
 	if (HeightM > 0.0)
 	{
-		// Footprints break the ripples where people walked; the turned-over sand is a little darker (moister).
-		float Trampled;
-		const float2 Prints = OceanSandFootprints(PosM, Footprint, Footprints, FootprintsSampler, FootprintTileSize, Trampled);
-		Bump += OceanWindRipples(PosM, Footprint) * (1.0 - max(Trampled, Disturbed)) + Prints;
-		Color *= 1.0 - 0.06 * Trampled;
+		// The player's footprints and holes break the ripples.
+		Bump += OceanWindRipples(PosM, Footprint) * (1.0 - Disturbed);
 	}
 	else
 	{

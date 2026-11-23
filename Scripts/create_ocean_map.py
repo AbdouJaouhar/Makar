@@ -261,7 +261,7 @@ def seabed_material():
     surface = expression(unreal.MaterialExpressionCustom, -700, -100)
     surface.set_editor_property("description", "Terrain Surface")
     surface.set_editor_property(
-        "code", "return OceanTerrainSurface(WorldPos, VertexNormal, Time, SwellHeight, SandColor, ToSun, ToCamera, Footprints, FootprintsSampler, FootprintTileSize, "
+        "code", "return OceanTerrainSurface(WorldPos, VertexNormal, Time, SwellHeight, SandColor, ToSun, ToCamera, "
         "ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, SwellPeriod, SwellMaxDepth, "
         "RockAlbedo, GS, RockNormal, GS, SoilAlbedo, GS, SoilNormal, GS, "
         "LitterAlbedo, GS, LitterNormal, GS, GrassAlbedo, GS, GrassNormal, GS, "
@@ -276,7 +276,7 @@ def seabed_material():
     surface.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
     surface.set_editor_property("include_file_paths", ["/Makar/Ocean.ush"])
     surface_inputs = []
-    for name in ("WorldPos", "VertexNormal", "Time", "SwellHeight", "SandColor", "ToSun", "ToCamera", "Footprints", "FootprintTileSize",
+    for name in ("WorldPos", "VertexNormal", "Time", "SwellHeight", "SandColor", "ToSun", "ToCamera",
                  "ShoreMap", "ShoreMapOrigin", "ShoreMapSize", "SwellPeriod", "SwellMaxDepth",
                  "RockAlbedo", "RockNormal", "SoilAlbedo", "SoilNormal", "LitterAlbedo", "LitterNormal", "GrassAlbedo", "GrassNormal",
                  "WrackAlbedo", "WrackNormal",
@@ -305,12 +305,6 @@ def seabed_material():
     to_sun.set_editor_property("default_value", unreal.LinearColor(*sun_direction(), 0.0))
     connect(to_sun, surface, "ToSun")
     connect(expression(unreal.MaterialExpressionCameraVectorWS, -1000, 700), surface, "ToCamera")
-    # Footprints simulated by AOceanBathymetry (set on its dynamic instance); black = untouched sand.
-    footprints = expression(unreal.MaterialExpressionTextureObjectParameter, -1000, 800)
-    footprints.set_editor_property("parameter_name", "SandFootprints")
-    footprints.set_editor_property("texture", unreal.load_asset("/Engine/EngineResources/Black.Black"))
-    connect(footprints, surface, "Footprints")
-    connect(scalar("SandFootprintTileSize", 0.0, -1000, 900), surface, "FootprintTileSize")
     # Coastal data (AOceanBathymetry, set on its dynamic instance) and the shore swell, for the wave ripples.
     shore_map = expression(unreal.MaterialExpressionTextureObjectParameter, -1300, 1000)
     shore_map.set_editor_property("parameter_name", "ShoreMap")
