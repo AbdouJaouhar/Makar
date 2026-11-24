@@ -27,6 +27,10 @@
 		{
 			"Name": "EditorScriptingUtilities",
 			"Enabled": true
+		},
+		{
+			"Name": "DLSS",
+			"Enabled": true
 		}
 	]
 }

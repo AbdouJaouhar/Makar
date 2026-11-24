@@ -18,3 +18,7 @@ __pycache__/
 
 # Baked flora (Scripts/bake_flora.py): ~150 MB of Nanite meshes regenerated in minutes; not versioned.
 Content/Ocean/Flora/Baked/
+
+# NVIDIA DLSS plugin (1.7 GB of binaries): unzip Plugins/DLSS from NVIDIA's UE 5.8 DLSS plugin package (developer.nvidia.com/rtx/dlss).
+Plugins/DLSS/
+Plugins/StreamlineNGXCommon/
