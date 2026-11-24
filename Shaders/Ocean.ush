@@ -1100,9 +1100,11 @@ float OceanSurfFoam(float2 PosM, float Time, Texture2D ShoreMap, SamplerState Sh
 		const float Level = Runup * (1.1 * OceanSwashRise(Cycle) - 0.1);
 		const float Water = Level + Depth;                       // water thickness over the sand (m)
 		const float Rising = 1.0 - smoothstep(0.25, 0.4, Cycle);
-		const float Edge = smoothstep(-0.004, 0.002, Water) * (1.0 - smoothstep(0.01, 0.05 + 0.04 * Ragged, Water));
-		const float Sheet = smoothstep(0.0, 0.01, Water) * (1.0 - smoothstep(0.08, 0.3, Water));
-		const float Swash = max(Edge * lerp(0.5, 0.9, Rising), Sheet * lerp(0.1, 0.25, Rising));
+		// The bubbly front of each uprush: a bright white rim a few centimetres of water deep (the reference photo's
+		// line of foam along the sand), then a thinner lace over the sheet behind it.
+		const float Edge = smoothstep(-0.004, 0.002, Water) * (1.0 - smoothstep(0.03, 0.08 + 0.06 * Ragged, Water));
+		const float Sheet = smoothstep(0.0, 0.01, Water) * (1.0 - smoothstep(0.1, 0.35, Water));
+		const float Swash = max(Edge * lerp(0.7, 1.0, Rising), Sheet * lerp(0.15, 0.35, Rising));
 		Foam = max(Foam, Swash * (1.0 - smoothstep(0.3, 0.6, Depth)));
 	}
 	return saturate(Foam);
@@ -1357,8 +1359,9 @@ float OceanFoamCoverage(float2 PosM, float Amount, out float Height)
 	const float TornEdge = max(lerp(0.14, 0.05, smoothstep(0.2, 0.7, A)), 1.5 * fwidth(Torn));
 	// Pierced by round holes (a few centimetres to a few decimetres: burst bubbles and the gaps between clumps),
 	// fewer and smaller as the froth thickens. A threshold of noise warped by the cell walls cut star-shaped holes.
-	const float Holes = max(OceanFoamHoles(P / 0.09 + 21.7, A), OceanFoamHoles(P / 0.3 + 3.9, A))
-		* saturate(0.1 / Footprint - 1.0); // faded where they get below a few pixels
+	// Only the larger holes: the few-centimetre ones dotted the froth evenly like a cheese (iteration 186), where
+	// real foam is a lace of irregular gaps.
+	const float Holes = OceanFoamHoles(P / 0.3 + 3.9, A) * saturate(0.1 / Footprint - 1.0); // faded below a few pixels
 	const float Sheet = smoothstep(Threshold - TornEdge, Threshold + TornEdge, Torn + 0.16 * Froth) * (1.0 - Holes)
 		* lerp(0.8, 1.0, OceanGradientNoise(P / 0.3 + 15.5)); // denser and thinner clumps of bubbles
 	const float Fringe = smoothstep(Threshold - 0.3, Threshold - 0.02, Torn);
