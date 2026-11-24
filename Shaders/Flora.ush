@@ -14,7 +14,7 @@ static const float3 FloraWindDirection = float3(-0.97, -0.24, 0.0);
 // instance's: leaves hundreds of metres "from their axis" were flung metres away). WorldPos in cm, Time in s.
 // Bend: sway in cm per square metre of height (a plant bends like a cantilever: ~height^2).
 // Flutter: cm of fast motion per metre away from the plant's axis (leaves, frond tips); 0 for bark.
-float3 FloraWind(float3 WorldPos, float3 Local, float Time, float Bend, float Flutter)
+float3 FloraWind(float3 WorldPos, float3 Local, float4 Frond, float Time, float Bend, float Flutter)
 {
 	const float Height = max(Local.z, 0.0) * 0.01;
 	const float Reach = length(Local.xy) * 0.01;
@@ -33,9 +33,27 @@ float3 FloraWind(float3 WorldPos, float3 Local, float Time, float Bend, float Fl
 	// Crosswind wobble, a third as large.
 	Offset += float3(-FloraWindDirection.y, FloraWindDirection.x, 0.0) * (0.3 * Bend * Height * Height * sin(Time * 1.3 + 4.0 * Seed));
 
+	// Palm fronds (Frond = UV channels 1 and 2, OceanFlora's AddPalmFrond: metres along the rachis, metres along the
+	// leaflet, the frond's phase, the leaflet's phase). The rachis is stiff wood: the frond pivots as a whole about where it
+	// joins the crown, its displacement growing linearly to its tip (a bend growing as the square of the distance read as
+	// elbows along the rachis), pushed downwind and bobbing (~0.6 Hz, its own phase). Each leaflet is stiff along its
+	// length and hinged on the rachis: it flaps as a whole, faster (~1.5 Hz), each on its own phase.
+	if (any(Frond != 0.0))
+	{
+		const float Along = Frond.x, Out = Frond.y;
+		const float FrondSwing = Time * 3.8 + 6.2832 * Frond.z;
+		const float FrondTurn = 5.0 * Along * (0.35 + 0.65 * Gust); // cm per metre: ~20 cm at the tip of a 4.5 m frond
+		Offset += FloraWindDirection * (FrondTurn * (0.6 + 0.4 * sin(FrondSwing)))
+			+ float3(0.0, 0.0, 0.4 * FrondTurn * sin(FrondSwing + 1.2));
+		const float LeafletSwing = Time * (8.5 + 2.0 * Frond.w) + 6.2832 * Frond.w;
+		const float Flap = 8.0 * Out * (0.3 + 0.7 * Gust) * sin(LeafletSwing);
+		Offset += float3(0.3 * FloraWindDirection.xy * Flap, Flap);
+		return Offset;
+	}
+
 	// Flutter, stronger in the gusts and further from the axis. Mostly coherent: everything on one side of the plant (one
-	// frond, one branch) lifts and swings together, its phase set by its direction around the axis, the tips moving the
-	// most; plus a small flicker of each leaf on its own phase (all per-vertex, the fronds snaked like ribbons).
+	// branch) lifts and swings together, its phase set by its direction around the axis, the tips moving the most; plus a
+	// small flicker of each leaf on its own phase.
 	if (Flutter > 0.0)
 	{
 		const float2 Around = Local.xy;

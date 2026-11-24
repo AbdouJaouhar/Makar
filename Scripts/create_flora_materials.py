@@ -55,9 +55,9 @@ def add_wind(material, flutter):
     wind.set_editor_property("description", "Flora Wind")
     wind.set_editor_property("include_file_paths", ["/Makar/Flora.ush"])
     wind.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
-    wind.set_editor_property("code", f"return FloraWind(WorldPos, Local, Time, {WIND_BEND}, {flutter});")
+    wind.set_editor_property("code", f"return FloraWind(WorldPos, Local, Frond, Time, {WIND_BEND}, {flutter});")
     inputs = []
-    for input_name in ("WorldPos", "Local", "Time"):
+    for input_name in ("WorldPos", "Local", "Frond", "Time"):
         custom_input = unreal.CustomInput()
         custom_input.set_editor_property("input_name", input_name)
         inputs.append(custom_input)
@@ -65,6 +65,13 @@ def add_wind(material, flutter):
     connect(node(material, unreal.MaterialExpressionWorldPosition, -900, 900), wind, "WorldPos")
     connect(node(material, unreal.MaterialExpressionLocalPosition, -900, 980), wind, "Local")
     connect(node(material, unreal.MaterialExpressionTime, -900, 1060), wind, "Time")
+    # Palm fronds' wind data (OceanFlora's AddPalmFrond, UV channels 1 and 2; zero on other meshes).
+    frond = node(material, unreal.MaterialExpressionAppendVector, -750, 1140)
+    for index, pin in ((1, "A"), (2, "B")):
+        coordinates = node(material, unreal.MaterialExpressionTextureCoordinate, -900, 1100 + 80 * index)
+        coordinates.set_editor_property("coordinate_index", index)
+        connect(coordinates, frond, pin)
+    connect(frond, wind, "Frond")
     MEL.connect_material_property(wind, "", unreal.MaterialProperty.MP_WORLD_POSITION_OFFSET)
     # Bounds: the crowns move up to a few decimetres.
     material.set_editor_property("max_world_position_offset_displacement", 120.0)
@@ -500,12 +507,88 @@ def grass_tuft():
     save(material, "M_GrassTuft", flutter=0.3)
 
 
+PALM_LEAFLET_CODE = """
+// Coconut frond (OceanFlora's AddPalmFrond): the rachis (Leaflet = 0) and the leaflets (Leaflet = the leaflet's phase,
+// > 0; UV: U across, 0.5 = midrib, V = 0 where it joins the rachis, 1 at its tip). Colour = linear albedo.
+const float Leaflet = Phases.y; // UV channel 2: the frond's and the leaflet's phases
+float3 C = Color.rgb;
+if (Leaflet <= 0.0)
+{
+    Subsurface = C * float3(0.25, 0.3, 0.08);
+    Roughness = 0.5;
+    return C;
+}
+const float Along = UV.y;
+const float A = abs(UV.x - 0.5) * 2.0; // 0 on the midrib, 1 at the margin
+// The midrib: a yellow-green rib down the middle, which blocks the light through the leaflet.
+const float Midrib = 1.0 - smoothstep(0.035, 0.09, A);
+// Fine parallel veins along the leaflet (palms have no net of veins), faded where they would alias.
+const float VeinPhase = A * 8.0;
+const float VeinBlur = max(0.07, fwidth(VeinPhase));
+const float Vein = saturate((abs(frac(VeinPhase) - 0.5) - (0.5 - VeinBlur)) / VeinBlur)
+    * saturate(1.5 - 4.0 * fwidth(VeinPhase)) * (1.0 - Midrib);
+// Each leaflet mottled along its length on its own pattern (its phase as a seed), fresher at its base, darker at its tip.
+const float Seed = Leaflet * 61.0;
+const float Mottle = 0.5 + 0.25 * sin(Along * 23.0 + Seed) + 0.25 * sin(Along * 57.0 + A * 9.0 + Seed * 2.3);
+C *= lerp(1.08, 0.93, Along) * lerp(0.92, 1.08, Mottle) * (1.0 + 0.1 * Vein);
+C = lerp(C, Color.rgb * float3(1.7, 1.6, 0.75), 0.65 * Midrib);
+// A thin yellower margin.
+C = lerp(C, C * float3(1.25, 1.15, 0.7), 0.5 * smoothstep(0.82, 1.0, A));
+// Against the sun the leaflets glow a warm yellow-green, the veins and the midrib dark lines across that glow.
+Subsurface = C * float3(0.8, 0.95, 0.25) * (1.0 - 0.35 * Vein) * (1.0 - 0.6 * Midrib);
+// Waxy upper surface: glossy between the veins, the ribs a little rougher.
+Roughness = lerp(0.32, 0.45, Vein) + 0.15 * Midrib;
+return C;
+"""
+
+
+def palm_leaflet():
+    """Coconut fronds (OceanFlora::MakeCoconutPalm): the rachis and its leaflets, one section. The leaflets' midrib,
+    parallel veins, mottling and margin drawn from their UVs; waxy, glossy; against the sun a warm yellow-green glow
+    crossed by the dark veins (two-sided foliage). Vertex colour = linear albedo (age, dry tips)."""
+    material = fresh_material("M_PalmLeaflet")
+    material.set_editor_property("two_sided", True)
+    material.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_TWO_SIDED_FOLIAGE)
+    uv = node(material, unreal.MaterialExpressionTextureCoordinate, -1000, 0)
+    vertex = node(material, unreal.MaterialExpressionVertexColor, -1000, 120)
+    phases = node(material, unreal.MaterialExpressionTextureCoordinate, -1000, 260)
+    phases.set_editor_property("coordinate_index", 2)
+    leaflet = node(material, unreal.MaterialExpressionComponentMask, -850, 260)
+    leaflet.set_editor_property("r", False)
+    leaflet.set_editor_property("g", True)
+    connect(phases, leaflet, "")
+    shade = node(material, unreal.MaterialExpressionCustom, -600, 0)
+    shade.set_editor_property("description", "Palm Leaflet")
+    shade.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
+    shade.set_editor_property("code", PALM_LEAFLET_CODE)
+    inputs = []
+    for name in ("UV", "Color", "Phases"):
+        custom_input = unreal.CustomInput()
+        custom_input.set_editor_property("input_name", name)
+        inputs.append(custom_input)
+    shade.set_editor_property("inputs", inputs)
+    outputs = []
+    for name, kind in (("Subsurface", unreal.CustomMaterialOutputType.CMOT_FLOAT3),
+                       ("Roughness", unreal.CustomMaterialOutputType.CMOT_FLOAT1)):
+        output = unreal.CustomOutput()
+        output.set_editor_property("output_name", name)
+        output.set_editor_property("output_type", kind)
+        outputs.append(output)
+    shade.set_editor_property("additional_outputs", outputs)
+    connect(uv, shade, "UV")
+    connect(vertex, shade, "Color")
+    connect(phases, shade, "Phases")
+    MEL.connect_material_property(shade, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    MEL.connect_material_property(shade, "Subsurface", unreal.MaterialProperty.MP_SUBSURFACE_COLOR)
+    MEL.connect_material_property(shade, "Roughness", unreal.MaterialProperty.MP_ROUGHNESS)
+    MEL.connect_material_property(constant(material, 0.5, -300, 400), "", unreal.MaterialProperty.MP_SPECULAR)
+    save(material, "M_PalmLeaflet", flutter=5.0)
+
+
 bark()
 foliage()
 foliage("M_StemF", (0.06, 0.06, 0.03), 0.85, flutter=0.0)
-# Coconut palm leaflets (OceanFlora::MakeCoconutPalm, near levels): waxy and glossy, the sky sheen shows on them; the
-# light through them a warm yellow-green.
-foliage("M_PalmLeaflet", (0.5, 0.6, 0.15), 0.42, flutter=5.0)  # the frond tips toss, 25 cm and more
+palm_leaflet()
 leaf_blade()
 rock()
 palm_frond()

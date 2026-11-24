@@ -102,7 +102,9 @@ UStaticMesh* AOceanIslandFlora::GetMesh(const FString& Name, TFunctionRef<TArray
 	const FString PackagePath = TEXT("/Game/Ocean/Flora/Baked/") + AssetName;
 	UStaticMesh* Mesh = nullptr;
 #if WITH_EDITOR
-	if (bBaking)
+	// A bake resumes where an interrupted one stopped: meshes of this generator version already saved are loaded below
+	// (a generator change bumps OceanFlora::GeneratorVersion, which renames them all).
+	if (bBaking && !FPackageName::DoesPackageExist(PackagePath))
 	{
 		// Nanite renders the full detail at every distance: only the nearest level is baked.
 		const TArray<FOceanMeshData> Lods = Generate();

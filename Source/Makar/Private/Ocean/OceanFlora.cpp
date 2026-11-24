@@ -13,7 +13,7 @@
 
 int32 FOceanMeshData::AddVertex(const FVector3f& Position, const FVector3f& Normal, const FVector2f& UV, const FLinearColor& Color)
 {
-	return Vertices.Add({ Position, Normal.GetSafeNormal(), UV, Color });
+	return Vertices.Add({ Position, Normal.GetSafeNormal(), UV, Color, CurrentWind });
 }
 
 void FOceanMeshData::AddTriangle(int32 Section, int32 A, int32 B, int32 C)
@@ -623,7 +623,17 @@ namespace OceanFlora
 		const FLinearColor Dry(0.2f, 0.14f, 0.06f);
 		const FLinearColor Stalk = bDead ? FLinearColor(0.2f, 0.14f, 0.07f) : FMath::Lerp(FLinearColor(0.15f, 0.16f, 0.05f), FLinearColor(0.24f, 0.2f, 0.06f), Age);
 		auto RachisRadius = [](float S) { return FMath::Lerp(4.5f, 0.6f, FMath::Pow(S, 0.8f)); };
+		// Wind data (Shaders/Flora.ush, FloraWind): the frond bends as a beam, more towards its tip (metres along the
+		// rachis), and each leaflet flaps as a whole about where it joins the rachis (metres along the leaflet), each
+		// with its own phase. The rachis tube's V is already metres along it.
+		FRandomStream Phases(LeafSeed * 3 + 7);
+		const float FrondPhase = Phases.FRand();
+		const int32 RachisFirst = Data.Vertices.Num();
 		AddBarkTube(Data, SectionFoliage, [&](float T) { return At(T).Position; }, RachisRadius, bNear ? 24 : (Detail == 1 ? 10 : 5), bNear ? 6 : (Detail == 1 ? 4 : 3), Stalk);
+		for (int32 Index = RachisFirst; Index < Data.Vertices.Num(); ++Index)
+		{
+			Data.Vertices[Index].Wind = FVector4f(Data.Vertices[Index].UV.Y, 0.f, FrondPhase, 0.f);
+		}
 
 		const int32 PerSide = bNear ? 85 : (Detail == 1 ? 30 : 12);
 		const float MaxLeaflet = 0.2f * Length;
@@ -666,9 +676,11 @@ namespace OceanFlora
 				const float Curl = bLying ? 0.f : (bDead ? 1.3f : FMath::Lerp(0.35f, 1.1f, Age)) * (L / 90.f);
 				FVector3f Point = R.Position + R.Side * float(SideSign) * RachisRadius(S);
 				int32 Previous[3] = { INDEX_NONE, INDEX_NONE, INDEX_NONE };
+				const float LeafletPhase = Phases.FRand();
 				for (int32 J = 0; J <= Segments; ++J)
 				{
 					const float U = float(J) / Segments;
+					Data.CurrentWind = FVector4f(S * Length * 0.01f, U * L * 0.01f, FrondPhase, LeafletPhase);
 					// Narrow at the base, widest at a tenth of its length, tapering to a point.
 					const float Width = W * (U < 0.1f ? FMath::Lerp(0.35f, 1.f, U / 0.1f) : 1.f - 0.95f * FMath::Pow((U - 0.1f) / 0.9f, 2.2f));
 					const FLinearColor Color = FMath::Lerp(LeafletBlade, Dry, Brown * FMath::SmoothStep(0.65f, 1.f, U));
@@ -709,6 +721,7 @@ namespace OceanFlora
 				}
 			}
 		}
+		Data.CurrentWind = FVector4f(0.f, 0.f, 0.f, 0.f);
 	}
 
 	FOceanMeshData MakeCoconutPalm(int32 Seed, int32 Detail)
@@ -1765,6 +1778,7 @@ namespace OceanFlora
 			TVertexInstanceAttributesRef<FVector3f> Tangents = Attributes.GetVertexInstanceTangents();
 			TVertexInstanceAttributesRef<float> BinormalSigns = Attributes.GetVertexInstanceBinormalSigns();
 			TVertexInstanceAttributesRef<FVector2f> UVs = Attributes.GetVertexInstanceUVs();
+			UVs.SetNumChannels(3); // 1 and 2: wind data (FOceanMeshData::FVertex::Wind)
 			TVertexInstanceAttributesRef<FVector4f> Colors = Attributes.GetVertexInstanceColors();
 			TPolygonGroupAttributesRef<FName> SlotNames = Attributes.GetPolygonGroupMaterialSlotNames();
 			Description.ReserveNewVertices(Data.Vertices.Num());
@@ -1781,6 +1795,8 @@ namespace OceanFlora
 				Tangents[Instance] = FVector3f::CrossProduct(Helper, Vertex.Normal).GetSafeNormal();
 				BinormalSigns[Instance] = 1.f;
 				UVs.Set(Instance, 0, Vertex.UV);
+				UVs.Set(Instance, 1, FVector2f(Vertex.Wind.X, Vertex.Wind.Y));
+				UVs.Set(Instance, 2, FVector2f(Vertex.Wind.Z, Vertex.Wind.W));
 				// The mesh build stores the colours sRGB-encoded (FLinearColor::ToFColor(true)) and the material's Vertex
 				// Color reads those bytes as they are: decoded here, the material gets the linear albedo it was given
 				// (encoded, a 0.2 albedo drew as 0.48: the stones and coconuts white, every plant pale). Only for the
@@ -1901,6 +1917,9 @@ UStaticMesh* OceanFlora::BakeNaniteMesh(const FString& PackagePath, const FOcean
 	Args.TopLevelFlags = RF_Public | RF_Standalone;
 	Args.SaveFlags = SAVE_NoError;
 	UPackage::SavePackage(Package, Mesh, *FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension()), Args);
+	// Saved: its source geometry (up to a gigabyte for a bush) is no longer needed in this session; kept, a whole bake ran
+	// out of memory.
+	Mesh->ClearMeshDescriptions();
 	return Mesh;
 }
 #endif

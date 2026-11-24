@@ -15,9 +15,14 @@ struct MAKAR_API FOceanMeshData
 		FVector3f Normal;
 		FVector2f UV;
 		FLinearColor Color;
+		/** Wind data (UV channels 1 and 2, Shaders/Flora.ush): palm fronds give metres along the rachis, metres along the
+		 *  leaflet, the frond's and the leaflet's phases; zero elsewhere. */
+		FVector4f Wind = FVector4f(0.f, 0.f, 0.f, 0.f);
 	};
 
 	TArray<FVertex> Vertices;
+	/** Given to the vertices AddVertex adds. */
+	FVector4f CurrentWind = FVector4f(0.f, 0.f, 0.f, 0.f);
 	TArray<TArray<int32>> Sections;
 
 	explicit FOceanMeshData(int32 NumSections = 1) { Sections.SetNum(NumSections); }
@@ -88,7 +93,7 @@ namespace OceanFlora
 	 * Version of the generators above, in the names of the baked meshes (AOceanIslandFlora::BakeMeshes): bump it when a
 	 * generator changes, so that stale baked meshes are not loaded (the flora then generates its meshes until re-baked).
 	 */
-	constexpr int32 GeneratorVersion = 2;
+	constexpr int32 GeneratorVersion = 3;
 
 #if WITH_EDITOR
 	/**
