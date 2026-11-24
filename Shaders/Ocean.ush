@@ -1057,9 +1057,15 @@ float3 OceanShoreWave(float2 PosM, float Time,
 // deep running along the crest; behind it the burst foam decays into a lace within a couple of seconds, and a thin
 // residue stays over the whole surf zone. On the beach the swash pushes a frothy front up the sand and leaves a lace
 // as it drains. Time since the local crest passed = frac((Time + travel time) / period) (OceanShoreWave's phase).
+// Age: 0 = fresh froth (the roller, the front of an uprush), 1 = old foam burst into a thin lace. Flow: the shoreward
+// direction (down the depth gradient); Shift: how far the swash has carried the water here (m, along Flow), so that
+// the foam's pattern rides up the beach with the uprush and back down with the backwash instead of blinking in place.
 float OceanSurfFoam(float2 PosM, float Time, Texture2D ShoreMap, SamplerState ShoreMapSampler, float3 ShoreMapOrigin,
-	float ShoreMapSize, float SwellHeight, float SwellPeriod, float SwellMaxDepth)
+	float ShoreMapSize, float SwellHeight, float SwellPeriod, float SwellMaxDepth, out float Age, out float2 Flow, out float Shift)
 {
+	Age = 1.0;
+	Flow = float2(1.0, 0.0);
+	Shift = 0.0;
 	if (ShoreMapSize <= 0.0 || SwellHeight <= 0.0 || SwellPeriod <= 0.0)
 	{
 		return 0.0;
@@ -1070,6 +1076,12 @@ float OceanSurfFoam(float2 PosM, float Time, Texture2D ShoreMap, SamplerState Sh
 	{
 		return 0.0;
 	}
+	// The bottom's slope, from the shore map one metre away.
+	const float2 Gradient = float2(
+		OceanShoreSample(PosM + float2(1.0, 0.0), ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize).x - Depth,
+		OceanShoreSample(PosM + float2(0.0, 1.0), ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize).x - Depth);
+	const float BottomSlope = length(Gradient);
+	Flow = BottomSlope > 1e-4 ? -Gradient / BottomSlope : float2(1.0, 0.0);
 	const float Gaps = OceanSwellGaps(PosM, Time);
 	const float Phase = (Time + max(Here.z, 0.0)) / SwellPeriod;
 	const float Cycle = frac(Phase);
@@ -1092,6 +1104,8 @@ float OceanSurfFoam(float2 PosM, float Time, Texture2D ShoreMap, SamplerState Sh
 		const float Plunge = smoothstep(0.85, 1.0, Ratio) * (1.0 - smoothstep(1.0, 1.3, Ratio)) * Behind;
 		Foam = Broken * max(max(Roller, 0.8 * Trail), 0.28) + 0.6 * Plunge;
 		Foam *= smoothstep(0.02, 0.15, Depth) * lerp(0.6, 1.0, Size);
+		// Fresh in the roller, then bursting into lace over the rest of the wave period.
+		Age = max(Roller, Plunge) > 0.5 ? 0.0 : saturate((Cycle - 0.05) / 0.7);
 	}
 	// The swash: the frothy front of the uprush, and the lace it leaves as it drains.
 	if (Depth < 0.6)
@@ -1104,8 +1118,17 @@ float OceanSurfFoam(float2 PosM, float Time, Texture2D ShoreMap, SamplerState Sh
 		// line of foam along the sand), then a thinner lace over the sheet behind it.
 		const float Edge = smoothstep(-0.004, 0.002, Water) * (1.0 - smoothstep(0.03, 0.08 + 0.06 * Ragged, Water));
 		const float Sheet = smoothstep(0.0, 0.01, Water) * (1.0 - smoothstep(0.1, 0.35, Water));
-		const float Swash = max(Edge * lerp(0.7, 1.0, Rising), Sheet * lerp(0.15, 0.35, Rising));
-		Foam = max(Foam, Swash * (1.0 - smoothstep(0.3, 0.6, Depth)));
+		const float Swash = max(Edge * lerp(0.7, 1.0, Rising), Sheet * lerp(0.3, 0.55, Rising));
+		const float InSwash = 1.0 - smoothstep(0.3, 0.6, Depth);
+		if (Swash * InSwash > Foam)
+		{
+			Foam = Swash * InSwash;
+			// The rim is fresh froth; behind it the foam ages as the sheet slows, stops and drains.
+			Age = Edge > 0.5 ? 0.0 : saturate(0.4 + Cycle * 1.6);
+		}
+		// The water's horizontal excursion: its rise over a typical beach-face slope (1:8). Divided by the local slope,
+		// which varies from place to place, it sheared the pattern into zigzag streaks.
+		Shift = InSwash * clamp(Level * 8.0, -2.0, 10.0);
 	}
 	return saturate(Foam);
 }
@@ -1380,6 +1403,72 @@ float OceanFoamCoverage(float2 PosM, float Amount, out float Height)
 	return Coverage;
 }
 
+// Signed distance (in cells) outside the union of round holes, one per cell (P in cells): > 0 in the foam, < 0 in a
+// hole. Open 0..1: the holes' size, from none to merging into a thin lace.
+float OceanBubbleField(float2 P, float Open, uint Salt)
+{
+	const float2 Cell = floor(P);
+	const float2 Local = P - Cell;
+	float Outside = 8.0;
+	for (int Y = -1; Y <= 1; ++Y)
+	{
+		for (int X = -1; X <= 1; ++X)
+		{
+			const float2 Offset = float2(X, Y);
+			const uint H = OceanCellHash(int2(Cell + Offset), Salt);
+			const float2 Centre = Offset + float2(OceanHash01(H), OceanHash01(OceanShoreHash(H ^ 0x68e31da4u)));
+			const float Radius = Open * 0.78 * lerp(0.5, 1.25, OceanHash01(OceanShoreHash(H ^ 0x1b873593u)));
+			Outside = min(Outside, length(Local - Centre) - Radius);
+		}
+	}
+	return Open > 0.0 ? Outside : 1.0;
+}
+
+// Foam on the beach and in the surf: fresh froth is a solid white mass; as its bubbles burst it opens into a lace, the
+// walls between the holes thinning (Age), the lace breaking up into rafts and strands and vanishing. The pattern rides
+// with the water (Shift, m along Flow: shoreward). Returns the coverage; Height = thickness (0..1), for the relief.
+float OceanFoamLace(float2 PosM, float Amount, float Age, float2 Flow, float Shift, out float Height)
+{
+	Height = 0.0;
+	if (Amount <= 0.0)
+	{
+		return 0.0;
+	}
+	const float Footprint = max(length(fwidth(PosM)), 1e-4);
+	// World coordinates, carried shoreward by the water. (Rotated into the shore's frame, with the frame taken per
+	// pixel from the coarse shore map, the pattern jumped by decimetres between neighbouring pixels hundreds of metres
+	// from the origin: grain, and straight edges along the map's texels.)
+	float2 P = PosM - Flow * Shift;
+	P += 0.35 * (float2(OceanGradientNoise(P / 1.7 + 3.1), OceanGradientNoise(P / 1.7 + 8.3)) - 0.5);
+	const float Fresh = saturate(Amount) * (1.0 - Age);
+	// Bubbles bursting: each cell holds a round hole whose radius grows as the foam ages (Open), each a little
+	// bigger or smaller; holes that meet merge, and what is left between them is the lace, curved walls meeting at
+	// thicker nodes. Fresh foam has none. (Walls of a Voronoi diagram drew angular holes, like a cow's hide.)
+	const float Open = saturate(0.15 + 0.85 * (1.0 - Fresh * 1.15)); // even the rim has a few bubbles open
+	const float Big = OceanBubbleField(P / 0.3 + 1.7, Open, 0x91u);
+	const float Small = OceanBubbleField(P / 0.11 + 6.3, Open, 0x37u);
+	// In world units: one pixel of the big and the small field.
+	const float BigEdge = max(1.5 * fwidth(Big), 0.03);
+	const float SmallEdge = max(1.5 * fwidth(Small), 0.03);
+	const float BigFoam = smoothstep(-BigEdge, BigEdge, Big);
+	const float SmallFoam = smoothstep(-SmallEdge, SmallEdge, Small);
+	// The small bubbles only where they span a few pixels (smaller, they crawled as noise).
+	const float SmallDetail = saturate(0.006 / Footprint - 1.0);
+	float Lace = BigFoam * lerp(1.0, SmallFoam, SmallDetail * lerp(0.4, 0.9, Open));
+	// Rafts: old foam breaks up into islands and strands with clear water between them, more of it as it ages.
+	const float Rafts = OceanFractalNoise(P + 11.0, 1.4, 4, 0.6) + 0.5;
+	const float Keep = 1.0 - smoothstep(0.35 + 0.5 * (1.0 - Age), 0.55 + 0.5 * (1.0 - Age), 1.0 - Rafts);
+	// Seen from afar the lace averages out: its mean coverage.
+	const float Detail = saturate(0.05 / Footprint - 1.0);
+	const float Mean = saturate(Amount) * lerp(0.35, 1.0, Fresh);
+	float Coverage = saturate(Amount * 1.4) * lerp(Mean, Lace * Keep, Detail);
+	// Old lace is a translucent film of bubbles; fresh froth is opaque. Up close, a grain of brighter and duller
+	// bubbles in it.
+	Coverage *= lerp(0.55, 1.0, Fresh) * lerp(1.0, lerp(0.8, 1.0, OceanGradientNoise(P / 0.02 + 3.3)), saturate(0.004 / Footprint - 1.0));
+	Height = Coverage * lerp(0.25, 1.0, Fresh);
+	return Coverage;
+}
+
 // Sun glitter: the ripples too small to be resolved are tiny mirrors whose slopes follow the unresolved slope
 // variance (LEAN). A few of them face exactly halfway between the sun and the eye and flash; as the water moves
 // they change every fraction of a second. Each cell of ~2 cm facets (grouped to the pixel size, two levels
@@ -1571,10 +1660,20 @@ float3 OceanPixel(float3 WorldPos,
 	}
 
 	float FoamHeight;
-	// The shore break's whitewater (OceanSurfFoam) replaces the coarse crest foam of OceanShoreWave.
+	// The shore break's whitewater (OceanSurfFoam) replaces the coarse crest foam of OceanShoreWave: froth and lace
+	// carried by the water (OceanFoamLace); the open sea's whitecaps keep their own pattern.
+	float SurfAge, SurfShift;
+	float2 SurfFlow;
 	const float SurfFoam = OceanSurfFoam(PosM, Time, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize,
-		SwellHeight, SwellPeriod, SwellMaxDepth);
-	Foam = OceanFoamCoverage(PosM, max(FoamAmount, SurfFoam), FoamHeight);
+		SwellHeight, SwellPeriod, SwellMaxDepth, SurfAge, SurfFlow, SurfShift);
+	Foam = OceanFoamCoverage(PosM, FoamAmount, FoamHeight);
+	float LaceHeight;
+	const float Lace = OceanFoamLace(PosM, SurfFoam, SurfAge, SurfFlow, SurfShift, LaceHeight);
+	// The lace's relief is not used: derived per pixel from its sharp walls, it gave noisy normals whose highlights
+	// sparkled like grain all over the swash.
+	FoamHeight *= 1.0 - saturate(Lace * 2.0);
+	// Inside the surf's foam the open sea's pattern is left out (its fine bubble grain showed through the lace).
+	Foam = max(Foam * (1.0 - saturate(SurfFoam * 4.0)), Lace);
 	Crest = saturate((S0.z * A0 + S1.z * A1 + W0.z) / max(CrestHeight, 0.01));
 
 	// Relief of the foam (a few centimetres thick), so it catches the light instead of lying flat. World-space
