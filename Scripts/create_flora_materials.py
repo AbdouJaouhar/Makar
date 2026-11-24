@@ -24,6 +24,9 @@ def fresh_material(name):
     # Set the usages up front: the flora is drawn by instancers (and the near trees by static meshes); without the flag
     # the editor sets it while rendering and shows the default material until the shaders are rebuilt.
     material.set_editor_property("used_with_instanced_static_meshes", True)
+    # Baked flora is Nanite: without this flag the game (which cannot set usages at run time) draws the default material.
+    material.set_editor_property("used_with_nanite", True)
+    material.set_editor_property("used_with_voxels", True)  # foliage baked with voxelized distant levels
     return material
 
 
