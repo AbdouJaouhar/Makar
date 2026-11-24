@@ -528,8 +528,9 @@ void SurfaceCS(uint2 Id : SV_DispatchThreadID)
 	const int2 P = int2(Id);
 	const float H = State[P].x;
 	const float B = Terrain[P].x;
-	// Dry: the water surface just below the bed, so the sand hides it and the shoreline stays continuous.
-	const float Eta = H > WetDepth ? H + B : B - 0.05;
+	// Dry: the water surface just below the bed, so the sand hides it and the shoreline stays continuous, but never
+	// above sea level: following the bed up the cliffs, it poked through their rocks in green spikes.
+	const float Eta = H > WetDepth ? H + B : min(B - 0.05, 0.0);
 	float Slope[2];
 	[unroll] for (int Axis = 0; Axis < 2; ++Axis)
 	{
