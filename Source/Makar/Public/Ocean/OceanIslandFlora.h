@@ -137,7 +137,8 @@ private:
 	UStaticMesh* GetMesh(const FString& Name, TFunctionRef<TArray<FOceanMeshData>()> Generate, const TArray<UMaterialInterface*>& Materials,
 		const TArray<float>& ScreenSizes, const TArray<int32>& ColorSections, bool bFoliage);
 	bool bBaking = false;
-	UHierarchicalInstancedStaticMeshComponent* AddInstancer(UStaticMesh* Mesh, float CullDistanceM);
+	// WindDistanceM: the wind animates the instances within that distance (0: never, objects lying on the ground).
+	UHierarchicalInstancedStaticMeshComponent* AddInstancer(UStaticMesh* Mesh, float CullDistanceM, float WindDistanceM);
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UHierarchicalInstancedStaticMeshComponent>> Instancers;

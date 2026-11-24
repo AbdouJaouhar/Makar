@@ -138,13 +138,10 @@ return C;
 
 
 def leaf_blade():
-    """Real leaves of the trees and shrubs up close (OceanFlora::AddLeafSpray): each a curved quad whose outline and
-    veins are drawn here from its UVs, cut out by the opacity mask, so the leaves have smooth outlines at any distance
-    (modelled blades showed their polygons). Vertex colour = linear albedo; two-sided foliage, waxy."""
+    """Real leaves of the trees and shrubs up close (OceanFlora::AddLeafSpray): each modelled with its outline (opaque: Nanite's fast
+    path, and the crowns hide what is behind them); its veins drawn here from its UVs. Vertex colour = linear albedo; two-sided foliage, waxy."""
     material = fresh_material("M_LeafBlade")
     material.set_editor_property("two_sided", True)
-    material.set_editor_property("blend_mode", unreal.BlendMode.BLEND_MASKED)
-    material.set_editor_property("opacity_mask_clip_value", 0.5)
     material.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_TWO_SIDED_FOLIAGE)
     uv = node(material, unreal.MaterialExpressionTextureCoordinate, -900, 0)
     vertex = node(material, unreal.MaterialExpressionVertexColor, -900, 150)
@@ -165,7 +162,6 @@ def leaf_blade():
     connect(uv, blade, "UV")
     connect(vertex, blade, "Color")
     MEL.connect_material_property(blade, "", unreal.MaterialProperty.MP_BASE_COLOR)
-    MEL.connect_material_property(blade, "Opacity", unreal.MaterialProperty.MP_OPACITY_MASK)
     # Vertex alpha = occlusion inside the leaf mass (OceanFlora::AddLeafSpray): dims the sky light and its reflection.
     MEL.connect_material_property(vertex, "A", unreal.MaterialProperty.MP_AMBIENT_OCCLUSION)
     transmission = node(material, unreal.MaterialExpressionConstant3Vector, -600, 250)

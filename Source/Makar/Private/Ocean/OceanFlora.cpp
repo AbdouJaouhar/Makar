@@ -363,21 +363,38 @@ namespace
 			// sharp at any distance. Its edges sit below the midrib (a shallow V) and it curves down more towards its tip.
 			const FVector3f LeftNormal = Normal((Face - Side * 0.5f).GetSafeNormal());
 			const FVector3f RightNormal = Normal((Face + Side * 0.5f).GetSafeNormal());
+			// The outline is modelled (opaque, Nanite's fast path: a masked material made it rasterise every leaf in its
+			// programmable path and hid nothing behind the crowns), the same as the material drew it: a short stalk, then an
+			// elliptic blade rounded at its base, pointed at its tip. Stations along the leaf (U = 0 at the stalk), each a
+			// left margin, the midrib and a right margin; the UVs keep the material's convention (U across, scaled to the
+			// blade's width there, so its veins follow; V = 1 at the stalk, 0 at the tip).
+			static const float Stations[] = { 0.f, 0.07f, 0.16f, 0.28f, 0.42f, 0.56f, 0.7f, 0.83f, 0.93f, 1.f };
 			const int32 First = Data.Vertices.Num();
-			for (const float U : { 0.f, 0.5f, 1.f })
+			for (const float U : Stations)
 			{
+				const float S = FMath::Clamp((U - 0.07f) / 0.93f, 0.f, 1.f);
+				const float Blade = U > 0.07f ? FMath::Pow(FMath::Sin(UE_PI * FMath::Pow(S, 0.8f)), 0.6f) : 0.f;
+				const float W = FMath::Max(Blade, U < 0.1f ? 0.06f : 0.f);
 				const FVector3f C = Root + Axis * (U * Length) + Face * (0.03f * Length * FMath::Sin(UE_PI * U)) - FVector3f::UpVector * (Sag * U * U);
-				Data.AddVertex(C - Side * Half - Face * Fold, LeftNormal, FVector2f(0.f, 1.f - U), Color);
+				Data.AddVertex(C - Side * (Half * W) - Face * (Fold * W), LeftNormal, FVector2f(0.5f - 0.5f * W, 1.f - U), Color);
 				Data.AddVertex(C, Normal(Face), FVector2f(0.5f, 1.f - U), Color);
-				Data.AddVertex(C + Side * Half - Face * Fold, RightNormal, FVector2f(1.f, 1.f - U), Color);
+				Data.AddVertex(C + Side * (Half * W) - Face * (Fold * W), RightNormal, FVector2f(0.5f + 0.5f * W, 1.f - U), Color);
 			}
-			for (int32 Row = 0; Row < 2; ++Row)
+			for (int32 Row = 0; Row + 1 < UE_ARRAY_COUNT(Stations); ++Row)
 			{
+				const bool bTip = Row + 2 == UE_ARRAY_COUNT(Stations); // the last station is a point: one triangle per side
 				for (int32 Column = 0; Column < 2; ++Column)
 				{
 					const int32 A = First + Row * 3 + Column;
-					Data.AddTriangle(Section, A, A + 3, A + 1);
-					Data.AddTriangle(Section, A + 1, A + 3, A + 4);
+					if (bTip)
+					{
+						Data.AddTriangle(Section, A, First + (Row + 1) * 3 + 1, A + 1);
+					}
+					else
+					{
+						Data.AddTriangle(Section, A, A + 3, A + 1);
+						Data.AddTriangle(Section, A + 1, A + 3, A + 4);
+					}
 				}
 			}
 		}

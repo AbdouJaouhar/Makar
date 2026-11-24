@@ -88,7 +88,7 @@ namespace OceanFlora
 	 * Version of the generators above, in the names of the baked meshes (AOceanIslandFlora::BakeMeshes): bump it when a
 	 * generator changes, so that stale baked meshes are not loaded (the flora then generates its meshes until re-baked).
 	 */
-	constexpr int32 GeneratorVersion = 1;
+	constexpr int32 GeneratorVersion = 2;
 
 #if WITH_EDITOR
 	/**

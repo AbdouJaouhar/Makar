@@ -31,7 +31,7 @@ SHORE_SWELL_PERIOD_S = 7.0
 SHORE_SWELL_MAX_DEPTH_M = 12.0
 
 # Resolution of the finest ocean cascade, simulated on the GPU (FOceanSettings::GpuDetailResolution).
-GPU_DETAIL_RESOLUTION = 1024
+GPU_DETAIL_RESOLUTION = 512  # 1024: 2.6 ms of GPU a frame for ripples finer than 2 cm
 
 # Post-process overrides (FPostProcessSettings property names), tuned on screenshots of the beach from the sea:
 # without them the sand clips to ~236/230/218; highlight compression alone also darkened the water by half,
