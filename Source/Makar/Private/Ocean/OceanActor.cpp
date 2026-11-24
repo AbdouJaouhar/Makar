@@ -12,6 +12,7 @@
 #endif
 #include "Engine/TextureRenderTarget2D.h"
 #include "Ocean/OceanBathymetry.h"
+#include "Ocean/OceanShoreWater.h"
 #include "Ocean/OceanMeshComponent.h"
 #include "Rendering/Texture2DResource.h"
 #include "OceanGpuSimulation.h"
@@ -123,6 +124,8 @@ AOceanActor::AOceanActor()
 	OceanMesh->SetUsingAbsoluteLocation(true); // follows the camera, not the actor
 	OceanMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	OceanMesh->SetCastShadow(false);
+
+	ShoreWater = CreateDefaultSubobject<UOceanShoreWaterComponent>(TEXT("ShoreWater"));
 	OceanMesh->bAffectDistanceFieldLighting = false;
 
 	OceanMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Ocean/M_Ocean.M_Ocean")));
@@ -520,6 +523,13 @@ void AOceanActor::Tick(float DeltaSeconds)
 	}
 
 	FollowCamera();
+
+	// The shore water, every tick on the ocean's clock (not only when the worker publishes a frame).
+	if (ShoreWater && ShoreData)
+	{
+		const FVector2f CenterM = FVector2f(FVector2D(OceanMesh->GetComponentLocation()) * 0.01);
+		ShoreWater->Step(SimulationTime, CenterM, ShoreData.Get(), Bathymetry.Get(), GetSeaLevel(), Settings.GetShoreSwell(), MaterialInstance);
+	}
 }
 
 void AOceanActor::CreateGpuCascade()
@@ -690,8 +700,14 @@ FVector3f AOceanActor::SampleDisplacement(const FVector2f& PositionMeters) const
 		Result += FMath::Lerp(FMath::Lerp(A, B, FracU), FMath::Lerp(C, D, FracU), FracV) * Attenuation;
 	}
 
-	// Swell breaking on the beach (same function as OceanShoreWave in Shaders/Ocean.ush).
-	if (ShoreData)
+	// Swell breaking on the beach: the simulated shore water around the camera (read back from the GPU, as drawn),
+	// else the analytic shore wave (same function as OceanShoreWave in Shaders/Ocean.ush).
+	float SimulatedHeight = 0.f;
+	if (ShoreWater && ShoreWater->SampleHeight(PositionMeters, SimulatedHeight))
+	{
+		Result.Z += SimulatedHeight;
+	}
+	else if (ShoreData)
 	{
 		Result += OceanShoreWave(*ShoreData, PositionMeters, FrontFrame->Time, Settings.GetShoreSwell()).Displacement;
 	}

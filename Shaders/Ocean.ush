@@ -1221,10 +1221,32 @@ float OceanSpray(float3 WorldPos, float Time, float Rock, Texture2D ShoreMap, Sa
 }
 
 // World Position Offset, cm. Only the geometry cascades: finer ones are smaller than a vertex.
+// The simulated shore water (UOceanShoreWaterComponent, Shaders/OceanShoreSim.usf) over its square around the camera:
+// x = water surface height (m above sea level), yz = its slope. Weight: 1 inside, 0 in the outer forcing band and
+// beyond, where the analytic shore wave answers (the band is fed that same swell, so the two meet seamlessly).
+float4 OceanShoreWaterSample(float2 PosM, Texture2D ShoreWater, SamplerState ShoreWaterSampler, float3 ShoreWaterOrigin,
+	float ShoreWaterSize, out float Weight)
+{
+	Weight = 0.0;
+	if (ShoreWaterSize <= 0.0)
+	{
+		return 0.0;
+	}
+	const float2 Uv = (PosM - ShoreWaterOrigin.xy) / ShoreWaterSize;
+	const float Edge = min(min(Uv.x, Uv.y), min(1.0 - Uv.x, 1.0 - Uv.y));
+	Weight = smoothstep(0.05, 0.08, Edge); // forcing band: 24 of 512 cells
+	if (Weight <= 0.0)
+	{
+		return 0.0;
+	}
+	return ShoreWater.SampleLevel(ShoreWaterSampler, Uv, 0);
+}
+
 float3 OceanVertexOffset(float3 WorldPos, float3 CameraPos,
 	Texture2D Disp0, SamplerState Disp0Sampler,
 	Texture2D Disp1, SamplerState Disp1Sampler,
 	Texture2D ShoreMap, SamplerState ShoreMapSampler, float3 ShoreMapOrigin, float ShoreMapSize,
+	Texture2D ShoreWater, SamplerState ShoreWaterSampler, float3 ShoreWaterOrigin, float ShoreWaterSize,
 	float SignificantHeight0, float SignificantHeight1,
 	float Time, float SwellHeight, float SwellPeriod, float SwellMaxDepth,
 	float PatchSize0, float PatchSize1, float Resolution,
@@ -1246,8 +1268,11 @@ float3 OceanVertexOffset(float3 WorldPos, float3 CameraPos,
 	           * OceanDepthAttenuation(Depth, SignificantHeight1);
 
 	float ShoreFoam;
-	D += OceanShoreWave(PosM, Time, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize,
+	const float3 Analytic = OceanShoreWave(PosM, Time, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize,
 		SwellHeight, SwellPeriod, SwellMaxDepth, ShoreFoam);
+	float Simulated;
+	const float4 Water = OceanShoreWaterSample(PosM, ShoreWater, ShoreWaterSampler, ShoreWaterOrigin, ShoreWaterSize, Simulated);
+	D += lerp(Analytic, float3(0.0, 0.0, Water.x), Simulated);
 
 	const float Fade = 1.0 - saturate((DistM - FadeStart) / max(FadeEnd - FadeStart, 1.0));
 	return D * Fade * 100.0;
@@ -1623,6 +1648,7 @@ float3 OceanPixel(float3 WorldPos,
 	Texture2D FoamMap, SamplerState FoamMapSampler, float3 FoamMapOrigin, float FoamMapSize,
 	Texture2D ShoreFoamMap, SamplerState ShoreFoamMapSampler, float3 ShoreFoamMapOrigin, float ShoreFoamMapSize,
 	Texture2D ShoreMap, SamplerState ShoreMapSampler, float3 ShoreMapOrigin, float ShoreMapSize,
+	Texture2D ShoreWater, SamplerState ShoreWaterSampler, float3 ShoreWaterOrigin, float ShoreWaterSize,
 	float SignificantHeight0, float SignificantHeight1, float SignificantHeight2,
 	float Time, float SwellHeight, float SwellPeriod, float SwellMaxDepth,
 	float PatchSize0, float PatchSize1, float PatchSize2, float CrestHeight, float BaseRoughness, float LeanScale,
@@ -1703,7 +1729,7 @@ float3 OceanPixel(float3 WorldPos,
 	// Swell breaking on the beach: its normal comes from finite differences of the displaced surface
 	// (it can overhang, so slopes alone are not enough); the FFT slopes are added on top.
 	float ShoreFoam;
-	const float3 W0 = OceanShoreWave(PosM, Time, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize,
+	float3 W0 = OceanShoreWave(PosM, Time, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize,
 		SwellHeight, SwellPeriod, SwellMaxDepth, ShoreFoam);
 	float3 ShoreNormal = float3(0.0, 0.0, 1.0);
 	if (any(W0 != 0.0))
@@ -1717,6 +1743,14 @@ float3 OceanPixel(float3 WorldPos,
 		const float3 TangentX = float3(Delta, 0.0, 0.0) + WX - W0;
 		const float3 TangentY = float3(0.0, Delta, 0.0) + WY - W0;
 		ShoreNormal = normalize(cross(TangentX, TangentY));
+	}
+	// Inside the simulated square: the simulated surface's slope and height instead.
+	float Simulated;
+	const float4 SimWater = OceanShoreWaterSample(PosM, ShoreWater, ShoreWaterSampler, ShoreWaterOrigin, ShoreWaterSize, Simulated);
+	if (Simulated > 0.0)
+	{
+		ShoreNormal = normalize(lerp(ShoreNormal, normalize(float3(-SimWater.yz, 1.0)), Simulated));
+		W0 = lerp(W0, float3(0.0, 0.0, SimWater.x), Simulated);
 	}
 
 	float FoamHeight;

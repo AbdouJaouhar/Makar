@@ -1,0 +1,566 @@
+// Shore water simulation on the GPU: Jeschke & Wojtan 2023, "Generalizing Shallow Water Simulations with Dispersive
+// Surface Waves" (ACM TOG 42(4)). A height field of water depth h on a staggered grid (h at cell centres, the flow
+// rates qx on the cells' +x faces and qy on their +y faces). Each step:
+//   1. DiffuseCS     splits the water into a bulk flow (low frequencies, shallow water) and surface waves (high
+//                    frequencies, Airy theory) by a depth-dependent diffusion of the surface H = h + b and of q
+//                    (alpha = h^2/64 - |grad H|^2/100, Section 4.1, Equation 13).
+//   2. DecomposeCS   bulk = diffused, surface = rest.
+//   3. BulkCS        shallow water equations for the bulk: semi-Lagrangian momentum advection and the pressure
+//                    gradient on the faces, upwind depths (a simplification of Stelling & Duinmeijer 2003).
+//   4. AiryPackCS / FftCS / AirySpectrumCS / FftCS / AiryGatherCS
+//                    the surface waves' flow rates advanced exactly in Fourier space (eWave exponential integrator,
+//                    Algorithm 2) with the numerical dispersion of the staggered divergence cancelled (Appendix B), for
+//                    four depths (1, 4, 16, 64 m) interpolated by the local bulk depth.
+//   5. TransportCS   the surface waves carried by the bulk velocity, their amplification in converging flow damped
+//                    (Algorithms 3 and 4, gamma = 1/4).
+//   6. IntegrateCS   q = bulk + surface; h from the divergence of q and of the transported surface height (exact
+//                    volume conservation, Equation 17); CFL limits; wet/dry faces.
+//   7. ForceCS       the analytic swell at the domain's edge (same phase as the shore swell outside: seamless), and
+//                    a sponge so the waves leave the domain.
+//   8. SurfaceCS     the water surface for rendering and the CPU queries: elevation, slope, wet.
+// Virtual path: /Makar/OceanShoreSim.usf
+
+#include "/Engine/Public/Platform.ush"
+
+static const float Gravity = 9.81;
+static const float Pi = 3.14159265358979;
+static const float WetDepth = 0.005; // m: shallower is dry
+// The bulk flow's depth is capped: its gravity waves travel at sqrt(g h), and in deep water (20-50 m: 14-22 m/s) they
+// broke the explicit scheme's stability limit (c dt / dx < ~0.7) and the surface blew up to tens of metres. Deep water
+// waves are the Airy part's (exact speed); the bulk flow only matters near the shore.
+static const float BulkDepthCap = 10.0;
+
+float Square(float X) { return X * X; }
+
+uint Resolution;      // N cells a side
+uint LogResolution;
+float CellSize;       // m
+float DeltaTime;      // s
+float Time;           // s
+
+// State: x = h (m), y = qx, z = qy (m^2/s, on the +x / +y faces), w = foam.
+// Aux:   x = previous step's surface wave height, y = bulk velocity x, z = bulk velocity y (on the faces), w = unused.
+// Terrain: x = bed height b relative to sea level (m), y = swell travel time (s), z/w = swell direction.
+
+int2 Clamp2(int2 P)
+{
+	return clamp(P, int2(0, 0), int2(Resolution - 1, Resolution - 1));
+}
+
+// --- 1. Decomposition by diffusion ---------------------------------------------------------------------------
+
+Texture2D<float4> State;
+Texture2D<float4> Terrain;
+Texture2D<float4> DiffuseIn;    // x = H, y = qx, z = qy, w = alpha (cell units)
+RWTexture2D<float4> DiffuseOut;
+
+[numthreads(8, 8, 1)]
+void DiffuseInitCS(uint2 Id : SV_DispatchThreadID)
+{
+	if (any(Id >= Resolution))
+	{
+		return;
+	}
+	const int2 P = int2(Id);
+	const float4 S = State[P];
+	const float B = Terrain[P].x;
+	const float H = S.x + B;
+	// Gradient of the surface over wet neighbours (the penalty keeps steep fronts in the bulk flow).
+	const float HX = State[Clamp2(P + int2(1, 0))].x + Terrain[Clamp2(P + int2(1, 0))].x;
+	const float HY = State[Clamp2(P + int2(0, 1))].x + Terrain[Clamp2(P + int2(0, 1))].x;
+	const float2 Grad = float2(HX - H, HY - H) / CellSize;
+	// alpha (m^2) = h^2 / 64 - |grad H|^2 / 100, in cell units, at most the explicit scheme's stable value.
+	const float Alpha = S.x > WetDepth ? clamp((S.x * S.x / 64.0 - dot(Grad, Grad) / 100.0) / (CellSize * CellSize), 0.0, 1.0) : 0.0;
+	DiffuseOut[Id] = float4(H, S.y, S.z, Alpha);
+}
+
+[numthreads(8, 8, 1)]
+void DiffuseCS(uint2 Id : SV_DispatchThreadID)
+{
+	if (any(Id >= Resolution))
+	{
+		return;
+	}
+	const int2 P = int2(Id);
+	const float4 C = DiffuseIn[P];
+	float3 Sum = 0.0;
+	const int2 Offsets[4] = { int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1) };
+	[unroll] for (int I = 0; I < 4; ++I)
+	{
+		const float4 N = DiffuseIn[Clamp2(P + Offsets[I])];
+		// The smaller coefficient across a face: nothing diffuses into dry or very shallow cells.
+		const float A = min(C.w, N.w);
+		Sum += A * (N.xyz - C.xyz);
+	}
+	DiffuseOut[Id] = float4(C.xyz + 0.25 * Sum, C.w);
+}
+
+// --- 2. Decompose ----------------------------------------------------------------------------------------------
+
+Texture2D<float4> Diffused;
+RWTexture2D<float4> OutBulk;    // h bar, qx bar, qy bar, eta bar (= h bar + b)
+RWTexture2D<float4> OutSurface; // h tilde, qx tilde, qy tilde, 0
+
+[numthreads(8, 8, 1)]
+void DecomposeCS(uint2 Id : SV_DispatchThreadID)
+{
+	if (any(Id >= Resolution))
+	{
+		return;
+	}
+	const float4 S = State[Id];
+	const float B = Terrain[Id].x;
+	const float4 D = Diffused[Id];
+	const float HBar = max(D.x - B, 0.0);
+	OutBulk[Id] = float4(HBar, D.y, D.z, HBar + B);
+	OutSurface[Id] = float4(S.x - HBar, S.y - D.y, S.z - D.z, 0.0);
+}
+
+// --- 3. Bulk flow: shallow water equations ---------------------------------------------------------------------
+
+Texture2D<float4> Bulk;
+Texture2D<float4> Aux;
+RWTexture2D<float4> OutBulkFlow; // x/y = new bulk velocity on the faces, z/w = new bulk flow rate on the faces
+
+float MaxSpeed() { return CellSize / (4.0 * DeltaTime); }
+
+// Bulk depth on the +x (Axis 0) or +y face of P, upwind of the flow.
+float FaceDepth(int2 P, int Axis, float Flow)
+{
+	const int2 Q = Clamp2(P + (Axis == 0 ? int2(1, 0) : int2(0, 1)));
+	return Flow >= 0.0 ? Bulk[P].x : Bulk[Q].x;
+}
+
+// Bilinear sample of a face-centred component (0: x faces at (i + 1/2, j), 1: y faces at (i, j + 1/2)) of a texture
+// channel, at a position in cell units (cell centres at integer + 0.5... here at integers: cell (i, j) centre = (i, j)).
+float SampleFace(Texture2D<float4> Field, uint Channel, int Axis, float2 X)
+{
+	const float2 F = X - (Axis == 0 ? float2(0.5, 0.0) : float2(0.0, 0.5));
+	const float2 Base = floor(F);
+	const float2 T = F - Base;
+	const int2 P = int2(Base);
+	const float A = Field[Clamp2(P)][Channel];
+	const float Bv = Field[Clamp2(P + int2(1, 0))][Channel];
+	const float C = Field[Clamp2(P + int2(0, 1))][Channel];
+	const float D = Field[Clamp2(P + int2(1, 1))][Channel];
+	const float Value = lerp(lerp(A, Bv, T.x), lerp(C, D, T.x), T.y);
+	// Clamped to its neighbours (no overshoot, as in the paper's transport).
+	return clamp(Value, min(min(A, Bv), min(C, D)), max(max(A, Bv), max(C, D)));
+}
+
+float SampleCell(Texture2D<float4> Field, uint Channel, float2 X)
+{
+	const float2 Base = floor(X);
+	const float2 T = X - Base;
+	const int2 P = int2(Base);
+	const float A = Field[Clamp2(P)][Channel];
+	const float Bv = Field[Clamp2(P + int2(1, 0))][Channel];
+	const float C = Field[Clamp2(P + int2(0, 1))][Channel];
+	const float D = Field[Clamp2(P + int2(1, 1))][Channel];
+	const float Value = lerp(lerp(A, Bv, T.x), lerp(C, D, T.x), T.y);
+	return clamp(Value, min(min(A, Bv), min(C, D)), max(max(A, Bv), max(C, D)));
+}
+
+[numthreads(8, 8, 1)]
+void BulkCS(uint2 Id : SV_DispatchThreadID)
+{
+	if (any(Id >= Resolution))
+	{
+		return;
+	}
+	const int2 P = int2(Id);
+	const float4 Here = Bulk[P];
+	float2 NewVelocity = 0.0;
+	float2 NewFlow = 0.0;
+	[unroll] for (int Axis = 0; Axis < 2; ++Axis)
+	{
+		const int2 Q = Clamp2(P + (Axis == 0 ? int2(1, 0) : int2(0, 1)));
+		const float4 There = Bulk[Q];
+		const float Flow = Axis == 0 ? Here.y : Here.z;
+		const float Depth = FaceDepth(P, Axis, Flow);
+		// Momentum advection: the face's flow rate is that of the water upstream (semi-Lagrangian, one step back),
+		// carried by the face's velocity (its own component, the other averaged from the neighbouring faces).
+		const float2 FaceX = float2(P) + (Axis == 0 ? float2(0.5, 0.0) : float2(0.0, 0.5));
+		const float OwnVelocity = Depth > WetDepth ? Flow / Depth : 0.0;
+		const float OtherFlow = Axis == 0 ? 0.5 * (Here.z + There.z) : 0.5 * (Here.y + There.y);
+		const float OtherVelocity = OtherFlow / max(0.5 * (Here.x + There.x), 0.05);
+		const float2 Velocity2 = Axis == 0 ? float2(OwnVelocity, OtherVelocity) : float2(OtherVelocity, OwnVelocity);
+		const float2 From = FaceX - Velocity2 * DeltaTime / CellSize;
+		const float Advected = SampleFace(Bulk, Axis == 0 ? 1 : 2, Axis, From);
+		float U = Depth > WetDepth ? Advected / Depth : 0.0;
+		// Pressure: the slope of the bulk water surface.
+		const bool bHereWet = Here.x > WetDepth;
+		const bool bThereWet = There.x > WetDepth;
+		if (bHereWet || bThereWet)
+		{
+			// A dry cell whose bed is above its neighbour's water is a wall.
+			const bool bWall = (!bHereWet && Terrain[P].x > There.w) || (!bThereWet && Terrain[Q].x > Here.w);
+			U = bWall ? 0.0 : U - DeltaTime * Gravity * (There.w - Here.w) / CellSize;
+		}
+		else
+		{
+			U = 0.0;
+		}
+		U = clamp(U, -MaxSpeed(), MaxSpeed());
+		const float NewDepth = min(U >= 0.0 ? Here.x : There.x, BulkDepthCap);
+		if (Axis == 0)
+		{
+			NewVelocity.x = U;
+			NewFlow.x = U * NewDepth;
+		}
+		else
+		{
+			NewVelocity.y = U;
+			NewFlow.y = U * NewDepth;
+		}
+	}
+	OutBulkFlow[Id] = float4(NewVelocity, NewFlow);
+}
+
+// --- 4. Airy surface waves in Fourier space --------------------------------------------------------------------
+
+Texture2D<float4> Surface;        // h tilde, qx tilde, qy tilde (this step)
+RWTexture2D<float4> OutSpectrum;  // packed for the FFT
+
+float2 ComplexMul(float2 A, float2 B) { return float2(A.x * B.x - A.y * B.y, A.x * B.y + A.y * B.x); }
+float2 Conj(float2 A) { return float2(A.x, -A.y); }
+
+// Forward transform by the inverse FFT kernel: FFT(z) = conj(IFFT(conj(z))). Packs conj(h + i qx) and conj(qy).
+[numthreads(8, 8, 1)]
+void AiryPackCS(uint2 Id : SV_DispatchThreadID)
+{
+	if (any(Id >= Resolution))
+	{
+		return;
+	}
+	const float4 S = Surface[Id];
+	// Surface height at time t: halfway between the last step's and this step's (the leapfrog stagger).
+	const float HeightT = 0.5 * (S.x + Aux[Id].x);
+	OutSpectrum[Id] = float4(HeightT, -S.y, S.z, 0.0);
+}
+
+// --- FFT: one line per group (as OceanFFT.usf) ---
+#define FFT_THREADS 256
+#define FFT_MAX_SIZE 1024
+RWTexture2D<float4> Fields;
+uint Columns;
+groupshared float4 Line[FFT_MAX_SIZE];
+
+[numthreads(FFT_THREADS, 1, 1)]
+void FftCS(uint3 Group : SV_GroupID, uint Thread : SV_GroupIndex)
+{
+	const uint N = Resolution;
+	const uint LineIndex = Group.x;
+	for (uint I = Thread; I < N; I += FFT_THREADS)
+	{
+		const uint2 Texel = Columns != 0 ? uint2(LineIndex, I) : uint2(I, LineIndex);
+		Line[reversebits(I) >> (32 - LogResolution)] = Fields[Texel];
+	}
+	GroupMemoryBarrierWithGroupSync();
+	for (uint Stage = 1; Stage <= LogResolution; ++Stage)
+	{
+		const uint Half = 1u << (Stage - 1);
+		for (uint J = Thread; J < N / 2; J += FFT_THREADS)
+		{
+			const uint Offset = J & (Half - 1);
+			const uint I0 = (J >> (Stage - 1)) * (Half * 2) + Offset;
+			const uint I1 = I0 + Half;
+			float S, C;
+			sincos(2.0 * Pi * float(Offset) / float(Half * 2), S, C);
+			const float2 W = float2(C, S);
+			const float4 A = Line[I0];
+			const float4 B = Line[I1];
+			const float4 T = float4(ComplexMul(W, B.xy), ComplexMul(W, B.zw));
+			Line[I0] = A + T;
+			Line[I1] = A - T;
+		}
+		GroupMemoryBarrierWithGroupSync();
+	}
+	for (uint Out = Thread; Out < N; Out += FFT_THREADS)
+	{
+		const uint2 Texel = Columns != 0 ? uint2(LineIndex, Out) : uint2(Out, LineIndex);
+		Fields[Texel] = Line[Out];
+	}
+}
+
+Texture2D<float4> Spectrum;          // after the forward transform (still conjugated)
+RWTexture2D<float4> OutDepths01;     // qx' + i qy' for depths 0 and 1 (Fourier space)
+RWTexture2D<float4> OutDepths23;
+
+static const float AiryDepths[4] = { 1.0, 4.0, 16.0, 64.0 };
+
+[numthreads(8, 8, 1)]
+void AirySpectrumCS(uint2 Id : SV_DispatchThreadID)
+{
+	if (any(Id >= Resolution))
+	{
+		return;
+	}
+	const int N = int(Resolution);
+	const int2 Mirror = int2((N - int(Id.x)) % N, (N - int(Id.y)) % N);
+	// Forward transforms of z1 = h + i qx and z2 = qy (undo the conjugations of AiryPackCS / the FFT kernel).
+	const float4 Here = Spectrum[Id];
+	const float4 There = Spectrum[Mirror];
+	const float2 Z1 = Conj(Here.xy);
+	const float2 Z1Mirror = Conj(There.xy);
+	const float2 Z2 = Conj(Here.zw);
+	// h and qx are real: H(k) = (Z1(k) + conj(Z1(-k))) / 2, Qx(k) = (Z1(k) - conj(Z1(-k))) / 2i.
+	const float2 HHat = 0.5 * (Z1 + Conj(Z1Mirror));
+	const float2 Diff = 0.5 * (Z1 - Conj(Z1Mirror));
+	const float2 QxHat = float2(Diff.y, -Diff.x);
+	const float2 QyHat = Z2;
+
+	const int NX = int(Id.x) < N / 2 ? int(Id.x) : int(Id.x) - N;
+	const int NY = int(Id.y) < N / 2 ? int(Id.y) : int(Id.y) - N;
+	const float2 K = float2(NX, NY) * (2.0 * Pi / (float(N) * CellSize));
+	const float KLen = length(K);
+	// The staggered finite-volume divergence sees d = (2 / dx) sin(k dx / 2) instead of k (Appendix B): solving
+	// for that operator with the true frequency removes the numerical dispersion.
+	const float2 HalfAngle = K * CellSize * 0.5;
+	const float2 D = (2.0 / CellSize) * sin(HalfAngle);
+	const float DLen = length(D);
+	float2 Out[4];
+	[unroll] for (int Level = 0; Level < 4; ++Level)
+	{
+		if (KLen < 1e-6 || DLen < 1e-6)
+		{
+			Out[Level] = float2(0.0, 0.0); // the mean flow is the bulk's
+			continue;
+		}
+		const float Omega = sqrt(Gravity * KLen * tanh(min(KLen * AiryDepths[Level], 20.0)));
+		float S, C;
+		sincos(Omega * DeltaTime, S, C);
+		const float2 Dir = D / DLen;
+		// q' = cos(w dt) q - i (w / |d|) sin(w dt) n e^{i k dx / 2} H, per component (the face's half-cell offset).
+		float Sx, Cx, Sy, Cy;
+		sincos(HalfAngle.x, Sx, Cx);
+		sincos(HalfAngle.y, Sy, Cy);
+		const float2 HShiftX = ComplexMul(HHat, float2(Cx, Sx));
+		const float2 HShiftY = ComplexMul(HHat, float2(Cy, Sy));
+		const float Coef = Omega / DLen * S;
+		const float2 NewQx = C * QxHat - Coef * Dir.x * float2(-HShiftX.y, HShiftX.x);
+		const float2 NewQy = C * QyHat - Coef * Dir.y * float2(-HShiftY.y, HShiftY.x);
+		// Both real in space: transform back qx + i qy together.
+		Out[Level] = NewQx + float2(-NewQy.y, NewQy.x);
+	}
+	OutDepths01[Id] = float4(Out[0], Out[1]);
+	OutDepths23[Id] = float4(Out[2], Out[3]);
+}
+
+Texture2D<float4> Depths01;      // after the inverse transform: qx + i qy per depth, times N^2
+Texture2D<float4> Depths23;
+RWTexture2D<float4> OutSurfaceFlow; // xy = surface flow rate (this step's Airy update), zw = unused
+
+[numthreads(8, 8, 1)]
+void AiryGatherCS(uint2 Id : SV_DispatchThreadID)
+{
+	if (any(Id >= Resolution))
+	{
+		return;
+	}
+	const float Scale = 1.0 / (float(Resolution) * float(Resolution));
+	const float4 A = Depths01[Id] * Scale;
+	const float4 B = Depths23[Id] * Scale;
+	const float2 Q[4] = { A.xy, A.zw, B.xy, B.zw };
+	// Interpolated between the two nearest depths (log4 scale: 1, 4, 16, 64 m) by the local bulk depth.
+	const float HBar = Bulk[Id].x;
+	const float Level = clamp(log2(max(HBar, 1.0)) * 0.5, 0.0, 3.0);
+	const int L0 = min(int(Level), 2);
+	const float T = Level - float(L0);
+	float2 Flow = lerp(Q[L0], Q[L0 + 1], T);
+	if (HBar <= WetDepth)
+	{
+		Flow = 0.0;
+	}
+	OutSurfaceFlow[Id] = float4(Flow, 0.0, 0.0);
+}
+
+// --- 5. Transport of the surface waves through the bulk flow ---------------------------------------------------
+
+Texture2D<float4> BulkFlow;     // new bulk velocity (xy) and flow (zw)
+Texture2D<float4> SurfaceFlow;  // Airy-updated surface flow rates
+RWTexture2D<float4> OutTransported; // x = surface height carried to t + 3dt/2, yz = surface flow rates, w = 0
+static const float Gamma = 0.25; // damping of the amplification in converging flow (Algorithms 3, 4)
+
+float Divergence(Texture2D<float4> Velocities, int2 P, bool bOld)
+{
+	// Old velocities live in Aux.yz, new ones in BulkFlow.xy.
+	const float2 Here = bOld ? Velocities[P].yz : Velocities[P].xy;
+	const float Left = bOld ? Velocities[Clamp2(P - int2(1, 0))].y : Velocities[Clamp2(P - int2(1, 0))].x;
+	const float Down = bOld ? Velocities[Clamp2(P - int2(0, 1))].z : Velocities[Clamp2(P - int2(0, 1))].y;
+	return (Here.x - Left + Here.y - Down) / CellSize;
+}
+
+[numthreads(8, 8, 1)]
+void TransportCS(uint2 Id : SV_DispatchThreadID)
+{
+	if (any(Id >= Resolution))
+	{
+		return;
+	}
+	const int2 P = int2(Id);
+	const float DivOld = Divergence(Aux, P, true);
+	const float DivNew = Divergence(BulkFlow, P, false);
+	const float DivMid = 0.5 * (DivOld + DivNew);
+	const float LambdaMid = min(-DivMid, -Gamma * DivMid);
+	const float LambdaNew = min(-DivNew, -Gamma * DivNew);
+	const float2 Cell = float2(P);
+	// Cell-centred bulk velocity (new, and the mid-step average) from the faces.
+	const float2 VelNew = 0.5 * float2(BulkFlow[P].x + BulkFlow[Clamp2(P - int2(1, 0))].x, BulkFlow[P].y + BulkFlow[Clamp2(P - int2(0, 1))].y);
+	const float2 VelOld = 0.5 * float2(Aux[P].y + Aux[Clamp2(P - int2(1, 0))].y, Aux[P].z + Aux[Clamp2(P - int2(0, 1))].z);
+	const float2 VelMid = 0.5 * (VelNew + VelOld);
+	// Surface height: amplified/damped, then carried (Algorithm 4).
+	const float Height = SampleCell(Surface, 0, Cell - VelNew * DeltaTime / CellSize) * exp(LambdaNew * DeltaTime);
+	// Surface flow rates on the faces (Algorithm 3).
+	const float2 FaceXPos = Cell + float2(0.5, 0.0);
+	const float2 FaceYPos = Cell + float2(0.0, 0.5);
+	const float FlowX = SampleFace(SurfaceFlow, 0, 0, FaceXPos - VelMid * DeltaTime / CellSize) * exp(LambdaMid * DeltaTime);
+	const float FlowY = SampleFace(SurfaceFlow, 1, 1, FaceYPos - VelMid * DeltaTime / CellSize) * exp(LambdaMid * DeltaTime);
+	OutTransported[Id] = float4(Height, FlowX, FlowY, 0.0);
+}
+
+// --- 6. Merge and integrate ------------------------------------------------------------------------------------
+
+Texture2D<float4> Transported;
+RWTexture2D<float4> OutState;
+RWTexture2D<float4> OutAux;
+
+// Total flux through the +x (Axis 0) or +y face of P: bulk + surface flow rates, plus the transported surface
+// height times the bulk velocity; zero across walls and between dry cells; CFL-limited.
+float FaceFlux(int2 P, int Axis, out float FlowRate)
+{
+	const int2 Q = Clamp2(P + (Axis == 0 ? int2(1, 0) : int2(0, 1)));
+	const float4 Bf = BulkFlow[P];
+	const float4 T = Transported[P];
+	const float4 TQ = Transported[Q];
+	const float U = Axis == 0 ? Bf.x : Bf.y;
+	float Q0 = (Axis == 0 ? Bf.z : Bf.w) + (Axis == 0 ? T.y : T.z);
+	// The surface height on the face, half a step back (Section 4.5): from the upwind cell.
+	const float HeightFace = U >= 0.0 ? T.x : TQ.x;
+	const float HHere = State[P].x;
+	const float HThere = State[Q].x;
+	const float Upwind = Q0 >= 0.0 ? HHere : HThere;
+	const float Limit = max(Upwind, 0.0) * CellSize / (4.0 * DeltaTime);
+	Q0 = clamp(Q0, -Limit, Limit);
+	const bool bDry = HHere <= WetDepth && HThere <= WetDepth;
+	const float EtaHere = HHere + Terrain[P].x;
+	const float EtaThere = HThere + Terrain[Q].x;
+	const bool bWall = (HHere <= WetDepth && Terrain[P].x > EtaThere) || (HThere <= WetDepth && Terrain[Q].x > EtaHere);
+	if (bDry || bWall || all(P == Q))
+	{
+		FlowRate = 0.0;
+		return 0.0;
+	}
+	FlowRate = Q0;
+	return clamp(Q0 + HeightFace * U, -Limit, Limit);
+}
+
+[numthreads(8, 8, 1)]
+void IntegrateCS(uint2 Id : SV_DispatchThreadID)
+{
+	if (any(Id >= Resolution))
+	{
+		return;
+	}
+	const int2 P = int2(Id);
+	float QxOut, QyOut, Unused;
+	const float FluxXOut = FaceFlux(P, 0, QxOut);
+	const float FluxYOut = FaceFlux(P, 1, QyOut);
+	const float FluxXIn = Id.x > 0 ? FaceFlux(P - int2(1, 0), 0, Unused) : 0.0;
+	const float FluxYIn = Id.y > 0 ? FaceFlux(P - int2(0, 1), 1, Unused) : 0.0;
+	const float4 S = State[P];
+	const float NewH = max(S.x + DeltaTime * (FluxXIn - FluxXOut + FluxYIn - FluxYOut) / CellSize, 0.0);
+	OutState[Id] = float4(NewH, QxOut, QyOut, S.w);
+	OutAux[Id] = float4(Surface[P].x, BulkFlow[P].xy, 0.0);
+}
+
+// --- 7. Swell at the edges and sponge ---------------------------------------------------------------------------
+
+RWTexture2D<float4> InOutState;
+uint EdgeCells;          // width of the forcing band
+float SwellHeight;       // m (crest to trough)
+float SwellPeriod;       // s
+float SwellReferenceDepth;
+
+[numthreads(8, 8, 1)]
+void ForceCS(uint2 Id : SV_DispatchThreadID)
+{
+	if (any(Id >= Resolution))
+	{
+		return;
+	}
+	const uint Edge = min(min(Id.x, Id.y), min(Resolution - 1 - Id.x, Resolution - 1 - Id.y));
+	if (Edge >= EdgeCells)
+	{
+		return;
+	}
+	const float4 T = Terrain[Id];
+	const float Depth = max(-T.x, 0.0);
+	float4 Target = float4(0.0, 0.0, 0.0, InOutState[Id].w);
+	if (Depth > WetDepth)
+	{
+		// The shore swell of OceanShoreWave: phase from the travel time, height by Green's law up to breaking.
+		const float Omega = 2.0 * Pi / SwellPeriod;
+		const float Phase = Omega * (Time + max(T.y, 0.0));
+		const float Height = min(SwellHeight * pow(SwellReferenceDepth / max(Depth, 0.05), 0.25), 0.78 * Depth);
+		const float Eta = 0.5 * Height * cos(Phase);
+		// Linear wave flow rate q = eta * c along the swell, c from the finite-depth dispersion (shallow estimate).
+		const float Speed = sqrt(Gravity * Depth);
+		const float2 Direction = length(T.zw) > 1e-4 ? normalize(T.zw) : float2(1.0, 0.0);
+		Target = float4(max(Depth + Eta, 0.0), Eta * Speed * Direction.x, Eta * Speed * Direction.y, Target.w);
+	}
+	// Relaxed towards the swell, firmly at the outer edge: waves enter, and leave without reflecting.
+	const float Weight = Square(1.0 - float(Edge) / float(EdgeCells)) * 0.3;
+	InOutState[Id] = lerp(InOutState[Id], Target, Weight);
+}
+
+// --- 8. Surface for rendering -----------------------------------------------------------------------------------
+
+RWTexture2D<float4> OutWater; // x = water surface height (m, relative to sea level; below the bed where dry), yz = slope, w = depth
+
+[numthreads(8, 8, 1)]
+void SurfaceCS(uint2 Id : SV_DispatchThreadID)
+{
+	if (any(Id >= Resolution))
+	{
+		return;
+	}
+	const int2 P = int2(Id);
+	const float H = State[P].x;
+	const float B = Terrain[P].x;
+	// Dry: the water surface just below the bed, so the sand hides it and the shoreline stays continuous.
+	const float Eta = H > WetDepth ? H + B : B - 0.05;
+	float Slope[2];
+	[unroll] for (int Axis = 0; Axis < 2; ++Axis)
+	{
+		const int2 Step = Axis == 0 ? int2(1, 0) : int2(0, 1);
+		const int2 A = Clamp2(P - Step);
+		const int2 C = Clamp2(P + Step);
+		const float EA = State[A].x > WetDepth ? State[A].x + Terrain[A].x : Eta;
+		const float EC = State[C].x > WetDepth ? State[C].x + Terrain[C].x : Eta;
+		Slope[Axis] = (EC - EA) / (2.0 * CellSize);
+	}
+	OutWater[Id] = float4(Eta, Slope[0], Slope[1], H);
+}
+
+// --- Reset and recentring -----------------------------------------------------------------------------------
+
+Texture2D<float4> OldState;
+Texture2D<float4> OldAux;
+int2 ShiftCells;  // the domain moved by this many cells: cell (i, j) is now what was (i, j) + Shift
+uint bReset;
+
+[numthreads(8, 8, 1)]
+void RestartCS(uint2 Id : SV_DispatchThreadID)
+{
+	if (any(Id >= Resolution))
+	{
+		return;
+	}
+	const int2 From = int2(Id) + ShiftCells;
+	const bool bInside = all(From >= 0) && all(From < int(Resolution)) && bReset == 0;
+	// Water at rest where the state is new: the sea level over the bed.
+	const float Rest = max(-Terrain[Id].x, 0.0);
+	OutState[Id] = bInside ? OldState[From] : float4(Rest, 0.0, 0.0, 0.0);
+	OutAux[Id] = bInside ? OldAux[From] : float4(0.0, 0.0, 0.0, 0.0);
+}

@@ -120,6 +120,10 @@ def build():
     shore_foam_map = texture(material, "ShoreFoamMap", placeholder, -1600, 1630)
     shore_foam_map_origin = color(material, "ShoreFoamMapOrigin", (0.0, 0.0, 0.0), -1300, 2040)
     shore_foam_map_size = scalar(material, "ShoreFoamMapSize", 0.0, -1300, 2120)
+    # The shore water simulated around the camera (UOceanShoreWaterComponent); ShoreWaterSize 0 = none.
+    shore_water = texture(material, "ShoreWater", placeholder, -1600, 1770)
+    shore_water_origin = color(material, "ShoreWaterOrigin", (0.0, 0.0, 0.0), -1300, 2200)
+    shore_water_size = scalar(material, "ShoreWaterSize", 0.0, -1300, 2280)
     # Coastal data from AOceanBathymetry (depth, distance to shore, direction); ShoreMapSize 0 = open sea.
     shore_map = texture(material, "ShoreMap", placeholder, -1600, 1700)
     shore_map_origin = color(material, "ShoreMapOrigin", (0.0, 0.0, 0.0), -1300, 1320)
@@ -148,11 +152,13 @@ def build():
     vertex = custom(
         material, -900, -200, "Ocean Vertex Offset",
         "return OceanVertexOffset(WorldPos, CameraPos, Disp0, Disp0Sampler, Disp1, Disp1Sampler, "
-        "ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, SignificantHeight0, SignificantHeight1, "
+        "ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, "
+        "ShoreWater, ShoreWaterSampler, ShoreWaterOrigin, ShoreWaterSize, SignificantHeight0, SignificantHeight1, "
         "Time, SwellHeight, SwellPeriod, SwellMaxDepth, "
         "PatchSize0, PatchSize1, Resolution, GridSpacing, GridInnerHalfWidth, GridGrowth, FadeStart, FadeEnd);",
         ["WorldPos", "CameraPos", "Disp0", "Disp1",
-         "ShoreMap", "ShoreMapOrigin", "ShoreMapSize", "SignificantHeight0", "SignificantHeight1",
+         "ShoreMap", "ShoreMapOrigin", "ShoreMapSize",
+         "ShoreWater", "ShoreWaterOrigin", "ShoreWaterSize", "SignificantHeight0", "SignificantHeight1",
          "Time", "SwellHeight", "SwellPeriod", "SwellMaxDepth",
          "PatchSize0", "PatchSize1", "Resolution",
          "GridSpacing", "GridInnerHalfWidth", "GridGrowth", "FadeStart", "FadeEnd"],
@@ -160,6 +166,7 @@ def build():
     connect_inputs({
         "WorldPos": world_pos, "CameraPos": camera_pos, "Disp0": disp[0], "Disp1": disp[1],
         "ShoreMap": shore_map, "ShoreMapOrigin": shore_map_origin, "ShoreMapSize": shore_map_size,
+        "ShoreWater": shore_water, "ShoreWaterOrigin": shore_water_origin, "ShoreWaterSize": shore_water_size,
         "SignificantHeight0": sig_height[0], "SignificantHeight1": sig_height[1], **swell_inputs,
         "PatchSize0": patch[0], "PatchSize1": patch[1], "Resolution": resolution,
         "GridSpacing": grid_spacing, "GridInnerHalfWidth": grid_inner, "GridGrowth": grid_growth,
@@ -179,6 +186,7 @@ def build():
         "FoamMap, FoamMapSampler, FoamMapOrigin, FoamMapSize, "
         "ShoreFoamMap, ShoreFoamMapSampler, ShoreFoamMapOrigin, ShoreFoamMapSize, "
         "ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, "
+        "ShoreWater, ShoreWaterSampler, ShoreWaterOrigin, ShoreWaterSize, "
         "SignificantHeight0, SignificantHeight1, SignificantHeight2, "
         "Time, SwellHeight, SwellPeriod, SwellMaxDepth, "
         "PatchSize0, PatchSize1, PatchSize2, CrestHeight, BaseRoughness, LeanScale, ToSun, ToCamera, "
@@ -187,6 +195,7 @@ def build():
          "FoamMap", "FoamMapOrigin", "FoamMapSize",
          "ShoreFoamMap", "ShoreFoamMapOrigin", "ShoreFoamMapSize",
          "ShoreMap", "ShoreMapOrigin", "ShoreMapSize",
+         "ShoreWater", "ShoreWaterOrigin", "ShoreWaterSize",
          "SignificantHeight0", "SignificantHeight1", "SignificantHeight2",
          "Time", "SwellHeight", "SwellPeriod", "SwellMaxDepth",
          "PatchSize0", "PatchSize1", "PatchSize2", "CrestHeight", "BaseRoughness", "LeanScale", "ToSun", "ToCamera"],
@@ -207,6 +216,7 @@ def build():
         "ShoreFoamMap": shore_foam_map, "ShoreFoamMapOrigin": shore_foam_map_origin,
         "ShoreFoamMapSize": shore_foam_map_size,
         "ShoreMap": shore_map, "ShoreMapOrigin": shore_map_origin, "ShoreMapSize": shore_map_size,
+        "ShoreWater": shore_water, "ShoreWaterOrigin": shore_water_origin, "ShoreWaterSize": shore_water_size,
         "SignificantHeight0": sig_height[0], "SignificantHeight1": sig_height[1],
         "SignificantHeight2": sig_height[2], **swell_inputs,
         "PatchSize0": patch[0], "PatchSize1": patch[1], "PatchSize2": patch[2], "CrestHeight": crest_height,

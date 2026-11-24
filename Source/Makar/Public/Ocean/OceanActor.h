@@ -10,6 +10,7 @@
 #include "OceanActor.generated.h"
 
 class UMaterialInstanceDynamic;
+class UOceanShoreWaterComponent;
 class UMaterialInterface;
 class UProceduralMeshComponent;
 class UTexture2D;
@@ -92,6 +93,10 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, Category = "Ocean")
 	TObjectPtr<UProceduralMeshComponent> OceanMesh;
+
+	/** The shore's water simulated around the camera (swash, shoaling, crossing waves); see UOceanShoreWaterComponent. */
+	UPROPERTY(VisibleAnywhere, Category = "Ocean")
+	TObjectPtr<UOceanShoreWaterComponent> ShoreWater;
 
 private:
 	void InitializeSimulation();
