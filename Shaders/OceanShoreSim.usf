@@ -29,6 +29,10 @@ static const float WetDepth = 0.005; // m: shallower is dry
 // broke the explicit scheme's stability limit (c dt / dx < ~0.7) and the surface blew up to tens of metres. Deep water
 // waves are the Airy part's (exact speed); the bulk flow only matters near the shore.
 static const float BulkDepthCap = 10.0;
+// m/s of water sinking into the beach above sea level (coarse carbonate sand drains fast).
+static const float InfiltrationRate = 0.004;
+// Thinner water is drawn as wet sand by the terrain, not as a water surface.
+static const float DrawnDepth = 0.03;
 
 float Square(float X) { return X * X; }
 
@@ -469,7 +473,13 @@ void IntegrateCS(uint2 Id : SV_DispatchThreadID)
 	const float FluxXIn = Id.x > 0 ? FaceFlux(P - int2(1, 0), 0, Unused) : 0.0;
 	const float FluxYIn = Id.y > 0 ? FaceFlux(P - int2(0, 1), 1, Unused) : 0.0;
 	const float4 S = State[P];
-	const float NewH = max(S.x + DeltaTime * (FluxXIn - FluxXOut + FluxYIn - FluxYOut) / CellSize, 0.0);
+	float NewH = max(S.x + DeltaTime * (FluxXIn - FluxXOut + FluxYIn - FluxYOut) / CellSize, 0.0);
+	// Infiltration: above the sea, a thin sheet of water sinks into the sand within seconds (left alone, the backwash
+	// left a film in every hollow, which the cells drew as rectangular puddles).
+	if (Terrain[P].x > 0.0)
+	{
+		NewH = max(NewH - InfiltrationRate * DeltaTime, 0.0);
+	}
 	OutState[Id] = float4(NewH, QxOut, QyOut, S.w);
 	OutAux[Id] = float4(Surface[P].x, BulkFlow[P].xy, 0.0);
 }
@@ -530,15 +540,15 @@ void SurfaceCS(uint2 Id : SV_DispatchThreadID)
 	const float B = Terrain[P].x;
 	// Dry: the water surface just below the bed, so the sand hides it and the shoreline stays continuous, but never
 	// above sea level: following the bed up the cliffs, it poked through their rocks in green spikes.
-	const float Eta = H > WetDepth ? H + B : min(B - 0.05, 0.0);
+	const float Eta = H > DrawnDepth ? H + B : min(B - 0.05, 0.0);
 	float Slope[2];
 	[unroll] for (int Axis = 0; Axis < 2; ++Axis)
 	{
 		const int2 Step = Axis == 0 ? int2(1, 0) : int2(0, 1);
 		const int2 A = Clamp2(P - Step);
 		const int2 C = Clamp2(P + Step);
-		const float EA = State[A].x > WetDepth ? State[A].x + Terrain[A].x : Eta;
-		const float EC = State[C].x > WetDepth ? State[C].x + Terrain[C].x : Eta;
+		const float EA = State[A].x > DrawnDepth ? State[A].x + Terrain[A].x : Eta;
+		const float EC = State[C].x > DrawnDepth ? State[C].x + Terrain[C].x : Eta;
 		Slope[Axis] = (EC - EA) / (2.0 * CellSize);
 	}
 	OutWater[Id] = float4(Eta, Slope[0], Slope[1], H);
