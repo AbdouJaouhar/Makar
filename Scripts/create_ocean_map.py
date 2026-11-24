@@ -26,7 +26,7 @@ SKY_MIE_ABSORPTION = 0.00015
 SKY_FOG_DENSITY = 0.0003
 
 # Swell lapping on the beaches of the lagoon (ocean settings and the wet sand band of M_Seabed).
-SHORE_SWELL_HEIGHT_M = 0.6  # a trade-wind beach: shore break of ~0.6 m
+SHORE_SWELL_HEIGHT_M = 1.0  # a fresh trade-wind day: shore break of ~1 m
 SHORE_SWELL_PERIOD_S = 7.0
 SHORE_SWELL_MAX_DEPTH_M = 12.0
 
@@ -411,16 +411,16 @@ def seabed_material():
 
 
 def caribbean_sea_state(ocean):
-    """A fine trade-wind day: a moderate breeze (Beaufort 4) raising a lively chop with scattered whitecaps,
-    and a low swell lapping on the beaches."""
+    """A fresh trade-wind day: a fresh breeze (Beaufort 5) raising a lively, sharp-crested chop whose crests cross
+    and fold into whitecaps, over a swell that breaks on the beaches (calmer, Beaufort 4, the sea read as flat)."""
     settings = ocean.get_editor_property("settings")
-    settings.set_editor_property("wind_speed", 7.0)
+    settings.set_editor_property("wind_speed", 10.0)
     settings.set_editor_property("wind_direction", 200.0)
     settings.set_editor_property("fetch", 60000.0)
-    settings.set_editor_property("swell", 0.3)
-    settings.set_editor_property("choppiness", 0.9)
-    # Beaufort 4: whitecaps here and there, not everywhere.
-    settings.set_editor_property("foam_threshold", 0.87)
+    settings.set_editor_property("swell", 0.7)
+    settings.set_editor_property("choppiness", 1.35)
+    # Beaufort 5: many whitecaps, where the crests fold.
+    settings.set_editor_property("foam_threshold", 0.8)
     settings.set_editor_property("foam_intensity", 1.5)
     settings.set_editor_property("foam_decay", 0.25)
     settings.set_editor_property("shore_swell_height", SHORE_SWELL_HEIGHT_M)

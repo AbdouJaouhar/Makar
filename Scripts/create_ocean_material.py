@@ -245,7 +245,7 @@ def build():
     # Left unconnected it defaults to 1 and the water turns into an opaque black surface.
     MEL.connect_material_property(pixel, "Foam", unreal.MaterialProperty.MP_OPACITY)
 
-    roughness_foam = scalar(material, "FoamRoughness", 0.7, -500, 640)
+    roughness_foam = scalar(material, "FoamRoughness", 0.45, -500, 640)  # wet bubbles catch the light (0.7: matte, milky)
     # Diagnostic: scales the water's roughness (0 = perfect mirror) to tell blurred reflections from missing ones.
     roughness_scale = scalar(material, "RoughnessScale", 1.0, -650, 560)
     water_roughness = node(material, unreal.MaterialExpressionMultiply, -350, 560)

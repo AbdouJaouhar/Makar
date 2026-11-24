@@ -1465,7 +1465,12 @@ float OceanFoamLace(float2 PosM, float Amount, float Age, float2 Flow, float Shi
 	// Old lace is a translucent film of bubbles; fresh froth is opaque. Up close, a grain of brighter and duller
 	// bubbles in it.
 	Coverage *= lerp(0.55, 1.0, Fresh) * lerp(1.0, lerp(0.8, 1.0, OceanGradientNoise(P / 0.02 + 3.3)), saturate(0.004 / Footprint - 1.0));
-	Height = Coverage * lerp(0.25, 1.0, Fresh);
+	// Relief: each wall of the lace a rounded ridge, thickest midway between two holes, and the small bubbles domes
+	// on it; fresh froth a lumpy heap. From the continuous distance to the holes, so its slope is smooth (taken from
+	// the sharp coverage it sparkled as grain). Without it the foam was a flat milky film.
+	const float Ridge = sqrt(saturate(Big / 0.3)) * lerp(0.7, 1.0, sqrt(saturate(Small / 0.25)) * SmallDetail + (1.0 - SmallDetail));
+	const float Heap = OceanGradientNoise(P / 0.15 + 2.9) * 0.5 + 0.5;
+	Height = saturate(Amount * 1.4) * lerp(Ridge, Heap, Fresh * Fresh) * Detail;
 	return Coverage;
 }
 
@@ -1669,9 +1674,8 @@ float3 OceanPixel(float3 WorldPos,
 	Foam = OceanFoamCoverage(PosM, FoamAmount, FoamHeight);
 	float LaceHeight;
 	const float Lace = OceanFoamLace(PosM, SurfFoam, SurfAge, SurfFlow, SurfShift, LaceHeight);
-	// The lace's relief is not used: derived per pixel from its sharp walls, it gave noisy normals whose highlights
-	// sparkled like grain all over the swash.
-	FoamHeight *= 1.0 - saturate(Lace * 2.0);
+	// The lace's relief (OceanFoamLace: smooth ridges and domes), stronger than the sea foam's.
+	FoamHeight = max(FoamHeight * (1.0 - saturate(SurfFoam * 4.0)), LaceHeight * 3.0);
 	// Inside the surf's foam the open sea's pattern is left out (its fine bubble grain showed through the lace).
 	Foam = max(Foam * (1.0 - saturate(SurfFoam * 4.0)), Lace);
 	Crest = saturate((S0.z * A0 + S1.z * A1 + W0.z) / max(CrestHeight, 0.01));
