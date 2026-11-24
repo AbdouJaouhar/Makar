@@ -18,6 +18,39 @@ namespace
 	// Surface foam drifts at a few percent of the wind speed.
 	constexpr float WindDriftFactor = 0.03f;
 
+	// The swash's horizontal run over the beach face per metre it rises (a 1:8 face; = OceanSurfFoam's Shift).
+	constexpr float SwashRunPerRise = 8.f;
+
+	/**
+	 * Where the water at PositionM moved this step (m): the shore waves' horizontal motion (their orbit and the lip
+	 * thrown forward, from their displacement now and a step ago), and on the beach the swash running up and back
+	 * down the face. Foam rides the water, so it rides up the beach with each uprush, back down with the backwash and
+	 * is dragged out into streaks wherever neighbouring water moves differently.
+	 */
+	FVector2f ShoreWaterMotion(const FOceanShoreData& Shore, const FOceanShoreSwell& Swell, const FVector2f& PositionM, float Time, float Dt)
+	{
+		const float Depth = Shore.DepthAt(PositionM);
+		if (Depth >= Swell.MaxDepth || Depth < -OceanSwashMaxHeightM || Dt <= 0.f)
+		{
+			return FVector2f::ZeroVector;
+		}
+		const FOceanShoreWaveSample Now = OceanShoreWave(Shore, PositionM, Time, Swell);
+		const FOceanShoreWaveSample Before = OceanShoreWave(Shore, PositionM, Time - Dt, Swell);
+		FVector2f Motion(Now.Displacement.X - Before.Displacement.X, Now.Displacement.Y - Before.Displacement.Y);
+		if (Depth < 0.6f)
+		{
+			// Up the slope: down the depth gradient.
+			const FVector2f Gradient(Shore.DepthAt(PositionM + FVector2f(1.f, 0.f)) - Depth, Shore.DepthAt(PositionM + FVector2f(0.f, 1.f)) - Depth);
+			const float Length = Gradient.Size();
+			if (Length > 1e-4f)
+			{
+				const float InSwash = 1.f - FMath::SmoothStep(0.3f, 0.6f, Depth);
+				Motion += -Gradient / Length * (SwashRunPerRise * (Now.Displacement.Z - Before.Displacement.Z) * InSwash);
+			}
+		}
+		return Motion;
+	}
+
 	int32 Wrap(int32 Value, int32 N)
 	{
 		const int32 Result = Value % N;
@@ -85,6 +118,8 @@ void FOceanFoamMap::Simulate(FOceanFrame& Frame, const FOceanSettings& Settings,
 	{
 		Foam.SetNumZeroed(Size * Size);
 		Next.SetNumZeroed(Size * Size);
+		Age.SetNumZeroed(Size * Size);
+		NextAge.SetNumZeroed(Size * Size);
 		OriginTexel = NewOrigin;
 		bInitialized = true;
 	}
@@ -96,6 +131,7 @@ void FOceanFoamMap::Simulate(FOceanFrame& Frame, const FOceanSettings& Settings,
 	const float Dt = FMath::Clamp(DeltaTime, 0.f, 0.1f);
 	const float Fade = FMath::Exp(-Settings.FoamDecay * Dt);
 	const float WindAngle = FMath::DegreesToRadians(Settings.WindDirection);
+	const FOceanShoreSwell Swell = Settings.GetShoreSwell();
 	// Distance travelled this step, in texels.
 	const FVector2f Drift = FVector2f(FMath::Cos(WindAngle), FMath::Sin(WindAngle)) * (Settings.WindSpeed * WindDriftFactor * Dt / TexelSizeM);
 
@@ -103,22 +139,36 @@ void FOceanFoamMap::Simulate(FOceanFrame& Frame, const FOceanSettings& Settings,
 	{
 		for (int32 X = 0; X < Size; ++X)
 		{
-			// Semi-Lagrangian advection: the foam here is the foam that was upwind a moment ago.
-			const float Advected = SampleFoam(float(X) - Drift.X, float(Y) - Drift.Y);
-
 			const FVector2f PositionM((float(OriginTexel.X + X) + 0.5f) * TexelSizeM, (float(OriginTexel.Y + Y) + 0.5f) * TexelSizeM);
+			// Semi-Lagrangian advection: the foam here is the foam that was where this water came from a moment
+			// ago, carried by the wind drift and, near the shore, by the waves and the swash.
+			FVector2f Back = Drift;
+			if (Shore)
+			{
+				Back += ShoreWaterMotion(*Shore, Swell, PositionM, Frame.Time, Dt) / TexelSizeM;
+			}
+			const float FromX = float(X) - Back.X;
+			const float FromY = float(Y) - Back.Y;
+			const float Advected = SampleFoam(FromX, FromY);
+			const float AdvectedAge = SampleAge(FromX, FromY);
+
 			const float Jacobian = CombinedJacobian(Frame, Shore, PositionM);
 			float Created = FMath::Clamp((Settings.FoamThreshold - Jacobian) * Settings.FoamIntensity * CreationGain, 0.f, 1.f);
 			if (Shore)
 			{
-				// Whitewater of the waves breaking on the beach; it lingers and drifts like the whitecaps.
-				Created = FMath::Max(Created, OceanShoreWave(*Shore, PositionM, Frame.Time, Settings.GetShoreSwell()).Foam);
+				// Whitewater of the waves breaking on the beach; it lingers, rides the water and drifts.
+				Created = FMath::Max(Created, OceanShoreWave(*Shore, PositionM, Frame.Time, Swell).Foam);
 			}
 
-			Next[Y * Size + X] = FMath::Max(Created, Advected * Fade);
+			const float Kept = Advected * Fade;
+			const int32 Index = Y * Size + X;
+			Next[Index] = FMath::Max(Created, Kept);
+			// Age (s): fresh where new foam was made, else that of the foam carried here.
+			NextAge[Index] = Created >= Kept ? 0.f : FMath::Min(AdvectedAge + Dt, 60.f);
 		}
 	});
 	Swap(Foam, Next);
+	Swap(Age, NextAge);
 
 	BuildMips(Frame);
 	Frame.FoamMapOrigin = FVector2f(float(OriginTexel.X), float(OriginTexel.Y)) * TexelSizeM;
@@ -136,13 +186,25 @@ void FOceanFoamMap::Recenter(const FIntPoint& NewOrigin)
 			const int32 SourceX = X + Shift.X;
 			const bool bInside = SourceX >= 0 && SourceX < Size && SourceY >= 0 && SourceY < Size;
 			Next[Y * Size + X] = bInside ? Foam[SourceY * Size + SourceX] : 0.f;
+			NextAge[Y * Size + X] = bInside ? Age[SourceY * Size + SourceX] : 0.f;
 		}
 	});
 	Swap(Foam, Next);
+	Swap(Age, NextAge);
 	OriginTexel = NewOrigin;
 }
 
 float FOceanFoamMap::SampleFoam(float X, float Y) const
+{
+	return SampleGrid(Foam, X, Y);
+}
+
+float FOceanFoamMap::SampleAge(float X, float Y) const
+{
+	return SampleGrid(Age, X, Y);
+}
+
+float FOceanFoamMap::SampleGrid(const TArray<float>& Grid, float X, float Y) const
 {
 	const float FloorX = FMath::FloorToFloat(X);
 	const float FloorY = FMath::FloorToFloat(Y);
@@ -151,9 +213,9 @@ float FOceanFoamMap::SampleFoam(float X, float Y) const
 	const int32 X0 = int32(FloorX);
 	const int32 Y0 = int32(FloorY);
 
-	auto At = [this](int32 TexelX, int32 TexelY)
+	auto At = [&Grid](int32 TexelX, int32 TexelY)
 	{
-		return TexelX >= 0 && TexelX < Size && TexelY >= 0 && TexelY < Size ? Foam[TexelY * Size + TexelX] : 0.f;
+		return TexelX >= 0 && TexelX < Size && TexelY >= 0 && TexelY < Size ? Grid[TexelY * Size + TexelX] : 0.f;
 	};
 	const float Bottom = FMath::Lerp(At(X0, Y0), At(X0 + 1, Y0), FracX);
 	const float Top = FMath::Lerp(At(X0, Y0 + 1), At(X0 + 1, Y0 + 1), FracX);
@@ -165,6 +227,7 @@ void FOceanFoamMap::BuildMips(FOceanFrame& Frame) const
 	Frame.FoamMapMips.SetNum(NumMips);
 
 	TArray<float> Level = Foam;
+	TArray<float> LevelAge = Age;
 	int32 LevelSize = Size;
 	for (int32 Mip = 0; Mip < NumMips; ++Mip)
 	{
@@ -172,25 +235,36 @@ void FOceanFoamMap::BuildMips(FOceanFrame& Frame) const
 		Out.SetNumUninitialized(LevelSize * LevelSize);
 		for (int32 Index = 0; Index < LevelSize * LevelSize; ++Index)
 		{
-			Out[Index] = FFloat16Color(FLinearColor(Level[Index], 0.f, 0.f, 0.f));
+			// R = foam, G = its age (s): the shader turns old foam into a lace of streaks.
+			Out[Index] = FFloat16Color(FLinearColor(Level[Index], LevelAge[Index], 0.f, 0.f));
 		}
 
 		if (Mip + 1 < NumMips)
 		{
 			const int32 NextSize = FMath::Max(LevelSize / 2, 1);
-			TArray<float> Smaller;
+			TArray<float> Smaller, SmallerAge;
 			Smaller.SetNumUninitialized(NextSize * NextSize);
+			SmallerAge.SetNumUninitialized(NextSize * NextSize);
 			for (int32 Y = 0; Y < NextSize; ++Y)
 			{
 				for (int32 X = 0; X < NextSize; ++X)
 				{
 					const int32 SX = X * 2;
 					const int32 SY = Y * 2;
-					Smaller[Y * NextSize + X] = 0.25f * (Level[SY * LevelSize + SX] + Level[SY * LevelSize + SX + 1]
-						+ Level[(SY + 1) * LevelSize + SX] + Level[(SY + 1) * LevelSize + SX + 1]);
+					const int32 Corners[4] = { SY * LevelSize + SX, SY * LevelSize + SX + 1, (SY + 1) * LevelSize + SX, (SY + 1) * LevelSize + SX + 1 };
+					float Sum = 0.f;
+					float AgeSum = 0.f;
+					for (const int32 J : Corners)
+					{
+						Sum += Level[J];
+						AgeSum += Level[J] * LevelAge[J];
+					}
+					Smaller[Y * NextSize + X] = 0.25f * Sum;
+					SmallerAge[Y * NextSize + X] = Sum > 1e-4f ? AgeSum / Sum : 0.f; // the age of the foam there
 				}
 			}
 			Level = MoveTemp(Smaller);
+			LevelAge = MoveTemp(SmallerAge);
 			LevelSize = NextSize;
 		}
 	}

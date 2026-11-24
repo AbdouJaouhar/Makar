@@ -11,7 +11,8 @@ struct FOceanShoreData;
  * Persistent foam in world space around the camera, simulated on the CPU after each wave step.
  *
  * Foam is created where the combined surface (all cascades together, not each one alone) is compressed
- * enough to break, drifts with the wind and decays. Crests travel faster than the foam they leave behind,
+ * enough to break and where the shore waves break, rides the water (the wind drift, the shore waves' motion, the
+ * swash up and down the beach), ages and decays; the map holds its amount (R) and age (G). Crests travel faster than the foam they leave behind,
  * which draws the streaks that follow each whitecap. The map follows the camera texel by texel.
  * Positions are undisplaced (Lagrangian) surface positions, like the wave textures, so the rendered foam
  * rides the displaced waves.
@@ -31,12 +32,16 @@ public:
 
 private:
 	void Recenter(const FIntPoint& NewOrigin);
-	/** Bilinear foam at a texel position, 0 outside the map. */
+	/** Bilinear foam / age at a texel position, 0 outside the map. */
 	float SampleFoam(float X, float Y) const;
+	float SampleAge(float X, float Y) const;
+	float SampleGrid(const TArray<float>& Grid, float X, float Y) const;
 	void BuildMips(FOceanFrame& Frame) const;
 
 	TArray<float> Foam;
 	TArray<float> Next;
+	TArray<float> Age;     // seconds since this foam was made
+	TArray<float> NextAge;
 	FIntPoint OriginTexel = FIntPoint::ZeroValue; // world texel index of Foam[0]
 	bool bInitialized = false;
 };

@@ -1670,6 +1670,8 @@ float3 OceanPixel(float3 WorldPos,
 	// Far away: foam from each cascade's own tile. Whitecaps break on the crests of the larger waves,
 	// so the 10 m ripple cascade only adds a little, otherwise foam is sprinkled evenly over the sea.
 	float FoamAmount = saturate(S0.w * A0 + S1.w * 0.8 * A1 + S2.w * 0.15 * A2);
+	// Its age: far away guessed from the amount (dense = just folded); near the camera the simulated map's.
+	float FoamAge = saturate(1.0 - 1.3 * FoamAmount);
 
 	// Around the camera: the simulated foam map (whitecaps of the whole surface, drifting streaks),
 	// faded into the tile foam over the outer 10 % of the map.
@@ -1678,8 +1680,10 @@ float3 OceanPixel(float3 WorldPos,
 		const float2 MapUv = (PosM - FoamMapOrigin.xy) / FoamMapSize;
 		const float2 EdgeDistance = min(MapUv, 1.0 - MapUv);
 		const float Inside = saturate(min(EdgeDistance.x, EdgeDistance.y) / 0.1);
-		const float MapFoam = FoamMap.Sample(FoamMapSampler, MapUv).r;
-		FoamAmount = lerp(FoamAmount, saturate(MapFoam), Inside);
+		// R = amount, G = age in seconds (FOceanFoamMap: the foam is carried by the water and ages as it goes).
+		const float2 MapFoam = FoamMap.Sample(FoamMapSampler, MapUv).rg;
+		FoamAmount = lerp(FoamAmount, saturate(MapFoam.r), Inside);
+		FoamAge = lerp(FoamAge, saturate(MapFoam.g / 4.0), Inside);
 	}
 	// Swell breaking on the beach: its normal comes from finite differences of the displaced surface
 	// (it can overhang, so slopes alone are not enough); the FFT slopes are added on top.
@@ -1709,13 +1713,15 @@ float3 OceanPixel(float3 WorldPos,
 		SwellHeight, SwellPeriod, SwellMaxDepth, SurfAge, SurfFlow, SurfShift);
 	// The open sea's whitecaps as the same froth: dense where the crest has just folded, opening into a lace as the
 	// foam map's amount decays (the torn sheets of OceanFoamCoverage read as flat white blotches).
-	Foam = OceanFoamLace(PosM, saturate(1.6 * FoamAmount), saturate(1.0 - 1.3 * FoamAmount), float2(1.0, 0.0), 0.0, FoamHeight);
+	// The whitecaps and the foam the map carries along the shore, drawn as the same froth, its pattern riding with
+	// the swash and streaked along the water's flow near the shore.
+	Foam = OceanFoamLace(PosM, saturate(1.6 * FoamAmount), FoamAge, SurfFlow, SurfShift, FoamHeight);
 	float LaceHeight;
 	const float Lace = OceanFoamLace(PosM, SurfFoam, SurfAge, SurfFlow, SurfShift, LaceHeight);
 	// The lace's relief (OceanFoamLace: smooth ridges and domes), stronger than the sea foam's.
-	FoamHeight = max(FoamHeight * (1.0 - saturate(SurfFoam * 4.0)), LaceHeight * 3.0);
+	FoamHeight = max(FoamHeight, LaceHeight) * 3.0;
 	// Inside the surf's foam the open sea's pattern is left out (its fine bubble grain showed through the lace).
-	Foam = max(Foam * (1.0 - saturate(SurfFoam * 4.0)), Lace);
+	Foam = max(Foam, Lace);
 	Crest = saturate((S0.z * A0 + S1.z * A1 + W0.z) / max(CrestHeight, 0.01));
 
 	// Relief of the foam (a few centimetres thick), so it catches the light instead of lying flat. World-space
