@@ -60,6 +60,11 @@ AOceanIslandFlora::AOceanIslandFlora()
 	Infinigen(CoralMeshes, TEXT("corals"), TEXT("FanCoralFactory"), 3);
 	Infinigen(UrchinMeshes, TEXT("shells"), TEXT("UrchinFactory"), 2);
 	Infinigen(ShellMeshes, TEXT("shells"), TEXT("ConchFactory"), 2);
+	for (const TCHAR* Variant : { TEXT("A"), TEXT("B"), TEXT("C") })
+	{
+		ScannedUnderstoryMeshes.Add(TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(FString::Printf(
+			TEXT("/Game/Megascans/TropicalPalm/SM_TropicalPalm_Var%s.SM_TropicalPalm_Var%s"), Variant, Variant))));
+	}
 }
 
 void AOceanIslandFlora::OnConstruction(const FTransform& Transform)
@@ -258,6 +263,14 @@ void AOceanIslandFlora::Build()
 	TArray<UHierarchicalInstancedStaticMeshComponent*> Ferns = SmallPlants(OceanFlora::MakeFern, 850, 200.f);
 	TArray<UHierarchicalInstancedStaticMeshComponent*> Heliconias = SmallPlants(OceanFlora::MakeHeliconia, 860, 400.f);
 	TArray<UHierarchicalInstancedStaticMeshComponent*> Creepers = SmallPlants(OceanFlora::MakeBeachCreeper, 870, 150.f);
+	TArray<UHierarchicalInstancedStaticMeshComponent*> ScannedUnderstory;
+	for (const TSoftObjectPtr<UStaticMesh>& Entry : ScannedUnderstoryMeshes)
+	{
+		if (UStaticMesh* Mesh = Entry.LoadSynchronous())
+		{
+			ScannedUnderstory.Add(AddInstancer(Mesh, 250.f, 25.f));
+		}
+	}
 	// Ground cover: dead fronds and coconuts under the palms, grass tufts (yellower in the last variant, for the sunny
 	// beach top). Small: culled sooner.
 	UMaterialInterface* GrassTuft = GrassTuftMaterial.LoadSynchronous();
@@ -598,6 +611,8 @@ void AOceanIslandFlora::Build()
 	{
 		Set->SetNum(NumSmallPlantVariants);
 	}
+	TArray<TArray<FTransform>> ScannedTransforms;
+	ScannedTransforms.SetNum(ScannedUnderstory.Num());
 	auto Plant = [&](TArray<TArray<FTransform>>& Set, const FVector2f& Position, float HeightM, float MinScale, float MaxScale, float SinkCm)
 	{
 		Set[Random.RandRange(0, Set.Num() - 1)].Add(FTransform(FRotator(0.f, Random.FRandRange(0.f, 360.f), 0.f),
@@ -672,6 +687,17 @@ void AOceanIslandFlora::Build()
 		else if (Roll < GroundCoverDensity * (0.24f + 0.35f * Damp + 0.12f * Damp) && Terrain.Ground > 6.f)
 		{
 			Plant(HeliconiaTransforms, Position, Height, 0.8f, 1.25f, 5.f);
+		}
+		else if (ScannedTransforms.Num() > 0 && Roll < GroundCoverDensity * (0.3f + 0.47f * Damp)
+			&& OceanValueNoise(Position / 11.f + FVector2f(41.f, 9.f)) > 0.5f)
+		{
+			// Scanned palms (Megascans) in clumps of two to four, under the canopy.
+			const int32 Count = Random.RandRange(2, 4);
+			for (int32 Index = 0; Index < Count; ++Index)
+			{
+				const FVector2f At = Position + FVector2f(Random.FRandRange(-1.2f, 1.2f), Random.FRandRange(-1.2f, 1.2f));
+				Plant(ScannedTransforms, At, Surface(At), 0.8f, 1.3f, 3.f);
+			}
 		}
 	});
 	// Beach morning glory over the upper beach, in patches between the berm and the vegetation line.
@@ -899,6 +925,8 @@ void AOceanIslandFlora::Build()
 	AddAll(Ferns, FernTransforms);
 	AddAll(Heliconias, HeliconiaTransforms);
 	AddAll(Creepers, CreeperTransforms);
+	AddAll(ScannedUnderstory, ScannedTransforms);
+	UE_LOG(LogTemp, Display, TEXT("OceanIslandFlora: %d scanned understory meshes, %d instances"), ScannedUnderstory.Num(), Count(ScannedTransforms));
 	UE_LOG(LogTemp, Display, TEXT("OceanIslandFlora: %d almond, %d agave, %d turk's cap, %d column cactus, %d bromeliad, %d fern, %d heliconia, %d creeper instances"),
 		Count(AlmondTransforms), Count(AgaveTransforms), Count(TurksCapTransforms), Count(ColumnTransforms), Count(BromeliadTransforms),
 		Count(FernTransforms), Count(HeliconiaTransforms), Count(CreeperTransforms));

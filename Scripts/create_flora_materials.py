@@ -55,15 +55,22 @@ def add_wind(material, flutter):
     wind.set_editor_property("description", "Flora Wind")
     wind.set_editor_property("include_file_paths", ["/Makar/Flora.ush"])
     wind.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
-    wind.set_editor_property("code", f"return FloraWind(WorldPos, Local, Frond, Time, {WIND_BEND}, {flutter});")
+    wind.set_editor_property("code", f"return FloraWind(WorldPos, Pivot, Local, Frond, Time, {WIND_BEND}, {flutter});")
     inputs = []
-    for input_name in ("WorldPos", "Local", "Frond", "Time"):
+    for input_name in ("WorldPos", "Pivot", "Local", "Frond", "Time"):
         custom_input = unreal.CustomInput()
         custom_input.set_editor_property("input_name", input_name)
         inputs.append(custom_input)
     wind.set_editor_property("inputs", inputs)
     connect(node(material, unreal.MaterialExpressionWorldPosition, -900, 900), wind, "WorldPos")
     connect(node(material, unreal.MaterialExpressionLocalPosition, -900, 980), wind, "Local")
+    # The plant's foot: its instance's origin (local (0, 0, 0) to world, per instance, Nanite or not).
+    pivot = node(material, unreal.MaterialExpressionTransformPosition, -750, 820)
+    pivot.set_editor_property("transform_source_type", unreal.MaterialPositionTransformSource.TRANSFORMPOSSOURCE_LOCAL)
+    pivot.set_editor_property("transform_type", unreal.MaterialPositionTransformSource.TRANSFORMPOSSOURCE_WORLD)
+    origin = node(material, unreal.MaterialExpressionConstant3Vector, -900, 820)
+    connect(origin, pivot, "")
+    connect(pivot, wind, "Pivot")
     connect(node(material, unreal.MaterialExpressionTime, -900, 1060), wind, "Time")
     # Palm fronds' wind data (OceanFlora's AddPalmFrond, UV channels 1 and 2; zero on other meshes).
     frond = node(material, unreal.MaterialExpressionAppendVector, -750, 1140)
