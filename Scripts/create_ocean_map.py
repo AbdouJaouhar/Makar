@@ -442,9 +442,9 @@ def build():
     elif not levels.new_level(MAP_PATH):
         raise RuntimeError(f"Could not create level {MAP_PATH}")
 
-    # Free-flying camera, no playable ship: GameModeBase's default pawn is ADefaultPawn.
+    # Free-flying camera, no playable ship: AMakarFreeCamera (wheel: speed, Shift: fast, Ctrl: slow).
     world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
-    world.get_world_settings().set_editor_property("default_game_mode", unreal.GameModeBase.static_class())
+    world.get_world_settings().set_editor_property("default_game_mode", load_class("/Script/Makar.MakarViewerGameMode"))
 
     # --- Sky: late afternoon sun (SUN_ELEVATION_DEG) in a physical atmosphere, real-time sky light, cumulus ---
     # From the side of the usual views: the relief, the palms and the waves are modelled by light and shade, with long
