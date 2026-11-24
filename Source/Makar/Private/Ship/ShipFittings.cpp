@@ -512,7 +512,7 @@ namespace
 			const float W = FMath::Pow(FMath::Max(1.f - FMath::Pow(FMath::Abs(U * 2.f - 1.f), 2.2f), 0.f), 1.f / 2.2f) * (Beam * 0.5f - Inset) + 0.02f;
 			const float A = V * UE_PI;
 			const float Sheer = 0.12f * FMath::Square(U * 2.f - 1.f);
-			return At + FVector3f(X, -W * FMath::Cos(A), -(Depth - Inset) * FMath::Pow(FMath::Sin(A), 0.7f) + Sheer);
+			return At + FVector3f(X, -W * FMath::Cos(A), -(Depth - Inset) * FMath::Pow(FMath::Max(FMath::Sin(A), 0.f), 0.7f) + Sheer);
 		};
 		const FLinearColor Outer = Jitter(FLinearColor(0.32f, 0.27f, 0.2f, 1.f), 0.1f, D.Seed);
 		B.Grid(Wood, 20, 10, [&](float U, float V) { return Hull(U, V, 0.f); }, Outer, false);

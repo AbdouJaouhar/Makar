@@ -46,9 +46,15 @@ public:
 	UPROPERTY(VisibleAnywhere, Transient, Category = "Ship")
 	int32 Triangles = 0;
 
-	/** Generates the ship again. */
+	/** Generates the ship again from Type and Seed. */
 	UFUNCTION(CallInEditor, BlueprintCallable, Category = "Ship")
 	void Rebuild();
+
+	/** Generates the ship from a design edited by hand (the viewer's menu); Type and Seed follow it. */
+	void BuildFromDesign(const FShipDesign& InDesign);
+
+	/** The generated ship's bounds (world space). */
+	FBox GetShipBounds() const;
 
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void BeginPlay() override;

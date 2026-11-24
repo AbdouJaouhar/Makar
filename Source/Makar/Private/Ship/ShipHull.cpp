@@ -317,7 +317,7 @@ namespace
 	}
 
 	const FLinearColor Caulk(0.012f, 0.011f, 0.01f);
-	const FLinearColor Darkness(0.004f, 0.004f, 0.004f);
+	const FLinearColor HoldDarkness(0.004f, 0.004f, 0.004f);
 
 	struct FHullBuild
 	{
@@ -638,11 +638,11 @@ namespace
 				{
 					Back[C] = In[C] + Inward * 0.9f;
 				}
-				B.FlatQuad(Wood, Back[0], Back[1], Back[2], Back[3], Darkness, -Inward);
+				B.FlatQuad(Wood, Back[0], Back[1], Back[2], Back[3], HoldDarkness, -Inward);
 				for (int32 C = 0; C < 4; ++C)
 				{
 					const int32 Next = (C + 1) % 4;
-					B.FlatQuad(Wood, In[C], In[Next], Back[Next], Back[C], Darkness, Center - (In[C] + In[Next]) * 0.5f);
+					B.FlatQuad(Wood, In[C], In[Next], Back[Next], Back[C], HoldDarkness, Center - (In[C] + In[Next]) * 0.5f);
 				}
 			}
 		}

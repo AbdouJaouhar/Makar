@@ -1,4 +1,4 @@
-﻿using UnrealBuildTool;
+using UnrealBuildTool;
 
 public class Makar : ModuleRules
 {
@@ -20,6 +20,9 @@ public class Makar : ModuleRules
 
 		// The finest ocean cascade runs on the GPU (compute shaders in the MakarShaders module).
 		PrivateDependencyModuleNames.AddRange(new string[] { "MakarShaders", "RenderCore", "RHI" });
+
+		// The ship viewer's options menu (Slate).
+		PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
 
 		if (Target.bBuildEditor)
 		{

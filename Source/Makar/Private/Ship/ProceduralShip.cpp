@@ -53,22 +53,57 @@ void AProceduralShip::BeginPlay()
 
 void AProceduralShip::Rebuild()
 {
+	FShipDesign Made = FShipDesign::Make(Type, Seed);
+	Made.bSailsSet = bSailsSet;
+	BuildFromDesign(Made);
+}
+
+FBox AProceduralShip::GetShipBounds() const
+{
+	return Mesh && Mesh->GetStaticMesh() ? Mesh->Bounds.GetBox() : FBox(GetActorLocation(), GetActorLocation());
+}
+
+void AProceduralShip::BuildFromDesign(const FShipDesign& InDesign)
+{
 	const double Start = FPlatformTime::Seconds();
-	Design = FShipDesign::Make(Type, Seed);
-	Design.bSailsSet = bSailsSet;
+	Design = InDesign;
+	Type = Design.Type;
+	Seed = Design.Seed;
+	bSailsSet = Design.bSailsSet;
 
 	FOceanMeshData Data(ShipMesh::NumSections);
 	ShipMesh::FBuilder Builder(Data);
 	const FHullLines Lines(Design);
 	TArray<FShipGunPort> Ports;
-	ShipHull::Build(Builder, Lines, Ports);
 	TArray<FShipMastInfo> Masts;
-	ShipRig::Build(Builder, Lines, Masts);
-	ShipFittings::Build(Builder, Lines, Ports, Masts);
 	float Ground = Lines.Z(-Design.KeelDepth);
+	// Each stage's vertices checked: a NaN anywhere makes the whole mesh's bounds NaN (and the ship invisible).
+	auto Stage = [&](const TCHAR* Name, TFunctionRef<void()> Run)
+	{
+		const int32 First = Data.Vertices.Num();
+		Run();
+		int32 Bad = 0;
+		for (int32 I = First; I < Data.Vertices.Num(); ++I)
+		{
+			FOceanMeshData::FVertex& V = Data.Vertices[I];
+			if (V.Position.ContainsNaN() || V.Normal.ContainsNaN())
+			{
+				++Bad;
+				V.Position = V.Position.ContainsNaN() ? FVector3f::ZeroVector : V.Position;
+				V.Normal = V.Normal.ContainsNaN() ? FVector3f::UpVector : V.Normal;
+			}
+		}
+		if (Bad > 0)
+		{
+			UE_LOG(LogShip, Warning, TEXT("ProceduralShip: %d NaN vertices in %s (zeroed)"), Bad, Name);
+		}
+	};
+	Stage(TEXT("hull"), [&]() { ShipHull::Build(Builder, Lines, Ports); });
+	Stage(TEXT("rig"), [&]() { ShipRig::Build(Builder, Lines, Masts); });
+	Stage(TEXT("fittings"), [&]() { ShipFittings::Build(Builder, Lines, Ports, Masts); });
 	if (bOnCradle)
 	{
-		Ground = ShipFittings::Cradle(Builder, Lines, CradleHeight);
+		Stage(TEXT("cradle"), [&]() { Ground = ShipFittings::Cradle(Builder, Lines, CradleHeight); });
 	}
 
 	static const TCHAR* const Paths[ShipMesh::NumSections] = {
@@ -88,6 +123,7 @@ void AProceduralShip::Rebuild()
 	Mesh->SetStaticMesh(Generated);
 	// The ground (or the keel) at the actor's origin.
 	Mesh->SetRelativeLocation(FVector(0.0, 0.0, bOnCradle ? -Ground * 100.0 : 0.0));
+	Mesh->UpdateBounds();
 	BuiltKey = Key();
 	UE_LOG(LogShip, Display, TEXT("ProceduralShip: %s seed %d, %.1f x %.1f m, %d guns, %d triangles, %.2f s"),
 		*UEnum::GetValueAsString(Type), Seed, Design.Length, Design.Beam, 2 * Ports.Num(), Triangles, FPlatformTime::Seconds() - Start);
