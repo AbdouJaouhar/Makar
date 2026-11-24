@@ -1,0 +1,89 @@
+// Procedural surfaces of the generated ships (Scripts/create_ship_materials.py, Source/Makar/Private/Ship): weathered
+// oak and pine, sail canvas sewn in cloths, laid hemp rope, iron and gilding. The vertex colour is the linear albedo
+// (paint, tar, the plank's own tone); these functions add what lies under a metre: grain, seams, weave, wear.
+#pragma once
+
+float ShipHash(float2 P)
+{
+	P = frac(P * float2(123.34, 456.21));
+	P += dot(P, P + 45.32);
+	return frac(P.x * P.y);
+}
+
+float ShipNoise(float2 P)
+{
+	const float2 I = floor(P);
+	const float2 F = frac(P);
+	const float2 U = F * F * (3.0 - 2.0 * F);
+	const float A = ShipHash(I), B = ShipHash(I + float2(1.0, 0.0));
+	const float C = ShipHash(I + float2(0.0, 1.0)), D = ShipHash(I + float2(1.0, 1.0));
+	return lerp(lerp(A, B, U.x), lerp(C, D, U.x), U.y);
+}
+
+float ShipFbm(float2 P, int Octaves)
+{
+	float Sum = 0.0, Amplitude = 0.5, Norm = 0.0;
+	for (int I = 0; I < Octaves; ++I)
+	{
+		Sum += ShipNoise(P) * Amplitude;
+		Norm += Amplitude;
+		P = P * 2.03 + float2(17.1, 9.3);
+		Amplitude *= 0.5;
+	}
+	return Sum / Norm;
+}
+
+// Wood. UV: U along the grain, V across (metres). WorldPos in cm.
+float3 ShipWood(float2 UV, float3 Color, float3 WorldPos, out float Roughness)
+{
+	// Long streaks along the grain, gently wavering; growth rings cut lengthwise as fine darker lines.
+	const float Warp = ShipFbm(UV * float2(0.35, 2.5), 3);
+	const float Streak = ShipFbm(float2(UV.x * 0.9, UV.y * 26.0 + Warp * 3.0), 4);
+	float Rings = 0.5 + 0.5 * sin(UV.y * 95.0 + Warp * 14.0 + ShipNoise(UV * float2(0.4, 30.0)) * 2.0);
+	Rings = Rings * Rings;
+	const float Tone = lerp(0.78, 1.16, Streak) * (1.0 - 0.07 * Rings);
+	float3 C = Color * Tone;
+	// Weathering: sun-greyed patches and grime, in world space so they cross the planks.
+	const float2 W = WorldPos.xy * 0.0035 + WorldPos.z * float2(0.0021, -0.0017);
+	const float Grey = smoothstep(0.5, 0.8, ShipFbm(W, 4));
+	const float Grime = smoothstep(0.45, 0.85, ShipFbm(W * 2.7 + 5.0, 3));
+	const float Luma = dot(C, float3(0.3, 0.59, 0.11));
+	C = lerp(C, Luma * float3(0.97, 0.98, 1.0) * 1.15, Grey * 0.35);
+	C *= 1.0 - 0.25 * Grime;
+	Roughness = saturate(0.7 + 0.18 * (1.0 - Streak) + 0.1 * Grey);
+	return C;
+}
+
+// Sail canvas. UV: U across the sail along its head (m), V down (m). Cloths 61 cm wide sewn with doubled seams.
+float3 ShipCanvas(float2 UV, float3 Color, out float3 Subsurface, out float Roughness)
+{
+	const float Cloth = UV.x / 0.61;
+	const float Seam = abs(frac(Cloth) - 0.5) * 2.0;
+	const float SeamLine = smoothstep(0.9, 0.97, Seam) * (1.0 - smoothstep(0.985, 1.0, Seam) * 0.5);
+	const float Tone = 0.93 + 0.14 * ShipHash(float2(floor(Cloth), 7.1));
+	const float Weave = (ShipNoise(UV * float2(220.0, 240.0)) - 0.5) * 0.08;
+	const float Stain = lerp(0.82, 1.06, ShipFbm(UV * 0.4 + float2(3.1, 1.7), 4));
+	const float3 C = Color * Tone * (1.0 - 0.2 * SeamLine) * (1.0 + Weave) * Stain;
+	// Light through the canvas: warmer and dimmer, the seams (two layers) darker still.
+	Subsurface = C * float3(0.9, 0.78, 0.55) * (1.0 - 0.55 * SeamLine);
+	Roughness = 0.88;
+	return C;
+}
+
+// Laid rope. UV: U around (0-1), V along (m): three strands twisted.
+float3 ShipRope(float2 UV, float3 Color, out float Roughness)
+{
+	const float Strand = frac(UV.x * 3.0 - UV.y * 22.0);
+	const float Lay = smoothstep(0.0, 0.25, Strand) * smoothstep(1.0, 0.75, Strand);
+	Roughness = 0.85;
+	return Color * lerp(0.55, 1.08, Lay);
+}
+
+// Iron (alpha 0: blackened, a little rust) and gilding or bronze (alpha 1: metallic).
+float3 ShipMetal(float2 UV, float4 Color, float3 WorldPos, out float Metallic, out float Roughness)
+{
+	const float Rust = smoothstep(0.55, 0.85, ShipFbm(WorldPos.xy * 0.02 + WorldPos.z * 0.013, 4)) * (1.0 - Color.a);
+	Metallic = Color.a;
+	Roughness = lerp(lerp(0.55, 0.3, Color.a), 0.85, Rust);
+	return lerp(Color.rgb, float3(0.13, 0.055, 0.025), Rust * 0.6);
+}
