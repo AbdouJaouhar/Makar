@@ -186,7 +186,10 @@ FOceanShoreWaveSample OceanShoreWave(const FOceanShoreData& Shore, const FVector
 	const float Steepness = FMath::Lerp(0.5f, 1.f, Pitch);
 	const float Orbit = FMath::Min(Steepness / FMath::Max(WaveNumber, 1e-4f), 1.5f * Amplitude);
 	const float Crest = 0.5f * (1.f + FMath::Cos(Phase));
-	const float Lip = Amplitude * Crest * Crest * Crest * (1.2f * Pitch * (1.f - Surf) + 0.6f * Surf);
+	// The lip: only the top of the crest pitches forward (Crest^5), thrown up to twice the amplitude ahead as the
+	// wave plunges (= OceanShoreWave).
+	const float Crest2 = Crest * Crest;
+	const float Lip = Amplitude * Crest2 * Crest2 * Crest * (2.2f * Pitch * (1.f - Surf) + 0.8f * Surf);
 	const float Forward = Orbit * FMath::Sin(Phase) + Lip;
 
 	Out.Displacement += FVector3f(TowardShore.X * Forward, TowardShore.Y * Forward, Amplitude * FMath::Cos(Phase));
