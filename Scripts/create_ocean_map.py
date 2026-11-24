@@ -66,10 +66,11 @@ def spawn(cls, location=(0.0, 0.0, 0.0), rotation=(0.0, 0.0, 0.0), label=None):
     return actor
 
 
-# Time of day: the sun's elevation and the compass direction towards it (degrees, X = 0, Y = 90). Late afternoon:
-# low enough for long shadows, warm light through the atmosphere and the palms lit from the side, high enough that the
-# lagoon keeps its turquoise. MAKAR_SUN="elevation,azimuth" overrides it (look development).
-SUN_ELEVATION_DEG, SUN_AZIMUTH_DEG = (float(v) for v in os.environ.get("MAKAR_SUN", "14,-60").split(","))
+# Time of day: the sun's elevation and the direction towards it (degrees, X = 0, Y = 90; X is east and Y north, the
+# trade wind of Shaders/Flora.ush blowing from the east-north-east). 2 pm solar time at the equinox at 17 N: 56 degrees
+# high, in the south-west (azimuth 243 from north). MAKAR_SUN="elevation,azimuth" overrides it (look development;
+# the late afternoon look was "14,-60").
+SUN_ELEVATION_DEG, SUN_AZIMUTH_DEG = (float(v) for v in os.environ.get("MAKAR_SUN", "56,-153").split(","))
 SUN_ROTATION = (0.0, -SUN_ELEVATION_DEG, SUN_AZIMUTH_DEG + 180.0)  # roll, pitch, yaw of the directional light
 
 
@@ -446,7 +447,7 @@ def build():
     world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
     world.get_world_settings().set_editor_property("default_game_mode", load_class("/Script/Makar.MakarViewerGameMode"))
 
-    # --- Sky: late afternoon sun (SUN_ELEVATION_DEG) in a physical atmosphere, real-time sky light, cumulus ---
+    # --- Sky: early afternoon sun (SUN_ELEVATION_DEG) in a physical atmosphere, real-time sky light, cumulus ---
     # From the side of the usual views: the relief, the palms and the waves are modelled by light and shade, with long
     # shadows across the beach, rather than front-lit and flat like a midday holiday photo.
     sun = spawn(unreal.DirectionalLight, (0.0, 0.0, 1000.0), SUN_ROTATION, "Sun")

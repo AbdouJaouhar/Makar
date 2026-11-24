@@ -265,9 +265,10 @@ def build():
     # blue-green travels far and is scattered back, so shallow water over sand reads turquoise
     # and deep water reads saturated blue.
     # Single Layer Water applies these coefficients per CENTIMETRE (checked in-engine: the per-metre
-    # values 0.45 / 0.06 / 0.03 made 6 m of water fully opaque). ---
-    absorption = color(material, "Absorption", (0.009, 0.001, 0.0005), -500, 800)
-    scattering = color(material, "Scattering", (0.0001, 0.0006, 0.0007), -500, 920)
+    # values 0.45 / 0.06 / 0.03 made 6 m of water fully opaque). Red 0.55 per metre (0.9 drowned the sand of the
+    # shallows in olive; reference: the user's Caribbean beach photo, golden sand under clear water). ---
+    absorption = color(material, "Absorption", (0.0055, 0.0008, 0.0004), -500, 800)
+    scattering = color(material, "Scattering", (0.00015, 0.0012, 0.0014), -500, 920)  # doubled green-blue: the shallows turn turquoise within a few metres of the foam (reference photo)
 
     # Thin wave crests let more light through: boost scattering there.
     crest_boost = scalar(material, "CrestScatterBoost", 2.0, -500, 1040)
@@ -286,7 +287,8 @@ def build():
     # Sand stirred up by the breaking waves makes the surf zone milky (OceanSurfTurbidity): strong, neutral to
     # cream scattering and a little absorption of blue by the grains, per cm like the coefficients above.
     # Caribbean beaches of coarse carbonate sand stay clear up to the swash: 2.5 times less than before, which
-    # turned the shallows khaki (iteration 118).
+    # turned the shallows khaki (iteration 118); halved again and whiter (iteration 183: still murky next to the
+    # reference photo, which shows the sand clearly up to the foam line).
     turbidity = custom(
         material, -500, 1320, "Surf Turbidity",
         "return OceanSurfTurbidity(WorldPos, Time, ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, "
@@ -298,8 +300,8 @@ def build():
         "ShoreMapSize": shore_map_size, "SwellHeight": swell_inputs["SwellHeight"],
         "SwellMaxDepth": swell_inputs["SwellMaxDepth"],
     }, turbidity)
-    sand_scattering = color(material, "SurfSandScattering", (0.0024, 0.0023, 0.002), -500, 1440)
-    sand_absorption = color(material, "SurfSandAbsorption", (0.00012, 0.0002, 0.00036), -500, 1520)
+    sand_scattering = color(material, "SurfSandScattering", (0.0011, 0.0011, 0.001), -500, 1440)
+    sand_absorption = color(material, "SurfSandAbsorption", (0.00005, 0.00008, 0.00015), -500, 1520)
     milky_scatter = node(material, unreal.MaterialExpressionMultiply, -300, 1440)
     connect(sand_scattering, milky_scatter, "A")
     connect(turbidity, milky_scatter, "B")
