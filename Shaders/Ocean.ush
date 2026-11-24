@@ -1121,7 +1121,7 @@ float OceanSurfFoam(float2 PosM, float Time, Texture2D ShoreMap, SamplerState Sh
 		// line of foam along the sand), then a thinner lace over the sheet behind it.
 		const float Edge = smoothstep(-0.004, 0.002, Water) * (1.0 - smoothstep(0.03, 0.08 + 0.06 * Ragged, Water));
 		const float Sheet = smoothstep(0.0, 0.01, Water) * (1.0 - smoothstep(0.1, 0.35, Water));
-		const float Swash = max(Edge * lerp(0.7, 1.0, Rising), Sheet * lerp(0.3, 0.55, Rising));
+		const float Swash = max(Edge * lerp(0.7, 1.0, Rising), Sheet * lerp(0.5, 0.8, Rising));
 		const float InSwash = 1.0 - smoothstep(0.3, 0.6, Depth);
 		if (Swash * InSwash > Foam)
 		{
@@ -1406,6 +1406,29 @@ float OceanFoamCoverage(float2 PosM, float Amount, out float Height)
 	return Coverage;
 }
 
+// The fibrous net of foam dragged by the water (the reference: breaking waves seen from above): ridged noise, its
+// ridges the veins, averaged along the flow (a line integral convolution), so the veins are drawn out along the
+// direction the water moves, perpendicular to the crest. Sampling along Flow instead of rotating the coordinates
+// keeps the pattern continuous (a per-pixel rotation of coordinates of hundreds of metres made it jump). 0..1.
+float OceanFoamStreaks(float2 P, float2 Flow, float Footprint)
+{
+	float Coarse = 0.0, Fine = 0.0;
+	[unroll] for (int I = 0; I < 6; ++I)
+	{
+		const float T = (I + 0.5) / 6.0 - 0.5;
+		const float2 A = P + Flow * (T * 1.1);
+		const float2 B = P + Flow * (T * 0.35);
+		Coarse += 1.0 - abs(2.0 * OceanGradientNoise(A / 0.22 + 4.7) - 1.0);
+		Fine += 1.0 - abs(2.0 * OceanGradientNoise(B / 0.07 + 9.3) - 1.0);
+	}
+	Coarse /= 6.0;
+	Fine /= 6.0;
+	// Sharpen the averaged ridges back into veins; the fine net only where it spans a few pixels.
+	const float Veins = pow(saturate(Coarse * 1.3 - 0.15), 2.5);
+	const float Net = pow(saturate(Fine * 1.3 - 0.15), 3.0) * saturate(0.01 / Footprint - 1.0);
+	return saturate(Veins + 0.7 * Net);
+}
+
 // Signed distance (in cells) outside the union of round holes, one per cell (P in cells): > 0 in the foam, < 0 in a
 // hole. Open 0..1: the holes' size, from none to merging into a thin lace.
 float OceanBubbleField(float2 P, float Open, uint Salt)
@@ -1464,6 +1487,10 @@ float OceanFoamLace(float2 PosM, float Amount, float Age, float2 Flow, float Shi
 	// The small bubbles only where they span a few pixels (smaller, they crawled as noise).
 	const float SmallDetail = saturate(0.006 / Footprint - 1.0);
 	float Lace = BigFoam * lerp(1.0, SmallFoam, SmallDetail * lerp(0.4, 0.9, Open));
+	// As it ages and the water drags it, the froth turns into a net of streaks along the flow; fresh froth keeps its
+	// bubbles, old foam is mostly the streaked veins.
+	const float Streaks = OceanFoamStreaks(P, Flow, Footprint);
+	Lace = lerp(Lace, max(Streaks, 0.4 * Lace), smoothstep(0.15, 0.6, Age));
 	// Rafts: old foam breaks up into islands and strands with clear water between them, more of it as it ages.
 	const float Rafts = OceanFractalNoise(P + 11.0, 1.4, 4, 0.6) + 0.5;
 	const float Keep = 1.0 - smoothstep(0.35 + 0.5 * (1.0 - Age), 0.55 + 0.5 * (1.0 - Age), 1.0 - Rafts);
