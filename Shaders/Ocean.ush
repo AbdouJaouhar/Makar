@@ -1621,6 +1621,7 @@ float3 OceanPixel(float3 WorldPos,
 	Texture2D Moments1, SamplerState Moments1Sampler,
 	Texture2D Moments2, SamplerState Moments2Sampler,
 	Texture2D FoamMap, SamplerState FoamMapSampler, float3 FoamMapOrigin, float FoamMapSize,
+	Texture2D ShoreFoamMap, SamplerState ShoreFoamMapSampler, float3 ShoreFoamMapOrigin, float ShoreFoamMapSize,
 	Texture2D ShoreMap, SamplerState ShoreMapSampler, float3 ShoreMapOrigin, float ShoreMapSize,
 	float SignificantHeight0, float SignificantHeight1, float SignificantHeight2,
 	float Time, float SwellHeight, float SwellPeriod, float SwellMaxDepth,
@@ -1684,6 +1685,20 @@ float3 OceanPixel(float3 WorldPos,
 		const float2 MapFoam = FoamMap.Sample(FoamMapSampler, MapUv).rg;
 		FoamAmount = lerp(FoamAmount, saturate(MapFoam.r), Inside);
 		FoamAge = lerp(FoamAge, saturate(MapFoam.g / 4.0), Inside);
+	}
+	// Over the shore, near the camera: the fine map (20 cm) replaces the coarse map's blurred shore foam; the coarse
+	// map's whitecaps stay beyond the surf zone.
+	if (ShoreFoamMapSize > 0.0)
+	{
+		const float2 FineUv = (PosM - ShoreFoamMapOrigin.xy) / ShoreFoamMapSize;
+		const float2 FineEdge = min(FineUv, 1.0 - FineUv);
+		const float InsideFine = saturate(min(FineEdge.x, FineEdge.y) / 0.1);
+		const float InSurf = (1.0 - smoothstep(0.8 * SwellMaxDepth, SwellMaxDepth, Depth)) * InsideFine;
+		const float2 Fine = ShoreFoamMap.Sample(ShoreFoamMapSampler, FineUv).rg;
+		const float Coarse = FoamAmount * (1.0 - InSurf);
+		const float FineAmount = saturate(Fine.r) * InsideFine;
+		FoamAge = FineAmount > Coarse ? lerp(FoamAge, saturate(Fine.g / 4.0), InsideFine) : FoamAge;
+		FoamAmount = max(Coarse, FineAmount);
 	}
 	// Swell breaking on the beach: its normal comes from finite differences of the displaced surface
 	// (it can overhang, so slopes alone are not enough); the FFT slopes are added on top.

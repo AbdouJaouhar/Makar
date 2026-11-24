@@ -116,6 +116,10 @@ def build():
     foam_map = texture(material, "FoamMap", placeholder, -1600, 1560)
     foam_map_origin = color(material, "FoamMapOrigin", (0.0, 0.0, 0.0), -1300, 1160)
     foam_map_size = scalar(material, "FoamMapSize", 0.0, -1300, 1240)
+    # Its fine counterpart over the shore (20 cm texels); ShoreFoamMapSize 0 disables it.
+    shore_foam_map = texture(material, "ShoreFoamMap", placeholder, -1600, 1630)
+    shore_foam_map_origin = color(material, "ShoreFoamMapOrigin", (0.0, 0.0, 0.0), -1300, 2040)
+    shore_foam_map_size = scalar(material, "ShoreFoamMapSize", 0.0, -1300, 2120)
     # Coastal data from AOceanBathymetry (depth, distance to shore, direction); ShoreMapSize 0 = open sea.
     shore_map = texture(material, "ShoreMap", placeholder, -1600, 1700)
     shore_map_origin = color(material, "ShoreMapOrigin", (0.0, 0.0, 0.0), -1300, 1320)
@@ -173,6 +177,7 @@ def build():
         "Deriv0, Deriv0Sampler, Deriv1, Deriv1Sampler, Deriv2, Deriv2Sampler, "
         "Moments0, Moments0Sampler, Moments1, Moments1Sampler, Moments2, Moments2Sampler, "
         "FoamMap, FoamMapSampler, FoamMapOrigin, FoamMapSize, "
+        "ShoreFoamMap, ShoreFoamMapSampler, ShoreFoamMapOrigin, ShoreFoamMapSize, "
         "ShoreMap, ShoreMapSampler, ShoreMapOrigin, ShoreMapSize, "
         "SignificantHeight0, SignificantHeight1, SignificantHeight2, "
         "Time, SwellHeight, SwellPeriod, SwellMaxDepth, "
@@ -180,6 +185,7 @@ def build():
         "Foam, Crest, Roughness, Translucency, Glitter);",
         ["WorldPos", "Disp0", "Disp1", "Disp2", "Deriv0", "Deriv1", "Deriv2", "Moments0", "Moments1", "Moments2",
          "FoamMap", "FoamMapOrigin", "FoamMapSize",
+         "ShoreFoamMap", "ShoreFoamMapOrigin", "ShoreFoamMapSize",
          "ShoreMap", "ShoreMapOrigin", "ShoreMapSize",
          "SignificantHeight0", "SignificantHeight1", "SignificantHeight2",
          "Time", "SwellHeight", "SwellPeriod", "SwellMaxDepth",
@@ -198,6 +204,8 @@ def build():
         "Deriv0": deriv[0], "Deriv1": deriv[1], "Deriv2": deriv[2],
         "Moments0": moments[0], "Moments1": moments[1], "Moments2": moments[2],
         "FoamMap": foam_map, "FoamMapOrigin": foam_map_origin, "FoamMapSize": foam_map_size,
+        "ShoreFoamMap": shore_foam_map, "ShoreFoamMapOrigin": shore_foam_map_origin,
+        "ShoreFoamMapSize": shore_foam_map_size,
         "ShoreMap": shore_map, "ShoreMapOrigin": shore_map_origin, "ShoreMapSize": shore_map_size,
         "SignificantHeight0": sig_height[0], "SignificantHeight1": sig_height[1],
         "SignificantHeight2": sig_height[2], **swell_inputs,

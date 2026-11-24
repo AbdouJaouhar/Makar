@@ -111,6 +111,7 @@ private:
 	TUniquePtr<FOceanFrame> FrontFrame; // published: rendered and queried
 	TUniquePtr<FOceanFrame> BackFrame;  // being written by the worker task
 	TUniquePtr<FOceanFoamMap> FoamMap;  // advanced by the worker task, after the waves
+	TUniquePtr<FOceanFoamMap> ShoreFoamMap; // the fine map of the shore, likewise
 
 	/** Coastal data from the level's AOceanBathymetry, if any: calms the waves in shallow water. */
 	TSharedPtr<const FOceanShoreData> ShoreData;
@@ -132,6 +133,10 @@ private:
 	/** World-space foam around the camera, see FOceanFoamMap. */
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> FoamMapTexture;
+
+	/** The fine foam map of the shore. */
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> ShoreFoamMapTexture;
 
 	/** Owned by the AOceanBathymetry; see FOceanShoreData. */
 	UPROPERTY(Transient)

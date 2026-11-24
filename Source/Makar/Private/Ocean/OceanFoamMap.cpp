@@ -104,10 +104,14 @@ void FOceanFoamMap::Simulate(FOceanFrame& Frame, const FOceanSettings& Settings,
 	{
 		return;
 	}
+	if (bShore && !Shore)
+	{
+		return;
+	}
 	for (int32 Index = 0; Index < FMath::Min(Frame.Cascades.Num(), FOceanSimulation::NumCascades); ++Index)
 	{
 		const FOceanCascadeFrame& Cascade = Frame.Cascades[Index];
-		if (CascadeWeights[Index] > 0.f && (Cascade.JacobianTerms.Num() != Cascade.Resolution * Cascade.Resolution || Cascade.Resolution <= 0))
+		if (!bShore && CascadeWeights[Index] > 0.f && (Cascade.JacobianTerms.Num() != Cascade.Resolution * Cascade.Resolution || Cascade.Resolution <= 0))
 		{
 			return;
 		}
@@ -152,8 +156,13 @@ void FOceanFoamMap::Simulate(FOceanFrame& Frame, const FOceanSettings& Settings,
 			const float Advected = SampleFoam(FromX, FromY);
 			const float AdvectedAge = SampleAge(FromX, FromY);
 
-			const float Jacobian = CombinedJacobian(Frame, Shore, PositionM);
-			float Created = FMath::Clamp((Settings.FoamThreshold - Jacobian) * Settings.FoamIntensity * CreationGain, 0.f, 1.f);
+			// The whitecaps of the open sea: only in the coarse map.
+			float Created = 0.f;
+			if (!bShore)
+			{
+				const float Jacobian = CombinedJacobian(Frame, Shore, PositionM);
+				Created = FMath::Clamp((Settings.FoamThreshold - Jacobian) * Settings.FoamIntensity * CreationGain, 0.f, 1.f);
+			}
 			if (Shore)
 			{
 				// Whitewater of the waves breaking on the beach; it lingers, rides the water and drifts.
@@ -170,9 +179,19 @@ void FOceanFoamMap::Simulate(FOceanFrame& Frame, const FOceanSettings& Settings,
 	Swap(Foam, Next);
 	Swap(Age, NextAge);
 
-	BuildMips(Frame);
-	Frame.FoamMapOrigin = FVector2f(float(OriginTexel.X), float(OriginTexel.Y)) * TexelSizeM;
-	Frame.FoamMapSize = Size * TexelSizeM;
+	const FVector2f Origin = FVector2f(float(OriginTexel.X), float(OriginTexel.Y)) * TexelSizeM;
+	if (bShore)
+	{
+		BuildMips(Frame.ShoreFoamMapMips);
+		Frame.ShoreFoamMapOrigin = Origin;
+		Frame.ShoreFoamMapSize = Size * TexelSizeM;
+	}
+	else
+	{
+		BuildMips(Frame.FoamMapMips);
+		Frame.FoamMapOrigin = Origin;
+		Frame.FoamMapSize = Size * TexelSizeM;
+	}
 }
 
 void FOceanFoamMap::Recenter(const FIntPoint& NewOrigin)
@@ -213,7 +232,7 @@ float FOceanFoamMap::SampleGrid(const TArray<float>& Grid, float X, float Y) con
 	const int32 X0 = int32(FloorX);
 	const int32 Y0 = int32(FloorY);
 
-	auto At = [&Grid](int32 TexelX, int32 TexelY)
+	auto At = [&Grid, this](int32 TexelX, int32 TexelY)
 	{
 		return TexelX >= 0 && TexelX < Size && TexelY >= 0 && TexelY < Size ? Grid[TexelY * Size + TexelX] : 0.f;
 	};
@@ -222,16 +241,16 @@ float FOceanFoamMap::SampleGrid(const TArray<float>& Grid, float X, float Y) con
 	return FMath::Lerp(Bottom, Top, FracY);
 }
 
-void FOceanFoamMap::BuildMips(FOceanFrame& Frame) const
+void FOceanFoamMap::BuildMips(TArray<TArray<FFloat16Color>>& Mips) const
 {
-	Frame.FoamMapMips.SetNum(NumMips);
+	Mips.SetNum(NumMips);
 
 	TArray<float> Level = Foam;
 	TArray<float> LevelAge = Age;
 	int32 LevelSize = Size;
 	for (int32 Mip = 0; Mip < NumMips; ++Mip)
 	{
-		TArray<FFloat16Color>& Out = Frame.FoamMapMips[Mip];
+		TArray<FFloat16Color>& Out = Mips[Mip];
 		Out.SetNumUninitialized(LevelSize * LevelSize);
 		for (int32 Index = 0; Index < LevelSize * LevelSize; ++Index)
 		{

@@ -45,6 +45,11 @@ struct FOceanFrame
 	FVector2f FoamMapOrigin = FVector2f::ZeroVector;
 	float FoamMapSize = 0.f;
 
+	/** The fine foam map of the shore around the camera (FOceanFoamMap with bShore), the same layout. */
+	TArray<TArray<FFloat16Color>> ShoreFoamMapMips;
+	FVector2f ShoreFoamMapOrigin = FVector2f::ZeroVector;
+	float ShoreFoamMapSize = 0.f;
+
 	/** Time the worker spent computing this frame (waves + foam), ms. */
 	float WorkerMs = 0.f;
 };

@@ -26,6 +26,9 @@ namespace OceanParams
 	const FName FoamMap(TEXT("FoamMap"));
 	const FName FoamMapOrigin(TEXT("FoamMapOrigin"));
 	const FName FoamMapSize(TEXT("FoamMapSize"));
+	const FName ShoreFoamMap(TEXT("ShoreFoamMap"));
+	const FName ShoreFoamMapOrigin(TEXT("ShoreFoamMapOrigin"));
+	const FName ShoreFoamMapSize(TEXT("ShoreFoamMapSize"));
 	const FName ShoreMap(TEXT("ShoreMap"));
 	const FName ShoreMapOrigin(TEXT("ShoreMapOrigin"));
 	const FName ShoreMapSize(TEXT("ShoreMapSize"));
@@ -217,13 +220,19 @@ void AOceanActor::InitializeSimulation()
 			MomentTextures.Add(CreateOceanTexture(Size, NumMips));
 		}
 	}
-	if (!FoamMapTexture)
-	{
-		FoamMapTexture = CreateOceanTexture(FOceanFoamMap::Size, FOceanFoamMap::NumMips);
-	}
 	CreateGpuCascade();
 	// New sea state: start the foam from scratch (the worker is idle, see WaitForSimulation above).
 	FoamMap = MakeUnique<FOceanFoamMap>();
+	// The shore's foam on a grid of 20 cm over ~100 m around the camera (the coarse map's 75 cm blur the swash).
+	ShoreFoamMap = MakeUnique<FOceanFoamMap>(512, 0.2f, true);
+	if (!FoamMapTexture)
+	{
+		FoamMapTexture = CreateOceanTexture(FoamMap->Size, FoamMap->NumMips);
+	}
+	if (!ShoreFoamMapTexture)
+	{
+		ShoreFoamMapTexture = CreateOceanTexture(ShoreFoamMap->Size, ShoreFoamMap->NumMips);
+	}
 
 	// Coastline, if the level has one.
 	ShoreData.Reset();
@@ -263,6 +272,10 @@ void AOceanActor::UpdateMaterialParameters()
 	if (FoamMapTexture)
 	{
 		MaterialInstance->SetTextureParameterValue(OceanParams::FoamMap, FoamMapTexture);
+	}
+	if (ShoreFoamMapTexture)
+	{
+		MaterialInstance->SetTextureParameterValue(OceanParams::ShoreFoamMap, ShoreFoamMapTexture);
 	}
 	// ShoreMapSize 0 tells the shader there is no coast: deep water everywhere.
 	if (ShoreData && ShoreTexture)
@@ -485,17 +498,22 @@ void AOceanActor::Tick(float DeltaSeconds)
 		FOceanSimulation* Sim = Simulation.Get();
 		FOceanFrame* Target = BackFrame.Get();
 		FOceanFoamMap* Foam = FoamMap.Get();
+		FOceanFoamMap* ShoreFoam = ShoreFoamMap.Get();
 		const FOceanSettings FoamSettings = Settings;
 		const TSharedPtr<const FOceanShoreData> Shore = ShoreData; // keeps the data alive for the task
 		// The ocean mesh is centred on the camera (or on the actor in the editor).
 		const FVector2f CenterM = FVector2f(FVector2D(OceanMesh->GetComponentLocation()) * 0.01);
-		PendingTask = UE::Tasks::Launch(UE_SOURCE_LOCATION, [Sim, Target, Foam, FoamSettings, Shore, CenterM, Time, Delta]()
+		PendingTask = UE::Tasks::Launch(UE_SOURCE_LOCATION, [Sim, Target, Foam, ShoreFoam, FoamSettings, Shore, CenterM, Time, Delta]()
 		{
 			const double Start = FPlatformTime::Seconds();
 			Sim->Simulate(Time, Delta, *Target);
 			if (Foam)
 			{
 				Foam->Simulate(*Target, FoamSettings, Shore.Get(), CenterM, Delta);
+			}
+			if (ShoreFoam)
+			{
+				ShoreFoam->Simulate(*Target, FoamSettings, Shore.Get(), CenterM, Delta);
 			}
 			Target->WorkerMs = float((FPlatformTime::Seconds() - Start) * 1000.0);
 		});
@@ -627,6 +645,12 @@ void AOceanActor::UploadFrame(const FOceanFrame& Frame)
 		UploadMips(FoamMapTexture, Frame.FoamMapMips);
 		MaterialInstance->SetVectorParameterValue(OceanParams::FoamMapOrigin, FLinearColor(Frame.FoamMapOrigin.X, Frame.FoamMapOrigin.Y, 0.f, 0.f));
 		MaterialInstance->SetScalarParameterValue(OceanParams::FoamMapSize, Frame.FoamMapSize);
+	}
+	if (ShoreFoamMapTexture && MaterialInstance && Frame.ShoreFoamMapMips.Num() > 0)
+	{
+		UploadMips(ShoreFoamMapTexture, Frame.ShoreFoamMapMips);
+		MaterialInstance->SetVectorParameterValue(OceanParams::ShoreFoamMapOrigin, FLinearColor(Frame.ShoreFoamMapOrigin.X, Frame.ShoreFoamMapOrigin.Y, 0.f, 0.f));
+		MaterialInstance->SetScalarParameterValue(OceanParams::ShoreFoamMapSize, Frame.ShoreFoamMapSize);
 	}
 	OceanMesh->SetVisibility(true);
 }

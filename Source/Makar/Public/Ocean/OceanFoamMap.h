@@ -20,9 +20,20 @@ struct FOceanShoreData;
 class MAKAR_API FOceanFoamMap
 {
 public:
-	static constexpr int32 Size = 512;
-	static constexpr float TexelSizeM = 0.75f;
-	static constexpr int32 NumMips = 10; // 512 -> 1
+	/**
+	 * InSize texels a side of InTexelSizeM metres. bInShore: the fine map of the shore (the coarse one blurs the swash
+	 * into a smudge), made of the shore waves' foam only (the whitecaps are the coarse map's) and simulated only
+	 * where the shore waves reach; it fills Frame.ShoreFoamMap* instead of Frame.FoamMap*.
+	 */
+	explicit FOceanFoamMap(int32 InSize = 512, float InTexelSizeM = 0.75f, bool bInShore = false)
+		: Size(InSize), TexelSizeM(InTexelSizeM), NumMips(FMath::FloorLog2(uint32(InSize)) + 1), bShore(bInShore)
+	{
+	}
+
+	const int32 Size;
+	const float TexelSizeM;
+	const int32 NumMips;
+	const bool bShore;
 
 	/**
 	 * Advances the foam by DeltaTime around CenterM (metres) and writes the map into Frame. Worker-thread safe.
@@ -36,7 +47,7 @@ private:
 	float SampleFoam(float X, float Y) const;
 	float SampleAge(float X, float Y) const;
 	float SampleGrid(const TArray<float>& Grid, float X, float Y) const;
-	void BuildMips(FOceanFrame& Frame) const;
+	void BuildMips(TArray<TArray<FFloat16Color>>& Mips) const;
 
 	TArray<float> Foam;
 	TArray<float> Next;
