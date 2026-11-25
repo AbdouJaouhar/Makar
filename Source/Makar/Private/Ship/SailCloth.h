@@ -127,6 +127,11 @@ struct FShipSail
 	/** Each point's movement as designed (MaxSwing, fading to nothing at the held edges), and as fitted. */
 	TArray<float> Swing;
 	TArray<float> Amplitude;
+	/** The same sail with its belly gone (the wind out of it), and the share of the way to it each point may go. */
+	TArray<FVector3f> Flat;
+	TArray<float> Slack;
+	/** The way the sail bellies (its canvas' mean normal, towards the belly). */
+	FVector3f BellyDir = FVector3f::ForwardVector;
 
 	int32 Index(int32 I, int32 J) const { return J * (NU + 1) + I; }
 };
@@ -176,8 +181,12 @@ public:
 	void Init(TArray<FShipSail> InSails, TSharedPtr<const FShipVoxels> InVerify);
 	bool IsEmpty() const { return Sails.Num() == 0; }
 
-	/** The sails at Time, under a wind of Strength (0 to 1: the share of their movement). */
-	void Evaluate(float Time, float Strength);
+	/**
+	 * The sails at Time, under a wind of Strength (0 to 1: the share of their movement) going towards WindDir (ship
+	 * space): each fills when the wind is on its back, empties and flogs as the wind comes along it or onto its face.
+	 * ForcedFill (0 to 1) sets every sail's filling instead (diagnostics).
+	 */
+	void Evaluate(float Time, float Strength, const FVector3f& WindDir = FVector3f::ForwardVector, float ForcedFill = -1.f);
 
 	/** Every sail merged: the triangles, UVs and colours once; positions (cm) and normals each frame. */
 	void GetTopology(TArray<int32>& OutTriangles, TArray<FVector2D>& OutUV, TArray<FColor>& OutColors) const;
@@ -198,6 +207,9 @@ private:
 		/** Metres along the canvas from its luff, and down from its head: where each point is in the waves. */
 		TArray<float> Along, Down;
 		float Phase = 0.f;
+		/** How full it is (1: filled; 0: the wind out of it), eased towards what the wind gives it. */
+		float Fill = 1.f;
+		float LastTime = -1.f;
 	};
 
 	void UpdateNormals(const FShipSail& Spec, const TArray<FVector3f>& X, TArray<FVector3f>& OutNormal) const;

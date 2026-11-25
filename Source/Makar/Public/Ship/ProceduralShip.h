@@ -96,6 +96,12 @@ private:
 	float SimulationTime = 0.f;
 	/** The wind's strength for the sails' movement (0 to 1). */
 	float SailStrength() const { return FMath::Clamp(0.35f + WindSpeed / 12.f, 0.35f, 1.f); }
+	/** Where the wind goes, in ship space (the ship does not move yet: true wind = apparent wind). */
+	FVector3f WindTowards() const
+	{
+		const float From = FMath::DegreesToRadians(WindFrom);
+		return -FVector3f(FMath::Cos(From), FMath::Sin(From), 0.f);
+	}
 	void UpdateSails();
 	int32 Ticket = 0;
 	void ApplyResult(struct FShipBuildResult& Result);

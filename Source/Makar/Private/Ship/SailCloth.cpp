@@ -1012,6 +1012,159 @@ ShipSails::FFitReport ShipSails::Fit(TArray<FShipSail>& Sails, const TArray<FShi
 		PerSail += FString::Printf(TEXT(" %d/%.0f%%"), Fails, SailMeant > 0.0 ? 100.0 * SailCut / SailMeant : 0.0);
 	}
 	Report.Reduced = Meant > 0.0 ? float(Cut / Meant) : 0.f;
+
+	// 3. The wind out of the sails: each point's place with the belly gone (straight between head and foot, the foot
+	// straight between its clews, in the sail's own plane), and the share of the way there it may go while it still
+	// clears everything by Keep plus its movement (another sail's movement too).
+	int32 Slackened = 0, SlackPoints = 0;
+	for (int32 S = 0; S < N; ++S)
+	{
+		FShipSail& Spec = Sails[S];
+		const int32 Count = Spec.Rest.Num();
+		const FVector3f B = Belly[S];
+		Spec.BellyDir = B;
+		Spec.Flat = Spec.Rest;
+		for (int32 I = 0; I <= Spec.NU; ++I)
+		{
+			const FVector3f Head = Spec.Rest[Spec.Index(I, 0)];
+			const FVector3f Foot = Spec.Rest[Spec.Index(I, Spec.NV)];
+			for (int32 J = 0; J <= Spec.NV; ++J)
+			{
+				const int32 V = Spec.Index(I, J);
+				if (Spec.Pinned[V])
+				{
+					continue;
+				}
+				// The foot stays where it was fitted (it clears the tops and rails as it is).
+				const FVector3f Chord = FMath::Lerp(Head, Foot, float(J) / Spec.NV);
+				Spec.Flat[V] = Spec.Rest[V] - B * FVector3f::DotProduct(Spec.Rest[V] - Chord, B);
+			}
+		}
+		Spec.Slack.Init(0.f, Count);
+		ParallelFor(Count, [&](int32 V)
+		{
+			if (Spec.Pinned[V])
+			{
+				return;
+			}
+			const FVector3f Way = Spec.Flat[V] - Spec.Rest[V];
+			if (Way.Size() < 0.02f)
+			{
+				Spec.Slack[V] = 1.f;
+				return;
+			}
+			float Allowed = 0.f;
+			for (const float K : { 0.125f, 0.25f, 0.375f, 0.5f, 0.625f, 0.75f, 0.875f, 1.f })
+			{
+				const FNear Near = Measure(S, Spec.Rest[V] + Way * K, MostSwing * 2.f + Keep + 0.5f, true);
+				const float Need = Keep + Spec.Amplitude[V];
+				if (Near.Solid < Need || Near.Sail < Need + Near.OtherSwing + 0.1f)
+				{
+					break;
+				}
+				Allowed = K;
+			}
+			Spec.Slack[V] = Allowed;
+		});
+		// Facets: their way to the empty shape checked too (a rope between two points, a block between samples).
+		{
+			TArray<float> FacetSlack;
+			FacetSlack.Init(1.f, Spec.NU * Spec.NV);
+			ParallelFor(Spec.NU * Spec.NV, [&](int32 F)
+			{
+				int32 C[4];
+				FacetCorners(Spec, F, C);
+				float NeedA = 0.f;
+				for (const int32 V : C)
+				{
+					NeedA = FMath::Max(NeedA, Spec.Amplitude[V]);
+				}
+				float Allowed = 0.f;
+				for (const float K : { 0.125f, 0.25f, 0.375f, 0.5f, 0.625f, 0.75f, 0.875f, 1.f })
+				{
+					FVector3f Q[4];
+					for (int32 Corner = 0; Corner < 4; ++Corner)
+					{
+						Q[Corner] = FMath::Lerp(Spec.Rest[C[Corner]], Spec.Flat[C[Corner]], K);
+					}
+					FVector3f Away;
+					if (CapsuleRoom(S, Q, Away) < Keep + NeedA)
+					{
+						break;
+					}
+					const float Spacing = FMath::Max(FMath::Max((Q[1] - Q[0]).Size(), (Q[2] - Q[3]).Size()), FMath::Max((Q[3] - Q[0]).Size(), (Q[2] - Q[1]).Size())) / 3.f;
+					bool bClear = true;
+					for (int32 U = 0; U < 3 && bClear; ++U)
+					{
+						for (int32 W = 0; W < 3 && bClear; ++W)
+						{
+							const FVector3f P = FMath::Lerp(FMath::Lerp(Q[0], Q[1], (U + 0.5f) / 3.f), FMath::Lerp(Q[3], Q[2], (U + 0.5f) / 3.f), (W + 0.5f) / 3.f);
+							const FNear Near = Measure(S, P, MostSwing * 2.f + Keep + 0.5f, false);
+							const float Need = Keep + NeedA + Spacing * 0.25f;
+							bClear = Near.Solid >= Need && Near.Sail >= Need + Near.OtherSwing + 0.1f;
+						}
+					}
+					if (!bClear)
+					{
+						break;
+					}
+					Allowed = K;
+				}
+				FacetSlack[F] = Allowed;
+			});
+			for (int32 F = 0; F < FacetSlack.Num(); ++F)
+			{
+				int32 C[4];
+				FacetCorners(Spec, F, C);
+				for (const int32 V : C)
+				{
+					if (!Spec.Pinned[V])
+					{
+						Spec.Slack[V] = FMath::Min(Spec.Slack[V], FacetSlack[F]);
+					}
+				}
+			}
+		}
+		// Smooth: no point empties much more than its neighbour (a crease would show).
+		for (int32 Iteration = 0; Iteration < Spec.NU + Spec.NV; ++Iteration)
+		{
+			bool bChanged = false;
+			for (int32 J = 0; J <= Spec.NV; ++J)
+			{
+				for (int32 I = 0; I <= Spec.NU; ++I)
+				{
+					const int32 V = Spec.Index(I, J);
+					const int32 Nb[4][2] = { { I - 1, J }, { I + 1, J }, { I, J - 1 }, { I, J + 1 } };
+					for (const auto& A : Nb)
+					{
+						if (A[0] < 0 || A[1] < 0 || A[0] > Spec.NU || A[1] > Spec.NV)
+						{
+							continue;
+						}
+						const int32 W = Spec.Index(A[0], A[1]);
+						const float Limit = Spec.Slack[W] + 0.25f;
+						if (!Spec.Pinned[W] && Spec.Slack[V] > Limit + 1e-4f)
+						{
+							Spec.Slack[V] = Limit;
+							bChanged = true;
+						}
+					}
+				}
+			}
+			if (!bChanged)
+			{
+				break;
+			}
+		}
+		for (int32 V = 0; V < Count; ++V)
+		{
+			if (!Spec.Pinned[V] && (Spec.Flat[V] - Spec.Rest[V]).Size() >= 0.02f)
+			{
+				++SlackPoints;
+				Slackened += Spec.Slack[V] >= 0.99f ? 1 : 0;
+			}
+		}
+	}
 	TArray<FString> Moves;
 	for (int32 S = 0; S < N; ++S)
 	{
@@ -1044,7 +1197,7 @@ ShipSails::FFitReport ShipSails::Fit(TArray<FShipSail>& Sails, const TArray<FShi
 			Moves.Add(FString::Printf(TEXT("sail %d point %d,%d moved %.2f m (%.1f %.1f %.1f)->(%.1f %.1f %.1f), last by %s"), S, Most % (Sails[S].NU + 1), Most / (Sails[S].NU + 1), MostSize, From.X, From.Y, From.Z, To.X, To.Y, To.Z, *What));
 		}
 	}
-	Report.Text = FString::Printf(TEXT("sails fitted in %.0f ms (setup %.0f, passes %.0f, rooms %.0f; %d passes, %d moves): shape fails %d, movement cut by half on %.1f%% of the canvas (by sail, fails/cut:%s)"),
+	Report.Text = FString::Printf(TEXT("%d of %d bellied points may empty fully; "), Slackened, SlackPoints) + FString::Printf(TEXT("sails fitted in %.0f ms (setup %.0f, passes %.0f, rooms %.0f; %d passes, %d moves): shape fails %d, movement cut by half on %.1f%% of the canvas (by sail, fails/cut:%s)"),
 		(FPlatformTime::Seconds() - Start) * 1000.0, (PassesStart - Start) * 1000.0, (RoomsStart - PassesStart) * 1000.0, (FPlatformTime::Seconds() - RoomsStart) * 1000.0, Passes, Moved, Report.ShapeFails, Report.Reduced * 100.f, *PerSail);
 	{
 		Report.Text += FString::Printf(TEXT("; cut by: point near solid %d, point near sail %d, rope through facet %d, facet near solid %d, facet near sail %d, smoothing %d"),
@@ -1160,13 +1313,33 @@ void FSailAnimation::UpdateNormals(const FShipSail& Spec, const TArray<FVector3f
 	}
 }
 
-void FSailAnimation::Evaluate(float Time, float Strength)
+void FSailAnimation::Evaluate(float Time, float Strength, const FVector3f& WindDir, float ForcedFill)
 {
 	Strength = FMath::Clamp(Strength, 0.f, 1.f);
+	const FVector3f Wind = WindDir.GetSafeNormal();
 	ParallelFor(Sails.Num(), [&](int32 Index)
 	{
 		FSailState& S = Sails[Index];
 		const FShipSail& Spec = S.Spec;
+		// How the wind takes it: on its back, it fills; along it, it empties; on its face, it lies flat. The sail
+		// follows over about a second.
+		float Target = ForcedFill;
+		if (Target < 0.f)
+		{
+			Target = FMath::SmoothStep(-0.05f, 0.35f, FVector3f::DotProduct(Wind, Spec.BellyDir)) * FMath::SmoothStep(0.05f, 0.3f, Strength);
+		}
+		if (ForcedFill >= 0.f || S.LastTime < 0.f || Time < S.LastTime)
+		{
+			S.Fill = Target;
+		}
+		else
+		{
+			S.Fill = FMath::FInterpTo(S.Fill, Target, FMath::Min(Time - S.LastTime, 0.1f), 1.5f);
+		}
+		S.LastTime = Time;
+		const float Empty = 1.f - S.Fill;
+		// A full sail is taut: it ripples; an empty one flogs (its whole movement).
+		const float Flog = 0.45f + 0.55f * Empty;
 		// Waves weighed 0.5 + 0.3 + 0.2: the sum never exceeds 1, so no point ever goes further than its amplitude.
 		constexpr float W1 = UE_TWO_PI * 0.55f, K1 = UE_TWO_PI / 5.f;   // the long flutter running aft through the canvas
 		constexpr float W2 = UE_TWO_PI * 1.3f, K2 = UE_TWO_PI / 2.2f;   // the short ripple on top of it
@@ -1174,16 +1347,17 @@ void FSailAnimation::Evaluate(float Time, float Strength)
 		const float Breath = FMath::Sin(W3 * Time + S.Phase);
 		for (int32 V = 0; V < S.X.Num(); ++V)
 		{
-			const float A = Spec.Amplitude[V] * Strength;
+			const FVector3f Shape = Spec.Slack.Num() == S.X.Num() ? FMath::Lerp(Spec.Rest[V], Spec.Flat[V], Empty * Spec.Slack[V]) : Spec.Rest[V];
+			const float A = Spec.Amplitude[V] * FMath::Max(Strength, 0.35f) * Flog;
 			if (A <= 0.f)
 			{
-				S.X[V] = Spec.Rest[V];
+				S.X[V] = Shape;
 				continue;
 			}
 			const float F = 0.5f * FMath::Sin(W1 * Time - K1 * S.Along[V] + 0.35f * K1 * S.Down[V] + S.Phase)
 				+ 0.3f * FMath::Sin(W2 * Time - K2 * S.Along[V] - 0.6f * K2 * S.Down[V] + 1.3f + S.Phase)
 				+ 0.2f * Breath;
-			S.X[V] = Spec.Rest[V] + S.RestNormal[V] * (A * F);
+			S.X[V] = Shape + S.RestNormal[V] * (A * F);
 		}
 		UpdateNormals(Spec, S.X, S.Normal);
 	});
@@ -1199,7 +1373,7 @@ FString FSailAnimation::VerifyCycle(int32 Times, float Seconds, int32& OutInside
 	for (int32 K = 0; K < Times; ++K)
 	{
 		const double T0 = FPlatformTime::Seconds();
-		Evaluate(Seconds * K / Times, 1.f);
+		Evaluate(Seconds * K / Times, 1.f, FVector3f::ForwardVector, K % 3 == 0 ? 1.f : (K % 3 == 1 ? 0.5f : 0.f));
 		EvaluateSeconds += FPlatformTime::Seconds() - T0;
 		int32 Count = 0;
 		FString Detail;
@@ -1214,8 +1388,8 @@ FString FSailAnimation::VerifyCycle(int32 Times, float Seconds, int32& OutInside
 			OutCrossings += CountSailCrossings();
 		}
 	}
-	Evaluate(0.f, 1.f);
-	return FString::Printf(TEXT("%d of %d canvas samples inside anything drawn over %d instants, %d canvas edges through another sail, %.2f ms a frame to move them%s"),
+	Evaluate(0.f, 1.f, FVector3f::ForwardVector, 1.f);
+	return FString::Printf(TEXT("%d of %d canvas samples inside anything drawn over %d instants (full, half and empty), %d canvas edges through another sail, %.2f ms a frame to move them%s"),
 		OutInside, Samples, Times, OutCrossings, EvaluateSeconds * 1000.0 / FMath::Max(Times, 1), *First);
 }
 
