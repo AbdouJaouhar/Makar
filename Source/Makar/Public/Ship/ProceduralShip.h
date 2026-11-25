@@ -56,6 +56,10 @@ public:
 	/** The same, generated on a worker thread; OnDone runs on the game thread once the new ship shows (a newer request
 	 *  supersedes an older one, whose OnDone is not called). */
 	void BuildFromDesignAsync(const FShipDesign& InDesign, TFunction<void()> OnDone);
+	/** Whether a build is under way on a worker thread (the ship in view stays until it is done). */
+	bool IsBuildPending() const { return bBuildPending; }
+	/** How the wind takes each sail (diagnostics). */
+	FString DescribeSails() const;
 
 	/** Where a visitor comes aboard (ship space, cm): on the weather deck by the open hatch. */
 	UPROPERTY(VisibleAnywhere, Transient, Category = "Ship")

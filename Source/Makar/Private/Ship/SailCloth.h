@@ -130,7 +130,7 @@ struct FShipSail
 	/** The same sail with its belly gone (the wind out of it), and the share of the way to it each point may go. */
 	TArray<FVector3f> Flat;
 	TArray<float> Slack;
-	/** The sail with its belly drawn half as deep again (a hard wind on its back), and the share of the way to it. */
+	/** The sail with its belly drawn twice as deep (a hard wind on its back), and the share of the way to it. */
 	TArray<FVector3f> Deep;
 	TArray<float> DeepShare;
 	/** The way the sail bellies (its canvas' mean normal, towards the belly). */
@@ -226,8 +226,15 @@ private:
 		FVector3f Centre = FVector3f::ZeroVector;
 		float Span = 1.f;
 		float Deepen = 0.f;
+		/** Diagnostics: its angle to the wind and the shadow on it at the last evaluation. */
+		float LastAttack = 0.f, LastShadow = 0.f;
 	};
 
+public:
+	/** One line per sail: its mast, how the wind takes it and how it answers (diagnostics). */
+	FString Describe() const;
+
+private:
 	void UpdateNormals(const FShipSail& Spec, const TArray<FVector3f>& X, TArray<FVector3f>& OutNormal) const;
 	int32 CountInDrawn(int32& OutSamples, FString* OutDetail, FVector3f* OutFirst = nullptr) const;
 	int32 CountSailCrossings() const;

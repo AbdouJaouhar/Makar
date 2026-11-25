@@ -40,6 +40,19 @@ public:
 	/** Back to the ship's centre (the distance kept). */
 	void Recenter() { Target = FramedCenter; }
 
+	/** A fixed view for recordings: angles in degrees, distance in cm, the orbit's centre offset from the framed centre. */
+	void SetView(float InYaw, float InPitch, float InDistance, const FVector& Offset)
+	{
+		Yaw = InYaw;
+		Pitch = InPitch;
+		Distance = TargetDistance = InDistance;
+		Target = FramedCenter + Offset;
+		bAutoRotate = false;
+		bNoMenuOffset = true;
+	}
+	/** No sideways offset of the ship (recordings have no menu over the left of the screen). */
+	bool bNoMenuOffset = false;
+
 private:
 	UPROPERTY(VisibleAnywhere, Category = "Viewer")
 	TObjectPtr<UCameraComponent> Camera;

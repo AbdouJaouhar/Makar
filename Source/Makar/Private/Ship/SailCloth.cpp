@@ -1147,20 +1147,22 @@ ShipSails::FFitReport ShipSails::Fit(TArray<FShipSail>& Sails, const TArray<FShi
 		const FVector3f B = Belly[S];
 		Spec.BellyDir = B;
 		Spec.Flat = Spec.Rest;
-		for (int32 I = 0; I <= Spec.NU; ++I)
+		// Flat: the canvas pulled out between its four corners (the yard's ends and the clews), each point brought back
+		// along the belly's direction onto that surface: the whole belly, across and down.
+		const FVector3f C00 = Spec.Rest[Spec.Index(0, 0)], C10 = Spec.Rest[Spec.Index(Spec.NU, 0)];
+		const FVector3f C01 = Spec.Rest[Spec.Index(0, Spec.NV)], C11 = Spec.Rest[Spec.Index(Spec.NU, Spec.NV)];
+		for (int32 J = 0; J <= Spec.NV; ++J)
 		{
-			const FVector3f Head = Spec.Rest[Spec.Index(I, 0)];
-			const FVector3f Foot = Spec.Rest[Spec.Index(I, Spec.NV)];
-			for (int32 J = 0; J <= Spec.NV; ++J)
+			for (int32 I = 0; I <= Spec.NU; ++I)
 			{
 				const int32 V = Spec.Index(I, J);
 				if (Spec.Pinned[V])
 				{
 					continue;
 				}
-				// The foot stays where it was fitted (it clears the tops and rails as it is).
-				const FVector3f Chord = FMath::Lerp(Head, Foot, float(J) / Spec.NV);
-				Spec.Flat[V] = Spec.Rest[V] - B * FVector3f::DotProduct(Spec.Rest[V] - Chord, B);
+				const float U = float(I) / Spec.NU, W = float(J) / Spec.NV;
+				const FVector3f OnPlane = FMath::Lerp(FMath::Lerp(C00, C10, U), FMath::Lerp(C01, C11, U), W);
+				Spec.Flat[V] = Spec.Rest[V] - B * FVector3f::DotProduct(Spec.Rest[V] - OnPlane, B);
 			}
 		}
 		Share(S, Spec.Flat, Spec.Slack, [](int32) { return 0.f; });
@@ -1173,7 +1175,7 @@ ShipSails::FFitReport ShipSails::Fit(TArray<FShipSail>& Sails, const TArray<FShi
 			}
 		}
 	}
-	// 4. The wind hard on their backs: the belly drawn half as deep again (each point as far again from its chord), as far
+	// 4. The wind hard on their backs: the belly drawn twice as deep (each point twice as far from its chord), as far
 	// as there is room for it; another sail may come that far towards it too.
 	TArray<float> DeepReach;
 	DeepReach.Init(0.f, N);
@@ -1183,7 +1185,7 @@ ShipSails::FFitReport ShipSails::Fit(TArray<FShipSail>& Sails, const TArray<FShi
 		Spec.Deep = Spec.Rest;
 		for (int32 V = 0; V < Spec.Rest.Num(); ++V)
 		{
-			Spec.Deep[V] = Spec.Rest[V] + (Spec.Rest[V] - Spec.Flat[V]) * 0.5f;
+			Spec.Deep[V] = Spec.Rest[V] + (Spec.Rest[V] - Spec.Flat[V]) * 1.0f;
 			DeepReach[S] = FMath::Max(DeepReach[S], (Spec.Deep[V] - Spec.Rest[V]).Size());
 		}
 	}
@@ -1357,6 +1359,29 @@ void FSailAnimation::UpdateNormals(const FShipSail& Spec, const TArray<FVector3f
 	}
 }
 
+FString FSailAnimation::Describe() const
+{
+	FString Out;
+	for (int32 I = 0; I < Sails.Num(); ++I)
+	{
+		const FSailState& S = Sails[I];
+		float SlackMean = 0.f, DeepMean = 0.f, AmpMean = 0.f, WayMax = 0.f;
+		for (int32 V = 0; V < S.Spec.Rest.Num(); ++V)
+		{
+			SlackMean += S.Spec.Slack.IsValidIndex(V) ? S.Spec.Slack[V] : 0.f;
+			DeepMean += S.Spec.DeepShare.IsValidIndex(V) ? S.Spec.DeepShare[V] : 0.f;
+			AmpMean += S.Spec.Amplitude[V];
+			WayMax = FMath::Max(WayMax, S.Spec.Flat.IsValidIndex(V) ? (S.Spec.Flat[V] - S.Spec.Rest[V]).Size() : 0.f);
+		}
+		const float Inv = 1.f / FMath::Max(1, S.Spec.Rest.Num());
+		Out += FString::Printf(TEXT("  slack %.2f deep %.2f amplitude %.2f belly %.2f m | "), SlackMean * Inv, DeepMean * Inv, AmpMean * Inv, WayMax);
+		Out += FString::Printf(TEXT("sail %d mast %d %dx%d belly (%.2f %.2f %.2f) centre (%.1f %.1f %.1f): attack %.2f shadow %.2f fill %.2f depth %.2f deepen %.2f luff %.2f from %.2f\n"),
+			I, S.Spec.Mast, S.Spec.NU, S.Spec.NV, S.Spec.BellyDir.X, S.Spec.BellyDir.Y, S.Spec.BellyDir.Z, S.Centre.X, S.Centre.Y, S.Centre.Z,
+			S.LastAttack, S.LastShadow, S.Fill, S.Depth, S.Deepen, S.Luff, S.FromNear);
+	}
+	return Out;
+}
+
 void FSailAnimation::Evaluate(float Time, float Strength, const FVector3f& WindDir, float ForcedFill, float Pace, float Press)
 {
 	Strength = FMath::Clamp(Strength, 0.f, 1.f);
@@ -1393,11 +1418,16 @@ void FSailAnimation::Evaluate(float Time, float Strength, const FVector3f& WindD
 		// the belly is drawn deep; on a wind, the crew hauls it flatter and the leading edge lifts and shivers. The
 		// waves run downwind across the canvas, from the edge the wind comes in by.
 		const float Attack = FVector3f::DotProduct(Wind, Spec.BellyDir);
+		S.LastAttack = Attack;
+		S.LastShadow = Shadow[Index];
 		const float Across = FVector3f::DotProduct(Wind, S.AcrossDir);
 		float Target = ForcedFill, TargetFrom = Across >= 0.f ? 1.f : 0.f, TargetLuff = 0.f, TargetDepth = 1.f, TargetDeepen = 0.f;
 		if (Target < 0.f)
 		{
-			Target = FMath::SmoothStep(-0.05f, 0.35f, Attack) * FMath::SmoothStep(0.05f, 0.3f, Strength) * (1.f - 0.85f * Shadow[Index]);
+			// A square sail behind another still draws (the wind spills round and over it); a fore-and-aft sail (its belly
+			// to one side) in another's lee hangs empty.
+			const float Lee = FMath::SmoothStep(0.4f, 0.75f, FMath::Abs(Spec.BellyDir.Y));
+			Target = FMath::SmoothStep(-0.05f, 0.35f, Attack) * FMath::SmoothStep(0.05f, 0.3f, Strength) * (1.f - FMath::Lerp(0.15f, 0.9f, Lee) * Shadow[Index]);
 			TargetFrom = FMath::SmoothStep(-0.25f, 0.25f, Across);
 			TargetLuff = FMath::Clamp(1.f - FMath::Abs(Attack - 0.15f) / 0.45f, 0.f, 1.f);
 			TargetDepth = 0.55f + 0.45f * FMath::SmoothStep(0.4f, 0.95f, Attack);

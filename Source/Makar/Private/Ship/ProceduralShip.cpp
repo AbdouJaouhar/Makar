@@ -600,6 +600,11 @@ void AProceduralShip::Tick(float DeltaSeconds)
 	UpdateSails();
 }
 
+FString AProceduralShip::DescribeSails() const
+{
+	return Sails.IsValid() ? Sails->Describe() : FString();
+}
+
 void AProceduralShip::UpdateSails()
 {
 	TArray<FVector> Positions, Normals;

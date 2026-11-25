@@ -103,7 +103,7 @@ void AShipViewerPawn::Tick(float DeltaSeconds)
 	const FRotator Rotation(Pitch, Yaw, 0.f);
 	// The ship a little right of centre: the menu covers the left of the screen.
 	const FVector Right = FRotationMatrix(Rotation).GetUnitAxis(EAxis::Y);
-	const FVector Location = Target - Rotation.Vector() * Distance - Right * (Distance * 0.12f);
+	const FVector Location = Target - Rotation.Vector() * Distance - Right * (bNoMenuOffset ? 0.f : Distance * 0.12f);
 	SetActorLocationAndRotation(Location, Rotation);
 	if (PC)
 	{
