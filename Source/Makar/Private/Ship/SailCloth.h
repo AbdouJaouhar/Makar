@@ -55,6 +55,40 @@ struct FShipHullShape
 };
 
 /**
+ * The ship's wood and iron as drawn, in cubes (ship space): what the canvas never passes through. Each cell: bit 1, a
+ * drawn surface goes through it; bit 2, next to one (the solid grown by a cell: no gap between two cells touching only
+ * at a corner, and a little air kept round everything).
+ */
+struct FShipVoxels
+{
+	FVector3f Origin = FVector3f::ZeroVector;
+	float Cell = 0.07f;
+	FIntVector Size = FIntVector::ZeroValue;
+	TArray<uint8> Cells;
+
+	bool IsValid() const { return Cells.Num() > 0; }
+	uint8 Get(const FVector3f& P) const
+	{
+		const FVector3f Q = (P - Origin) / Cell;
+		const int32 X = FMath::FloorToInt(Q.X), Y = FMath::FloorToInt(Q.Y), Z = FMath::FloorToInt(Q.Z);
+		if (X < 0 || Y < 0 || Z < 0 || X >= Size.X || Y >= Size.Y || Z >= Size.Z)
+		{
+			return 0;
+		}
+		return Cells[(int64(Z) * Size.Y + Y) * Size.X + X];
+	}
+	/** Inside the grown solid: the canvas stops here. */
+	bool Blocked(const FVector3f& P) const { return Get(P) != 0; }
+	/** Inside the drawn wood itself: a true crossing. */
+	bool InWood(const FVector3f& P) const { return (Get(P) & 1) != 0; }
+
+	/** The grid over Bounds; then Fill each triangle, then Grow. */
+	void Reset(const FBox3f& Bounds, float InCell);
+	void Fill(const FVector3f& A, const FVector3f& B, const FVector3f& C);
+	void Grow();
+};
+
+/**
  * A sail as the generator cuts it: a grid of (NU + 1) x (NV + 1) points in its cut shape (the canvas' built-in
  * camber: the rest lengths of the cloth), the points bent to the spars and stays (pinned), the clews held by sheets.
  */
@@ -88,7 +122,8 @@ struct FShipSail
 class FSailSimulation
 {
 public:
-	void Init(TArray<FShipSail> InSails, const TArray<FShipCapsule>& Colliders, const TArray<FShipBlock>& Solids, const FShipHullShape& InHull);
+	void Init(TArray<FShipSail> InSails, const TArray<FShipCapsule>& Colliders, const TArray<FShipBlock>& Solids, const FShipHullShape& InHull,
+		TSharedPtr<const FShipVoxels> InVoxels);
 	bool IsEmpty() const { return Sails.Num() == 0; }
 
 	/** Advances by DeltaTime under Wind (m/s, ship space: where the air goes). Time: for the gusts. */
@@ -101,6 +136,8 @@ public:
 	void GetSheets(TArray<TPair<FVector3f, FVector3f>>& Out) const;
 	/** The canvas sampled finely (4 x 4 per facet): how many samples lie inside the hull's side, out of how many. */
 	int32 CountInHull(int32& OutSamples) const;
+	/** The same against everything drawn in wood and iron (the voxels' drawn surfaces). */
+	int32 CountInWood(int32& OutSamples) const;
 
 private:
 	struct FConstraint
@@ -116,6 +153,10 @@ private:
 		TArray<float> InvMass;
 		TArray<FConstraint> Constraints;
 		TArray<FShipCapsule> Near;
+		/** The near ropes and spars sorted into cells: a cell lists every capsule within a cell of it. */
+		FVector3f GridOrigin = FVector3f::ZeroVector;
+		FIntVector GridSize = FIntVector::ZeroValue;
+		TArray<int32> GridStart, GridItems;
 		/** The hull's and the rig's solids this sail can reach, and where its points were when the frame began. */
 		TArray<FShipBlock> NearSolids;
 		TArray<FVector3f> FrameStart;
@@ -125,8 +166,30 @@ private:
 	void UpdateNormals(FSailState& S) const;
 	void CollideSails();
 	void CollideSolids(FSailState& S) const;
+	static void BuildGrid(FSailState& S);
+	/** The capsules near P (indices into S.Near). */
+	static TArrayView<const int32> CapsulesAt(const FSailState& S, const FVector3f& P);
 
 	TArray<FSailState> Sails;
 	FShipHullShape Hull;
+	TSharedPtr<const FShipVoxels> Voxels;
+
+public:
+	/** Seconds spent: substeps, solids, sails apart, normals; substeps; frames (diagnostics). */
+	double Profile[6] = {};
+	FString TakeProfile()
+	{
+		const double F = FMath::Max(Profile[5], 1.0);
+		int32 Particles = 0, Capsules = 0;
+		for (const FSailState& S : Sails)
+		{
+			Particles += S.X.Num();
+			Capsules += S.Near.Num();
+		}
+		const FString Out = FString::Printf(TEXT("substeps %.1f ms (%.1f a frame), solids %.1f ms, sails apart %.1f ms, normals %.1f ms; %d points, %d capsules near the sails"),
+			Profile[0] * 1000.0 / F, Profile[4] / F, Profile[1] * 1000.0 / F, Profile[2] * 1000.0 / F, Profile[3] * 1000.0 / F, Particles, Capsules);
+		FMemory::Memzero(Profile, sizeof(Profile));
+		return Out;
+	}
 	float Accumulator = 0.f;
 };

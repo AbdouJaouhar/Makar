@@ -66,10 +66,12 @@ namespace
 		TArray<FMast> Masts;
 		/** Rope scale: thicker on bigger ships. */
 		float K = 1.f;
-		/** The wind comes over the port quarter: square sails belly forward, fore-and-aft sails to starboard. */
-		const float Leeward = 1.f;
-		/** Yards braced round: their starboard arm forward. */
-		const float Brace = FMath::DegreesToRadians(14.f);
+		/** The side the fore-and-aft sails go to (+1: starboard), from the wind (FShipDesign::Trim). */
+		float Leeward = 1.f;
+		/** Yards braced round (radians, + : their starboard arm forward). */
+		float Brace = FMath::DegreesToRadians(14.f);
+		/** Booms swung out (degrees). */
+		float BoomSwing = 16.f;
 		FVector3f BowspritStart, BowspritDir, BowspritEnd, JibBoomEnd;
 		/** Set: the sails are given as cloth (simulated), not drawn in the mesh. */
 		TArray<FShipSail>* Cloth = nullptr;
@@ -89,7 +91,9 @@ namespace
 		void Layout();
 		void Spars();
 		void Bowsprit();
-		void SquareSail(const FVector3f& HeadL, const FVector3f& HeadR, const FVector3f& FootL, const FVector3f& FootR, float Depth, int32 Id);
+		/** Returns the cloth's index or -1. Free clews: not held at their place, the caller ropes them (tacks, sheets). */
+		int32 SquareSail(const FVector3f& HeadL, const FVector3f& HeadR, const FVector3f& FootL, const FVector3f& FootR, float Depth, int32 Id,
+			int32 NU = 16, int32 NV = 14, bool bFreeClews = false);
 		/** A sail of four corners: luff (Throat-Tack) on a mast, head on a gaff, foot on a boom, bellied to leeward. */
 		void QuadSail(const FVector3f& Throat, const FVector3f& Peak, const FVector3f& Clew, const FVector3f& Tack, float Depth, int32 Id);
 		/** A triangular sail: luff Head-Tack on a stay or a yard. */
@@ -212,7 +216,8 @@ namespace
 		}
 	}
 
-	void FRigBuild::SquareSail(const FVector3f& HL, const FVector3f& HR, const FVector3f& FL, const FVector3f& FR, float Depth, int32 Id)
+	int32 FRigBuild::SquareSail(const FVector3f& HL, const FVector3f& HR, const FVector3f& FL, const FVector3f& FR, float Depth, int32 Id,
+		int32 NU, int32 NV, bool bFreeClews)
 	{
 		const FVector3f Across = HR - HL;
 		const FVector3f Down = (FL + FR) * 0.5f - (HL + HR) * 0.5f;
@@ -232,10 +237,11 @@ namespace
 			const float Bag = FMath::Pow(Arch, 0.85f) * (1.f - FMath::Pow(1.f - V, 2.4f)) * (1.f - 0.35f * V);
 			return P + Belly * (Depth * Bag);
 		};
-		// Bent to the yard along its head, its clews sheeted home to the yardarms below.
-		if (EmitSail(16, 14, Position, Id, [](int32 I, int32 J) { return J == 0 || (J == 14 && (I == 0 || I == 16)); }) >= 0)
+		// Bent to the yard along its head, its clews sheeted home to the yardarms below (or free, on their ropes).
+		const int32 Index = EmitSail(NU, NV, Position, Id, [NU, NV, bFreeClews](int32 I, int32 J) { return J == 0 || (!bFreeClews && J == NV && (I == 0 || I == NU)); });
+		if (Index >= 0)
 		{
-			return;
+			return Index;
 		}
 		TFunction<FLinearColor(float, float)> ColorFn = [&](float U, float V) { return SailColor(U, V, Id); };
 		TFunctionRef<FLinearColor(float, float)> ColorRef(ColorFn);
@@ -253,6 +259,7 @@ namespace
 		B.Tube(Rope, Leech0, Radii, 4, FBuilder::RopeColor);
 		B.Tube(Rope, Leech1, Radii, 4, FBuilder::RopeColor);
 		B.Tube(Rope, Foot, Radii, 4, FBuilder::RopeColor);
+		return -1;
 	}
 
 	void FRigBuild::QuadSail(const FVector3f& Throat, const FVector3f& Peak, const FVector3f& Clew, const FVector3f& Tack, float Depth, int32 Id)
@@ -542,9 +549,24 @@ namespace
 				{
 					const float RailZ = L.Z(L.RailAt(M.Foot.X)) + 0.6f;
 					const FVector3f Clew(-0.6f, 0.f, 0.f);
-					SquareSail(Course.Arm(-1.f, 0.95f), Course.Arm(1.f, 0.95f),
+					// The course: finer cloth (the biggest sail, the one that meets the hull), its clews held by their
+					// tack (forward) and sheet (aft), ropes to the ship's side that pull and never push.
+					const int32 CourseCloth = SquareSail(Course.Arm(-1.f, 0.95f), Course.Arm(1.f, 0.95f),
 						FVector3f(Course.Arm(-1.f, 1.05f).X, Course.Arm(-1.f, 1.05f).Y, RailZ) + Clew,
-						FVector3f(Course.Arm(1.f, 1.05f).X, Course.Arm(1.f, 1.05f).Y, RailZ) + Clew, CourseHalf * 0.3f, Id);
+						FVector3f(Course.Arm(1.f, 1.05f).X, Course.Arm(1.f, 1.05f).Y, RailZ) + Clew, CourseHalf * 0.22f, Id, 24, 20, true);
+					if (CourseCloth >= 0)
+					{
+						FShipSail& S = (*Cloth)[CourseCloth];
+						for (int32 Corner : { S.Index(0, S.NV), S.Index(S.NU, S.NV) })
+						{
+							const FVector3f P = S.Rest[Corner];
+							const float Side = P.Y >= 0.f ? 1.f : -1.f;
+							const FVector3f Tack = Rail(FMath::Min(P.X + 3.5f, L.HalfLength - 1.f), Side);
+							const FVector3f SheetBlock = Rail(FMath::Max(P.X - 4.f, -L.HalfLength + 1.f), Side);
+							S.Sheets.Add({ Corner, Tack, (P - Tack).Size() });
+							S.Sheets.Add({ Corner, SheetBlock, (P - SheetBlock).Size() });
+						}
+					}
 					if (M.Spec.Squares >= 1)
 					{
 						SquareSail(Top.Arm(-1.f, 0.94f), Top.Arm(1.f, 0.94f), Course.Arm(-1.f, 0.92f) + FVector3f(0.f, 0.f, 0.2f),
@@ -555,9 +577,13 @@ namespace
 						SquareSail(Tg.Arm(-1.f, 0.94f), Tg.Arm(1.f, 0.94f), Top.Arm(-1.f, 0.9f) + FVector3f(0.f, 0.f, 0.15f),
 							Top.Arm(1.f, 0.9f) + FVector3f(0.f, 0.f, 0.15f), Tg.Half * 0.28f, Id + 2);
 					}
-					// Course sheets to the side, aft.
+					// Course sheets to the side, aft (drawn: the cloth's are its own).
 					for (float Side : { -1.f, 1.f })
 					{
+						if (Cloth)
+						{
+							break;
+						}
 						const FVector3f From = FVector3f(Course.Arm(Side, 1.05f).X, Course.Arm(Side, 1.05f).Y, RailZ) + Clew;
 						B.Line(From, Rail(FMath::Max(From.X - 4.f, -L.HalfLength + 1.f), Side), 0.018f * K, 0.25f);
 					}
@@ -609,7 +635,7 @@ namespace
 			{
 				// Boom swung out to leeward, gaff peaked up; a square topsail above (and a course yard on sloops).
 				const float BoomLength = D.Type == EShipType::Sloop ? D.Length * 0.72f : (M.Foot.X - L.XStern(L.DeckAt(M.Foot.X))) + 1.2f;
-				const float Swing = FMath::DegreesToRadians(D.bSailsSet ? 16.f : 0.f);
+				const float Swing = FMath::DegreesToRadians(D.bSailsSet ? BoomSwing : 0.f);
 				const FVector3f BoomDir = FVector3f(-FMath::Cos(Swing), Leeward * FMath::Sin(Swing), 0.04f).GetSafeNormal();
 				const FVector3f Jaw = M.LowerAt(1.6f) - M.Fwd * (M.RLower + 0.05f);
 				const FVector3f BoomEnd = Jaw + BoomDir * BoomLength;
@@ -931,6 +957,13 @@ void ShipRig::Build(FBuilder& B, const FHullLines& L, TArray<FShipMastInfo>& Out
 {
 	FRigBuild Rig{ B, L, L.D };
 	Rig.Cloth = OutSails;
+	{
+		float Brace, Leeward, Swing;
+		FShipDesign::Trim(L.D.WindFrom, Brace, Leeward, Swing);
+		Rig.Brace = FMath::DegreesToRadians(Brace);
+		Rig.Leeward = Leeward;
+		Rig.BoomSwing = Swing;
+	}
 	Rig.K = FMath::Clamp(L.D.Length / 28.f, 0.75f, 1.35f);
 	Rig.Layout();
 	Rig.Bowsprit();

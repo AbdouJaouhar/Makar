@@ -23,6 +23,7 @@ struct FShipBuildResult
 	/** What the sails rest on: the hull's walking solids and the rig's blocks. */
 	TArray<FShipBlock> Solids;
 	FShipHullShape HullShape;
+	TSharedPtr<FShipVoxels> Voxels;
 	FShipInterior Interior;
 	float Ground = 0.f;
 	int32 Triangles = 0;
@@ -106,8 +107,8 @@ namespace
 			Stage(TEXT("cradle"), [&]() { Result.Ground = ShipFittings::Cradle(Builder, Lines, CradleHeight); });
 		}
 		Result.Guns = 2 * Ports.Num();
-		Result.Solids = Result.Interior.Collision;
-		Result.Solids.Append(Blocks);
+		// The sails rest on what is drawn (the voxels below) and on the rig's blocks (tops, caps: above the voxels).
+		Result.Solids = Blocks;
 		// The hull's shape for the sails, and its rails as lines they rest against (a rail would slip between two
 		// points of the canvas).
 		{
@@ -160,6 +161,35 @@ namespace
 					bLast = B > 0.05f;
 				}
 			}
+		}
+
+		// The wood and iron as drawn, in 7 cm cubes, from a metre under the waterline to 2.5 m over the highest rail,
+		// over the hull's length and breadth with the channels: what the sails can meet.
+		if (Result.Sails.Num() > 0)
+		{
+			const double TV = FPlatformTime::Seconds();
+			float TopRail = 0.f;
+			for (float X = -Lines.HalfLength; X <= Lines.HalfLength; X += 0.5f)
+			{
+				TopRail = FMath::Max(TopRail, Lines.RailAt(X));
+			}
+			Result.Voxels = MakeShared<FShipVoxels>();
+			FShipVoxels& G = *Result.Voxels;
+			G.Reset(FBox3f(FVector3f(-Lines.HalfLength - 1.f, -Lines.HalfBeam - 1.2f, -1.f), FVector3f(Lines.HalfLength + 1.f, Lines.HalfBeam + 1.2f, Lines.Z(TopRail) + 2.5f)), 0.07f);
+			for (int32 Section : { int32(ShipMesh::Wood), int32(ShipMesh::Metal) })
+			{
+				const TArray<int32>& Indices = Data.Sections[Section];
+				ParallelFor((Indices.Num() / 3 + 255) / 256, [&](int32 Chunk)
+				{
+					const int32 End = FMath::Min((Chunk + 1) * 256, Indices.Num() / 3);
+					for (int32 T = Chunk * 256; T < End; ++T)
+					{
+						G.Fill(Data.Vertices[Indices[3 * T]].Position, Data.Vertices[Indices[3 * T + 1]].Position, Data.Vertices[Indices[3 * T + 2]].Position);
+					}
+				});
+			}
+			G.Grow();
+			Result.Times += FString::Printf(TEXT(", voxels %.0f ms (%d x %d x %d)"), (FPlatformTime::Seconds() - TV) * 1000.0, G.Size.X, G.Size.Y, G.Size.Z);
 		}
 
 		// Mesh sections: each material's triangles with their own vertices. The vertex colour is stored as it is (the
@@ -265,16 +295,26 @@ FBox AProceduralShip::GetShipBounds() const
 	return Mesh && Mesh->GetNumSections() > 0 ? Mesh->Bounds.GetBox() : FBox(GetActorLocation(), GetActorLocation());
 }
 
+FShipDesign AProceduralShip::Trimmed(const FShipDesign& InDesign) const
+{
+	FShipDesign Out = InDesign;
+	Out.WindFrom = WindFrom;
+	return Out;
+}
+
 void AProceduralShip::BuildFromDesign(const FShipDesign& InDesign)
 {
 	++Ticket; // a pending asynchronous build is now stale
-	FShipBuildResult Result = Generate(InDesign, bOnCradle, CradleHeight);
+	bBuildPending = false;
+	FShipBuildResult Result = Generate(Trimmed(InDesign), bOnCradle, CradleHeight);
 	ApplyResult(Result);
 }
 
-void AProceduralShip::BuildFromDesignAsync(const FShipDesign& InDesign, TFunction<void()> OnDone)
+void AProceduralShip::BuildFromDesignAsync(const FShipDesign& InDesign_, TFunction<void()> OnDone)
 {
+	const FShipDesign InDesign = Trimmed(InDesign_);
 	const int32 MyTicket = ++Ticket;
+	bBuildPending = true;
 	const bool bCradle = bOnCradle;
 	const float Height = CradleHeight;
 	TWeakObjectPtr<AProceduralShip> Self(this);
@@ -288,6 +328,7 @@ void AProceduralShip::BuildFromDesignAsync(const FShipDesign& InDesign, TFunctio
 			{
 				return; // destroyed, or a newer request is under way
 			}
+			Ship->bBuildPending = false;
 			Ship->ApplyResult(*Result);
 			if (OnDone)
 			{
@@ -319,7 +360,7 @@ void AProceduralShip::ApplyResult(FShipBuildResult& Result)
 	Mesh->UpdateBounds();
 	// The sails: cloth simulated each frame, in their own sections (canvas, and the sheets holding their clews).
 	Sails = MakeShared<FSailSimulation>();
-	Sails->Init(MoveTemp(Result.Sails), Result.Colliders, Result.Solids, Result.HullShape);
+	Sails->Init(MoveTemp(Result.Sails), Result.Colliders, Result.Solids, Result.HullShape, Result.Voxels);
 	SimulationTime = 0.f;
 	if (!Sails->IsEmpty())
 	{
@@ -395,17 +436,38 @@ void AProceduralShip::Tick(float DeltaSeconds)
 		return;
 	}
 	SimulationTime += DeltaSeconds;
+	// The crew trims the rig to the wind: when it has shifted enough to brace the yards round, the rig is laid again.
+	if (!bBuildPending && FPlatformTime::Seconds() - LastTrimTime > 0.4)
+	{
+		float Brace0, Lee0, Swing0, Brace1, Lee1, Swing1;
+		FShipDesign::Trim(Design.WindFrom, Brace0, Lee0, Swing0);
+		FShipDesign::Trim(WindFrom, Brace1, Lee1, Swing1);
+		if (Lee0 != Lee1 || FMath::Abs(Brace0 - Brace1) > 3.f || FMath::Abs(Swing0 - Swing1) > 5.f)
+		{
+			LastTrimTime = FPlatformTime::Seconds();
+			BuildFromDesignAsync(Design, nullptr);
+		}
+	}
 	// The true wind in ship space: where the air goes (the ship does not move yet: true wind = apparent wind).
 	const float From = FMath::DegreesToRadians(WindFrom);
 	const FVector3f Wind = -FVector3f(FMath::Cos(From), FMath::Sin(From), 0.f) * WindSpeed;
+	const double StepStart = FPlatformTime::Seconds();
 	Sails->Step(FMath::Min(DeltaSeconds, 0.05f), Wind, SimulationTime);
 	UpdateSails();
+	SimulationMs += (FPlatformTime::Seconds() - StepStart) * 1000.0;
+	++SimulationFrames;
 	// Diagnostics: canvas through the hull's side, every 5 s for the first half minute.
 	if (FMath::FloorToInt(SimulationTime / 5.f) != FMath::FloorToInt((SimulationTime - DeltaSeconds) / 5.f) && SimulationTime < 61.f)
 	{
 		int32 Samples = 0;
 		const int32 Inside = Sails->CountInHull(Samples);
-		UE_LOG(LogShip, Display, TEXT("ProceduralShip: sails at %.0f s, wind from %.0f: %d of %d canvas samples inside the hull's side"), SimulationTime, WindFrom, Inside, Samples);
+		int32 WoodSamples = 0;
+		const int32 InWood = Sails->CountInWood(WoodSamples);
+		UE_LOG(LogShip, Display, TEXT("ProceduralShip: sails at %.0f s, wind from %.0f: %d of %d canvas samples inside the hull's side, %d of %d inside drawn wood or iron; cloth %.2f ms a frame"),
+			SimulationTime, WindFrom, Inside, Samples, InWood, WoodSamples, SimulationMs / FMath::Max(SimulationFrames, 1));
+		SimulationMs = 0.0;
+		SimulationFrames = 0;
+		UE_LOG(LogShip, Display, TEXT("ProceduralShip: cloth %s"), *Sails->TakeProfile());
 	}
 }
 

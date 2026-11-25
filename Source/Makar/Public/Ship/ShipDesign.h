@@ -120,4 +120,12 @@ struct MAKAR_API FShipDesign
 
 	/** A ship of this type, varied by Seed (proportions, sheer, castles, colours, armament). */
 	static FShipDesign Make(EShipType Type, int32 Seed);
+
+	/** The wind the rig is trimmed to (degrees from the bow, clockwise): the yards braced, the booms swung out, the
+	 *  fore-and-aft sails sheeted to leeward. Set by the ship from its wind, not part of the design's look. */
+	float WindFrom = 210.f;
+
+	/** How the crew trims to a wind: the yards' angle from square (degrees, + : starboard arms forward), the side the
+	 *  fore-and-aft sails go to (+1 starboard), the booms' swing out (degrees). */
+	static void Trim(float WindFrom, float& OutBrace, float& OutLeeward, float& OutSwing);
 };

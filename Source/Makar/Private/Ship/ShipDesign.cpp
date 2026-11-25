@@ -21,6 +21,18 @@ namespace
 	}
 }
 
+void FShipDesign::Trim(float WindFrom, float& OutBrace, float& OutLeeward, float& OutSwing)
+{
+	// The wind's angle off the bow, 0 (dead ahead) to 180 (dead astern), and the side it comes over.
+	const float Off = FMath::Abs(FMath::UnwindDegrees(WindFrom));
+	const float Sine = FMath::Sin(FMath::DegreesToRadians(WindFrom));
+	OutLeeward = Sine > 0.05f ? -1.f : 1.f;
+	// Square yards: square before the wind, braced round as it comes forward, up to the shrouds (about 35 degrees),
+	// the windward arms aft. Booms: right out running, close in on the wind.
+	OutBrace = OutLeeward * FMath::Clamp((180.f - Off) * 0.5f, 0.f, 35.f);
+	OutSwing = FMath::Clamp(Off * 0.45f - 5.f, 8.f, 70.f);
+}
+
 FShipDesign FShipDesign::Make(EShipType Type, int32 Seed)
 {
 	FRandomStream Random(Seed * 7919 + int32(Type) * 104729 + 17);

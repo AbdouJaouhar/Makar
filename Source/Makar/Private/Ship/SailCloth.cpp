@@ -12,6 +12,7 @@ namespace
 	constexpr float Damping = 0.004f;          // per substep
 	constexpr float Clearance = 0.05f;         // m of air kept between the canvas and a rope or spar
 	constexpr float SailSpacing = 0.18f;       // m kept between two sails
+	constexpr float CapsuleCell = 0.6f;        // m: the ropes' grid (no rope or spar keeps the canvas further off)
 
 	FVector3f ClothClosest(const FVector3f& P, const FVector3f& A, const FVector3f& B)
 	{
@@ -40,10 +41,79 @@ namespace
 	}
 }
 
-void FSailSimulation::Init(TArray<FShipSail> InSails, const TArray<FShipCapsule>& Colliders, const TArray<FShipBlock>& Solids, const FShipHullShape& InHull)
+void FShipVoxels::Reset(const FBox3f& Bounds, float InCell)
+{
+	Cell = InCell;
+	Origin = Bounds.Min;
+	const FVector3f Extent = Bounds.GetSize() / Cell;
+	Size = FIntVector(FMath::CeilToInt(Extent.X) + 1, FMath::CeilToInt(Extent.Y) + 1, FMath::CeilToInt(Extent.Z) + 1);
+	Cells.SetNumZeroed(int64(Size.X) * Size.Y * Size.Z);
+}
+
+void FShipVoxels::Fill(const FVector3f& A, const FVector3f& B, const FVector3f& C)
+{
+	FBox3f Box(ForceInit);
+	Box += A;
+	Box += B;
+	Box += C;
+	if (Box.Max.X < Origin.X || Box.Max.Y < Origin.Y || Box.Max.Z < Origin.Z
+		|| Box.Min.X > Origin.X + Size.X * Cell || Box.Min.Y > Origin.Y + Size.Y * Cell || Box.Min.Z > Origin.Z + Size.Z * Cell)
+	{
+		return;
+	}
+	// Samples 0.8 cell apart over the triangle: every cell it passes through is marked.
+	const float Step = Cell * 0.8f; // a cell skipped at a corner is filled by Grow
+	const int32 NU = FMath::Clamp(FMath::CeilToInt((B - A).Size() / Step), 1, 4000);
+	const int32 NV = FMath::Clamp(FMath::CeilToInt((C - A).Size() / Step), 1, 4000);
+	for (int32 I = 0; I <= NU; ++I)
+	{
+		const float S = float(I) / NU;
+		const int32 JMax = FMath::Min(NV, FMath::CeilToInt((1.f - S) * NV));
+		for (int32 J = 0; J <= JMax; ++J)
+		{
+			const float T = FMath::Min(float(J) / NV, 1.f - S);
+			const FVector3f Q = ((A + (B - A) * S + (C - A) * T) - Origin) / Cell;
+			const int32 X = FMath::FloorToInt(Q.X), Y = FMath::FloorToInt(Q.Y), Z = FMath::FloorToInt(Q.Z);
+			if (X >= 0 && Y >= 0 && Z >= 0 && X < Size.X && Y < Size.Y && Z < Size.Z)
+			{
+				Cells[(int64(Z) * Size.Y + Y) * Size.X + X] = 1; // the same value from any thread
+			}
+		}
+	}
+}
+
+void FShipVoxels::Grow()
+{
+	ParallelFor(Size.Z, [this](int32 Z)
+	{
+		for (int32 Y = 0; Y < Size.Y; ++Y)
+		{
+			for (int32 X = 0; X < Size.X; ++X)
+			{
+				uint8& C = Cells[(int64(Z) * Size.Y + Y) * Size.X + X];
+				if (C & 1)
+				{
+					continue;
+				}
+				auto Wood = [this](int32 I, int32 J, int32 K)
+				{
+					return I >= 0 && J >= 0 && K >= 0 && I < Size.X && J < Size.Y && K < Size.Z && (Cells[(int64(K) * Size.Y + J) * Size.X + I] & 1);
+				};
+				if (Wood(X - 1, Y, Z) || Wood(X + 1, Y, Z) || Wood(X, Y - 1, Z) || Wood(X, Y + 1, Z) || Wood(X, Y, Z - 1) || Wood(X, Y, Z + 1))
+				{
+					C |= 2; // only the wood bit is read: no cell grows from a grown one
+				}
+			}
+		}
+	});
+}
+
+void FSailSimulation::Init(TArray<FShipSail> InSails, const TArray<FShipCapsule>& Colliders, const TArray<FShipBlock>& Solids, const FShipHullShape& InHull,
+	TSharedPtr<const FShipVoxels> InVoxels)
 {
 	Sails.Reset();
 	Hull = InHull;
+	Voxels = InVoxels;
 	Accumulator = 0.f;
 	for (FShipSail& Spec : InSails)
 	{
@@ -125,9 +195,81 @@ void FSailSimulation::Init(TArray<FShipSail> InSails, const TArray<FShipCapsule>
 			}
 		}
 		S.FrameStart = S.X;
+		S.GridOrigin = Box.Min;
 		S.Spec = MoveTemp(Spec);
 		UpdateNormals(S);
 	}
+	ParallelFor(Sails.Num(), [this](int32 Index) { BuildGrid(Sails[Index]); });
+}
+
+void FSailSimulation::BuildGrid(FSailState& S)
+{
+	FBox3f Box(ForceInit);
+	for (const FVector3f& P : S.Spec.Rest)
+	{
+		Box += P;
+	}
+	Box = Box.ExpandBy(FMath::Max(Box.GetExtent().GetMax() * 0.5f, 1.f));
+	S.GridOrigin = Box.Min;
+	const FVector3f Extent = Box.GetSize() / CapsuleCell;
+	S.GridSize = FIntVector(FMath::CeilToInt(Extent.X) + 1, FMath::CeilToInt(Extent.Y) + 1, FMath::CeilToInt(Extent.Z) + 1);
+	const int32 Cells = S.GridSize.X * S.GridSize.Y * S.GridSize.Z;
+	// Each capsule into the cells round points half a cell apart along it.
+	TArray<uint64> Pairs;
+	for (int32 C = 0; C < S.Near.Num(); ++C)
+	{
+		const FShipCapsule& Capsule = S.Near[C];
+		const int32 N = FMath::Clamp(FMath::CeilToInt((Capsule.B - Capsule.A).Size() / (CapsuleCell * 0.5f)), 1, 1000);
+		for (int32 K = 0; K <= N; ++K)
+		{
+			const FVector3f Q = (FMath::Lerp(Capsule.A, Capsule.B, float(K) / N) - S.GridOrigin) / CapsuleCell;
+			const int32 X = FMath::FloorToInt(Q.X), Y = FMath::FloorToInt(Q.Y), Z = FMath::FloorToInt(Q.Z);
+			for (int32 DZ = -1; DZ <= 1; ++DZ)
+			{
+				for (int32 DY = -1; DY <= 1; ++DY)
+				{
+					for (int32 DX = -1; DX <= 1; ++DX)
+					{
+						const int32 I = X + DX, J = Y + DY, L = Z + DZ;
+						if (I >= 0 && J >= 0 && L >= 0 && I < S.GridSize.X && J < S.GridSize.Y && L < S.GridSize.Z)
+						{
+							Pairs.Add((uint64((L * S.GridSize.Y + J) * S.GridSize.X + I) << 32) | uint32(C));
+						}
+					}
+				}
+			}
+		}
+	}
+	Pairs.Sort();
+	S.GridStart.Init(0, Cells + 1);
+	S.GridItems.Reset(Pairs.Num());
+	uint64 Last = ~uint64(0);
+	for (const uint64 Pair : Pairs)
+	{
+		if (Pair == Last)
+		{
+			continue;
+		}
+		Last = Pair;
+		++S.GridStart[int32(Pair >> 32) + 1];
+		S.GridItems.Add(int32(Pair & 0xffffffffu));
+	}
+	for (int32 I = 0; I < Cells; ++I)
+	{
+		S.GridStart[I + 1] += S.GridStart[I];
+	}
+}
+
+TArrayView<const int32> FSailSimulation::CapsulesAt(const FSailState& S, const FVector3f& P)
+{
+	const FVector3f Q = (P - S.GridOrigin) / CapsuleCell;
+	const int32 X = FMath::FloorToInt(Q.X), Y = FMath::FloorToInt(Q.Y), Z = FMath::FloorToInt(Q.Z);
+	if (X < 0 || Y < 0 || Z < 0 || X >= S.GridSize.X || Y >= S.GridSize.Y || Z >= S.GridSize.Z || S.GridStart.Num() == 0)
+	{
+		return TArrayView<const int32>();
+	}
+	const int32 Cell = (Z * S.GridSize.Y + Y) * S.GridSize.X + X;
+	return TArrayView<const int32>(S.GridItems.GetData() + S.GridStart[Cell], S.GridStart[Cell + 1] - S.GridStart[Cell]);
 }
 
 void FSailSimulation::UpdateNormals(FSailState& S) const
@@ -231,8 +373,9 @@ void FSailSimulation::Substep(FSailState& S, float H, const FVector3f& Wind, flo
 			continue;
 		}
 		FVector3f& P = S.X[V];
-		for (const FShipCapsule& Capsule : S.Near)
+		for (const int32 CapsuleIndex : CapsulesAt(S, P))
 		{
+			const FShipCapsule& Capsule = S.Near[CapsuleIndex];
 			const FVector3f C = ClothClosest(P, Capsule.A, Capsule.B);
 			const FVector3f Away = P - C;
 			const float Distance = Away.Size();
@@ -346,8 +489,18 @@ void FSailSimulation::CollideSolids(FSailState& S) const
 		{
 			return; // an edge on a spar or a stay is held by it
 		}
-		for (const FShipCapsule& Capsule : S.Near)
+		// The capsules near five points along the edge (no two more than a quarter edge apart).
+		TArray<int32, TInlineAllocator<32>> Candidates;
+		for (int32 K = 0; K <= 4; ++K)
 		{
+			for (const int32 CapsuleIndex : CapsulesAt(S, FMath::Lerp(S.X[E0], S.X[E1], K * 0.25f)))
+			{
+				Candidates.AddUnique(CapsuleIndex);
+			}
+		}
+		for (const int32 CapsuleIndex : Candidates)
+		{
+			const FShipCapsule& Capsule = S.Near[CapsuleIndex];
 			float U, T;
 			ClothSegments(S.X[E0], S.X[E1], Capsule.A, Capsule.B, U, T);
 			if (U < 0.05f || U > 0.95f)
@@ -391,7 +544,105 @@ void FSailSimulation::CollideSolids(FSailState& S) const
 			}
 		}
 	}
+	// Everything drawn in wood and iron: each point followed along its whole path of the frame, stopped where it
+	// would enter the solid; a facet whose middle or an edge whose middle would enter it goes back to where it was
+	// (where nothing went through). Points that began inside (the cut sail) are let out.
+	if (Voxels.IsValid() && Voxels->IsValid())
+	{
+		const FShipVoxels& G = *Voxels;
+		const float Step = G.Cell * 0.5f;
+		for (int32 V = 0; V < S.X.Num(); ++V)
+		{
+			if (S.InvMass[V] <= 0.f)
+			{
+				continue;
+			}
+			const FVector3f A = S.FrameStart[V], Bp = S.X[V];
+			if (G.Blocked(A))
+			{
+				continue;
+			}
+			const int32 Steps = FMath::Clamp(FMath::CeilToInt((Bp - A).Size() / Step), 1, 64);
+			FVector3f Free = A;
+			for (int32 K = 1; K <= Steps; ++K)
+			{
+				const FVector3f Q = FMath::Lerp(A, Bp, float(K) / Steps);
+				if (G.Blocked(Q))
+				{
+					S.X[V] = Free;
+					S.Prev[V] = Free;
+					break;
+				}
+				Free = Q;
+			}
+		}
+		auto Back = [&](int32 V)
+		{
+			if (S.InvMass[V] > 0.f)
+			{
+				S.X[V] = S.FrameStart[V];
+				S.Prev[V] = S.FrameStart[V];
+			}
+		};
+		auto Enters = [&](const FVector3f& Now, const FVector3f& Before) { return G.Blocked(Now) && !G.Blocked(Before); };
+		for (int32 J = 0; J < Spec.NV; ++J)
+		{
+			for (int32 I = 0; I < Spec.NU; ++I)
+			{
+				const int32 C0 = Spec.Index(I, J), C1 = Spec.Index(I + 1, J), C2 = Spec.Index(I + 1, J + 1), C3 = Spec.Index(I, J + 1);
+				const FVector3f Mid = (S.X[C0] + S.X[C1] + S.X[C2] + S.X[C3]) * 0.25f;
+				const FVector3f Mid0 = (S.FrameStart[C0] + S.FrameStart[C1] + S.FrameStart[C2] + S.FrameStart[C3]) * 0.25f;
+				if (Enters(Mid, Mid0) || Enters((S.X[C0] + S.X[C1]) * 0.5f, (S.FrameStart[C0] + S.FrameStart[C1]) * 0.5f)
+					|| Enters((S.X[C0] + S.X[C3]) * 0.5f, (S.FrameStart[C0] + S.FrameStart[C3]) * 0.5f))
+				{
+					Back(C0);
+					Back(C1);
+					Back(C2);
+					Back(C3);
+				}
+			}
+		}
+	}
 	S.FrameStart = S.X;
+}
+
+int32 FSailSimulation::CountInWood(int32& OutSamples) const
+{
+	OutSamples = 0;
+	int32 Inside = 0;
+	if (!Voxels.IsValid() || !Voxels->IsValid())
+	{
+		return 0;
+	}
+	for (const FSailState& S : Sails)
+	{
+		const FShipSail& Spec = S.Spec;
+		for (int32 J = 0; J < Spec.NV; ++J)
+		{
+			for (int32 I = 0; I < Spec.NU; ++I)
+			{
+				const FVector3f& A = S.X[Spec.Index(I, J)];
+				const FVector3f& B = S.X[Spec.Index(I + 1, J)];
+				const FVector3f& C = S.X[Spec.Index(I + 1, J + 1)];
+				const FVector3f& D = S.X[Spec.Index(I, J + 1)];
+				// Facets on a spar (pinned along it) touch its wood by design.
+				if (S.InvMass[Spec.Index(I, J)] <= 0.f || S.InvMass[Spec.Index(I + 1, J)] <= 0.f || S.InvMass[Spec.Index(I + 1, J + 1)] <= 0.f || S.InvMass[Spec.Index(I, J + 1)] <= 0.f)
+				{
+					continue;
+				}
+				for (int32 U = 0; U < 4; ++U)
+				{
+					for (int32 V = 0; V < 4; ++V)
+					{
+						const float FU = (U + 0.5f) / 4.f, FV = (V + 0.5f) / 4.f;
+						++OutSamples;
+						Inside += Voxels->InWood(FMath::Lerp(FMath::Lerp(A, B, FU), FMath::Lerp(D, C, FU), FV)) ? 1 : 0;
+					}
+				}
+			}
+		}
+	}
+	return Inside;
 }
 
 int32 FSailSimulation::CountInHull(int32& OutSamples) const
@@ -440,21 +691,50 @@ int32 FSailSimulation::CountInHull(int32& OutSamples) const
 
 void FSailSimulation::CollideSails()
 {
-	// A spatial hash of every point; points of different sails closer than SailSpacing are pushed apart.
+	// Every point hashed by its cell (SailSpacing) into a table sorted once (counting sort); points of different
+	// sails closer than SailSpacing are pushed apart.
 	struct FEntry
 	{
 		int32 Sail, Point;
 	};
-	TMultiMap<FIntVector, FEntry> Grid;
+	int32 Total = 0;
+	for (const FSailState& S : Sails)
+	{
+		Total += S.X.Num();
+	}
+	const uint32 Mask = FMath::RoundUpToPowerOfTwo(uint32(FMath::Max(Total * 2, 64))) - 1;
 	auto Cell = [](const FVector3f& P) { return FIntVector(FMath::FloorToInt(P.X / SailSpacing), FMath::FloorToInt(P.Y / SailSpacing), FMath::FloorToInt(P.Z / SailSpacing)); };
+	auto Bucket = [Mask](const FIntVector& C) { return (uint32(C.X) * 73856093u ^ uint32(C.Y) * 19349663u ^ uint32(C.Z) * 83492791u) & Mask; };
+	TArray<int32> Start;
+	Start.Init(0, Mask + 2);
+	TArray<uint32> Of;
+	Of.SetNumUninitialized(Total);
+	int32 N = 0;
+	for (const FSailState& S : Sails)
+	{
+		for (const FVector3f& P : S.X)
+		{
+			Of[N] = Bucket(Cell(P));
+			++Start[Of[N] + 1];
+			++N;
+		}
+	}
+	for (uint32 B = 0; B <= Mask; ++B)
+	{
+		Start[B + 1] += Start[B];
+	}
+	TArray<FEntry> Items;
+	Items.SetNumUninitialized(Total);
+	TArray<int32> Fill = Start;
+	N = 0;
 	for (int32 S = 0; S < Sails.Num(); ++S)
 	{
 		for (int32 V = 0; V < Sails[S].X.Num(); ++V)
 		{
-			Grid.Add(Cell(Sails[S].X[V]), { S, V });
+			Items[Fill[Of[N]]++] = { S, V };
+			++N;
 		}
 	}
-	TArray<FEntry> Found;
 	for (int32 S = 0; S < Sails.Num(); ++S)
 	{
 		FSailState& Sail = Sails[S];
@@ -471,21 +751,22 @@ void FSailSimulation::CollideSails()
 				{
 					for (int32 DZ = -1; DZ <= 1; ++DZ)
 					{
-						Found.Reset();
-						Grid.MultiFind(C + FIntVector(DX, DY, DZ), Found);
-						for (const FEntry& E : Found)
+						const uint32 B = Bucket(C + FIntVector(DX, DY, DZ));
+						for (int32 K = Start[B]; K < Start[B + 1]; ++K)
 						{
+							const FEntry& E = Items[K];
 							if (E.Sail == S)
 							{
 								continue;
 							}
 							FSailState& Other = Sails[E.Sail];
 							const FVector3f Delta = Sail.X[V] - Other.X[E.Point];
-							const float Distance = Delta.Size();
-							if (Distance >= SailSpacing || Distance < 1e-5f)
+							const float Distance2 = Delta.SizeSquared();
+							if (Distance2 >= SailSpacing * SailSpacing || Distance2 < 1e-10f)
 							{
 								continue;
 							}
+							const float Distance = FMath::Sqrt(Distance2);
 							const float WA = Sail.InvMass[V], WB = Other.InvMass[E.Point];
 							const FVector3f Push = Delta * ((SailSpacing - Distance) / (Distance * (WA + WB)));
 							Sail.X[V] += Push * WA;
@@ -511,16 +792,26 @@ void FSailSimulation::Step(float DeltaTime, const FVector3f& Wind, float Time)
 		return;
 	}
 	Accumulator -= Steps * SubstepTime;
+	double T = FPlatformTime::Seconds();
 	ParallelFor(Sails.Num(), [&](int32 Index)
 	{
 		for (int32 Step = 0; Step < Steps; ++Step)
 		{
 			Substep(Sails[Index], SubstepTime, Wind, Time + Step * SubstepTime);
 		}
-		CollideSolids(Sails[Index]);
 	});
+	Profile[0] += FPlatformTime::Seconds() - T;
+	T = FPlatformTime::Seconds();
+	ParallelFor(Sails.Num(), [&](int32 Index) { CollideSolids(Sails[Index]); });
+	Profile[1] += FPlatformTime::Seconds() - T;
+	T = FPlatformTime::Seconds();
 	CollideSails();
+	Profile[2] += FPlatformTime::Seconds() - T;
+	T = FPlatformTime::Seconds();
 	ParallelFor(Sails.Num(), [&](int32 Index) { UpdateNormals(Sails[Index]); });
+	Profile[3] += FPlatformTime::Seconds() - T;
+	Profile[4] += Steps;
+	Profile[5] += 1.0;
 }
 
 void FSailSimulation::GetTopology(TArray<int32>& OutTriangles, TArray<FVector2D>& OutUV, TArray<FColor>& OutColors) const

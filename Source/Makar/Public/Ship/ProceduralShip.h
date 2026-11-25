@@ -94,10 +94,18 @@ private:
 	bool bBuilt = false;
 	TSharedPtr<class FSailSimulation> Sails;
 	float SimulationTime = 0.f;
+	/** The cloth's cost: milliseconds spent stepping it, frames, since the last report. */
+	double SimulationMs = 0.0;
+	int32 SimulationFrames = 0;
 	void UpdateSails();
 	int32 Ticket = 0;
 	void ApplyResult(struct FShipBuildResult& Result);
 
 	uint32 BuiltKey = 0;
+	/** A build on a worker thread not yet shown; when the rig was last trimmed to a new wind (s). */
+	bool bBuildPending = false;
+	double LastTrimTime = -1e6;
+	/** The design as given, with the ship's wind for the trim. */
+	FShipDesign Trimmed(const FShipDesign& InDesign) const;
 	uint32 Key() const;
 };
