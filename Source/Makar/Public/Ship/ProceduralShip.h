@@ -96,6 +96,8 @@ private:
 	float SimulationTime = 0.f;
 	/** The wind's strength for the sails' movement (0 to 1). */
 	float SailStrength() const { return FMath::Clamp(0.35f + WindSpeed / 12.f, 0.35f, 1.f); }
+	/** How fast the canvas works: a light air barely stirs it, a gale makes it shudder (the reach stays within its room). */
+	float SailPace() const { return FMath::Clamp(0.7f + 0.05f * WindSpeed, 0.7f, 2.7f); }
 	/** Where the wind goes, in ship space (the ship does not move yet: true wind = apparent wind). */
 	FVector3f WindTowards() const
 	{

@@ -509,7 +509,7 @@ void AProceduralShip::ApplyResult(FShipBuildResult& Result)
 			(Result.FitFails == 0 && Inside == 0 && Crossings == 0 && Result.FitReduced < 0.05f) ? TEXT("PASS") : TEXT("FAIL"),
 			Result.FitFails, Result.FitReduced * 100.f, Inside, Crossings, *Cycle, *Result.FitText);
 	}
-	Sails->Evaluate(0.f, SailStrength(), WindTowards());
+	Sails->Evaluate(0.f, SailStrength(), WindTowards(), -1.f, SailPace());
 	if (!Sails->IsEmpty())
 	{
 		TArray<int32> SailTriangles;
@@ -596,7 +596,7 @@ void AProceduralShip::Tick(float DeltaSeconds)
 			BuildFromDesignAsync(Design, nullptr);
 		}
 	}
-	Sails->Evaluate(SimulationTime, SailStrength(), WindTowards());
+	Sails->Evaluate(SimulationTime, SailStrength(), WindTowards(), -1.f, SailPace());
 	UpdateSails();
 }
 

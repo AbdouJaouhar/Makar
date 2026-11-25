@@ -478,7 +478,7 @@ TSharedRef<SWidget> SShipMenu::WindTab()
 	TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
 	Box->AddSlot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)[Heading(LOCTEXT("Wind", "Vent"))];
 	AddShipFloat(Box, LOCTEXT("WindFrom", "D'où il vient (° depuis l'étrave)"), &AProceduralShip::WindFrom, 0.f, 360.f, 1.f);
-	AddShipFloat(Box, LOCTEXT("WindSpeed", "Force (m/s)"), &AProceduralShip::WindSpeed, 0.f, 25.f, 0.1f);
+	AddShipFloat(Box, LOCTEXT("WindSpeed", "Force (m/s)"), &AProceduralShip::WindSpeed, 0.f, 40.f, 0.1f);
 	Box->AddSlot().AutoHeight().Padding(0.f, 10.f, 0.f, 0.f)
 	[
 		SNew(STextBlock).AutoWrapText(true).Font(Font(9)).ColorAndOpacity(MenuDim)

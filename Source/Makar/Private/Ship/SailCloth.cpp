@@ -1318,7 +1318,7 @@ void FSailAnimation::UpdateNormals(const FShipSail& Spec, const TArray<FVector3f
 	}
 }
 
-void FSailAnimation::Evaluate(float Time, float Strength, const FVector3f& WindDir, float ForcedFill)
+void FSailAnimation::Evaluate(float Time, float Strength, const FVector3f& WindDir, float ForcedFill, float Pace)
 {
 	Strength = FMath::Clamp(Strength, 0.f, 1.f);
 	const FVector3f Wind = WindDir.GetSafeNormal();
@@ -1352,6 +1352,7 @@ void FSailAnimation::Evaluate(float Time, float Strength, const FVector3f& WindD
 			S.FromNear = TargetFrom;
 			S.Luff = TargetLuff;
 			S.Depth = TargetDepth;
+			S.Clock = Time * Pace;
 		}
 		else
 		{
@@ -1360,6 +1361,7 @@ void FSailAnimation::Evaluate(float Time, float Strength, const FVector3f& WindD
 			S.FromNear = FMath::FInterpTo(S.FromNear, TargetFrom, Step, 1.f);
 			S.Luff = FMath::FInterpTo(S.Luff, TargetLuff, Step, 2.f);
 			S.Depth = FMath::FInterpTo(S.Depth, TargetDepth, Step, 1.f);
+			S.Clock += (Time - S.LastTime) * Pace;
 		}
 		S.LastTime = Time;
 		// The share of the way to the empty shape: emptied by the wind, or flattened by the crew on a wind.
@@ -1368,9 +1370,8 @@ void FSailAnimation::Evaluate(float Time, float Strength, const FVector3f& WindD
 		const float From = S.FromNear;
 		// Waves weighed 0.5 + 0.3 + 0.2 (and the two ways mixed by shares that add to 1): the sum never exceeds 1, so no
 		// point ever goes further than its amplitude.
-		const float Gust = 0.75f + 0.5f * Strength;                     // the waves run quicker in a fresh breeze
-		const float W1 = UE_TWO_PI * 0.55f * Gust, K1 = UE_TWO_PI / 5.f;   // the long flutter running across the canvas
-		const float W2 = UE_TWO_PI * 1.3f * Gust, K2 = UE_TWO_PI / 2.2f;   // the short ripple on top of it
+		const float W1 = UE_TWO_PI * 0.55f, K1 = UE_TWO_PI / 5.f;   // the long flutter running across the canvas
+		const float W2 = UE_TWO_PI * 1.3f, K2 = UE_TWO_PI / 2.2f;   // the short ripple on top of it
 		const float W4 = UE_TWO_PI * 3.2f, K4 = UE_TWO_PI / 1.1f;          // the shiver of a lifting leading edge
 		constexpr float W3 = UE_TWO_PI * 0.12f;                            // the whole sail breathing with the gusts
 		const float Breath = FMath::Sin(W3 * Time + S.Phase);
@@ -1389,11 +1390,11 @@ void FSailAnimation::Evaluate(float Time, float Strength, const FVector3f& WindD
 				continue;
 			}
 			const float Run = (1.f - Lead) * (
-				From * (0.5f * FMath::Sin(W1 * Time - K1 * S.Along[V] + 0.35f * K1 * S.Down[V] + S.Phase)
-					+ 0.3f * FMath::Sin(W2 * Time - K2 * S.Along[V] - 0.6f * K2 * S.Down[V] + 1.3f + S.Phase))
-				+ (1.f - From) * (0.5f * FMath::Sin(W1 * Time + K1 * S.Along[V] + 0.35f * K1 * S.Down[V] + S.Phase)
-					+ 0.3f * FMath::Sin(W2 * Time + K2 * S.Along[V] - 0.6f * K2 * S.Down[V] + 1.3f + S.Phase)));
-			const float Shiver = Lead * 0.8f * FMath::Sin(W4 * Time - K4 * FromLead + 2.1f * S.Down[V] + S.Phase);
+				From * (0.5f * FMath::Sin(W1 * S.Clock - K1 * S.Along[V] + 0.35f * K1 * S.Down[V] + S.Phase)
+					+ 0.3f * FMath::Sin(W2 * S.Clock - K2 * S.Along[V] - 0.6f * K2 * S.Down[V] + 1.3f + S.Phase))
+				+ (1.f - From) * (0.5f * FMath::Sin(W1 * S.Clock + K1 * S.Along[V] + 0.35f * K1 * S.Down[V] + S.Phase)
+					+ 0.3f * FMath::Sin(W2 * S.Clock + K2 * S.Along[V] - 0.6f * K2 * S.Down[V] + 1.3f + S.Phase)));
+			const float Shiver = Lead * 0.8f * FMath::Sin(W4 * S.Clock - K4 * FromLead + 2.1f * S.Down[V] + S.Phase);
 			const float F = Run + Shiver + 0.2f * Breath;
 			S.X[V] = Shape + S.RestNormal[V] * (A * F);
 		}

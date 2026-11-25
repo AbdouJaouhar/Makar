@@ -186,7 +186,7 @@ public:
 	 * space): each fills when the wind is on its back, empties and flogs as the wind comes along it or onto its face.
 	 * ForcedFill (0 to 1) sets every sail's filling instead (diagnostics).
 	 */
-	void Evaluate(float Time, float Strength, const FVector3f& WindDir = FVector3f::ForwardVector, float ForcedFill = -1.f);
+	void Evaluate(float Time, float Strength, const FVector3f& WindDir = FVector3f::ForwardVector, float ForcedFill = -1.f, float Pace = 1.f);
 
 	/** Every sail merged: the triangles, UVs and colours once; positions (cm) and normals each frame. */
 	void GetTopology(TArray<int32>& OutTriangles, TArray<FVector2D>& OutUV, TArray<FColor>& OutColors) const;
@@ -216,6 +216,8 @@ private:
 		/** Eased each frame: the share of the waves running from the edge at Along 0 (1) or from the other (0), the
 		 * leading edge's luffing (0 to 1), and how deep the belly is drawn (1: running free; less on a wind). */
 		float FromNear = 1.f, Luff = 0.f, Depth = 1.f;
+		/** The waves' own time: it runs at the wind's pace (no jump when the wind freshens). */
+		float Clock = 0.f;
 	};
 
 	void UpdateNormals(const FShipSail& Spec, const TArray<FVector3f>& X, TArray<FVector3f>& OutNormal) const;
