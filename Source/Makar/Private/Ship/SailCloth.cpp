@@ -1281,6 +1281,11 @@ void FSailAnimation::Init(TArray<FShipSail> InSails, TSharedPtr<const FShipVoxel
 			}
 		}
 		S.Phase = 1.7f * Index++;
+		{
+			const int32 Mid = Spec.NV / 2;
+			S.AcrossDir = (Spec.Rest[Spec.Index(Spec.NU, Mid)] - Spec.Rest[Spec.Index(0, Mid)]).GetSafeNormal();
+			S.Width = FMath::Max(S.Along[Spec.Index(Spec.NU, Mid)], 0.5f);
+		}
 		S.Spec = MoveTemp(Spec);
 	}
 }
@@ -1321,42 +1326,75 @@ void FSailAnimation::Evaluate(float Time, float Strength, const FVector3f& WindD
 	{
 		FSailState& S = Sails[Index];
 		const FShipSail& Spec = S.Spec;
-		// How the wind takes it: on its back, it fills; along it, it empties; on its face, it lies flat. The sail
-		// follows over about a second.
-		float Target = ForcedFill;
+		// How the wind takes it. On its back it fills; along it, it empties; on its face, it lies flat. Running free,
+		// the belly is drawn deep; on a wind, the crew hauls it flatter and the leading edge lifts and shivers. The
+		// waves run downwind across the canvas, from the edge the wind comes in by.
+		const float Attack = FVector3f::DotProduct(Wind, Spec.BellyDir);
+		const float Across = FVector3f::DotProduct(Wind, S.AcrossDir);
+		float Target = ForcedFill, TargetFrom = Across >= 0.f ? 1.f : 0.f, TargetLuff = 0.f, TargetDepth = 1.f;
 		if (Target < 0.f)
 		{
-			Target = FMath::SmoothStep(-0.05f, 0.35f, FVector3f::DotProduct(Wind, Spec.BellyDir)) * FMath::SmoothStep(0.05f, 0.3f, Strength);
+			Target = FMath::SmoothStep(-0.05f, 0.35f, Attack) * FMath::SmoothStep(0.05f, 0.3f, Strength);
+			TargetFrom = FMath::SmoothStep(-0.25f, 0.25f, Across);
+			TargetLuff = FMath::Clamp(1.f - FMath::Abs(Attack - 0.15f) / 0.45f, 0.f, 1.f);
+			TargetDepth = 0.55f + 0.45f * FMath::SmoothStep(0.4f, 0.95f, Attack);
+		}
+		else
+		{
+			// Diagnostics: the moods in turn, whatever the wind.
+			TargetFrom = FMath::Frac(Time * 0.37f);
+			TargetLuff = FMath::Frac(Time * 0.53f);
+			TargetDepth = 0.55f + 0.45f * FMath::Frac(Time * 0.29f);
 		}
 		if (ForcedFill >= 0.f || S.LastTime < 0.f || Time < S.LastTime)
 		{
 			S.Fill = Target;
+			S.FromNear = TargetFrom;
+			S.Luff = TargetLuff;
+			S.Depth = TargetDepth;
 		}
 		else
 		{
-			S.Fill = FMath::FInterpTo(S.Fill, Target, FMath::Min(Time - S.LastTime, 0.1f), 1.5f);
+			const float Step = FMath::Min(Time - S.LastTime, 0.1f);
+			S.Fill = FMath::FInterpTo(S.Fill, Target, Step, 1.5f);
+			S.FromNear = FMath::FInterpTo(S.FromNear, TargetFrom, Step, 1.f);
+			S.Luff = FMath::FInterpTo(S.Luff, TargetLuff, Step, 2.f);
+			S.Depth = FMath::FInterpTo(S.Depth, TargetDepth, Step, 1.f);
 		}
 		S.LastTime = Time;
-		const float Empty = 1.f - S.Fill;
-		// A full sail is taut: it ripples; an empty one flogs (its whole movement).
-		const float Flog = 0.45f + 0.55f * Empty;
-		// Waves weighed 0.5 + 0.3 + 0.2: the sum never exceeds 1, so no point ever goes further than its amplitude.
-		constexpr float W1 = UE_TWO_PI * 0.55f, K1 = UE_TWO_PI / 5.f;   // the long flutter running aft through the canvas
-		constexpr float W2 = UE_TWO_PI * 1.3f, K2 = UE_TWO_PI / 2.2f;   // the short ripple on top of it
-		constexpr float W3 = UE_TWO_PI * 0.12f;                         // the whole sail breathing with the gusts
+		// The share of the way to the empty shape: emptied by the wind, or flattened by the crew on a wind.
+		const float Empty = 1.f - S.Fill * S.Depth;
+		const float Shaken = 1.f - S.Fill;
+		const float From = S.FromNear;
+		// Waves weighed 0.5 + 0.3 + 0.2 (and the two ways mixed by shares that add to 1): the sum never exceeds 1, so no
+		// point ever goes further than its amplitude.
+		const float Gust = 0.75f + 0.5f * Strength;                     // the waves run quicker in a fresh breeze
+		const float W1 = UE_TWO_PI * 0.55f * Gust, K1 = UE_TWO_PI / 5.f;   // the long flutter running across the canvas
+		const float W2 = UE_TWO_PI * 1.3f * Gust, K2 = UE_TWO_PI / 2.2f;   // the short ripple on top of it
+		const float W4 = UE_TWO_PI * 3.2f, K4 = UE_TWO_PI / 1.1f;          // the shiver of a lifting leading edge
+		constexpr float W3 = UE_TWO_PI * 0.12f;                            // the whole sail breathing with the gusts
 		const float Breath = FMath::Sin(W3 * Time + S.Phase);
 		for (int32 V = 0; V < S.X.Num(); ++V)
 		{
 			const FVector3f Shape = Spec.Slack.Num() == S.X.Num() ? FMath::Lerp(Spec.Rest[V], Spec.Flat[V], Empty * Spec.Slack[V]) : Spec.Rest[V];
+			// Metres from the edge the wind comes in by.
+			const float FromLead = FMath::Lerp(S.Width - S.Along[V], S.Along[V], From);
+			const float Lead = S.Luff * (1.f - FMath::SmoothStep(0.f, 0.3f * S.Width, FromLead));
+			// A full sail is taut: it ripples; an empty one flogs, and a lifting leading edge shivers (its whole movement).
+			const float Flog = 0.45f + 0.55f * FMath::Max(Shaken, Lead);
 			const float A = Spec.Amplitude[V] * FMath::Max(Strength, 0.35f) * Flog;
 			if (A <= 0.f)
 			{
 				S.X[V] = Shape;
 				continue;
 			}
-			const float F = 0.5f * FMath::Sin(W1 * Time - K1 * S.Along[V] + 0.35f * K1 * S.Down[V] + S.Phase)
-				+ 0.3f * FMath::Sin(W2 * Time - K2 * S.Along[V] - 0.6f * K2 * S.Down[V] + 1.3f + S.Phase)
-				+ 0.2f * Breath;
+			const float Run = (1.f - Lead) * (
+				From * (0.5f * FMath::Sin(W1 * Time - K1 * S.Along[V] + 0.35f * K1 * S.Down[V] + S.Phase)
+					+ 0.3f * FMath::Sin(W2 * Time - K2 * S.Along[V] - 0.6f * K2 * S.Down[V] + 1.3f + S.Phase))
+				+ (1.f - From) * (0.5f * FMath::Sin(W1 * Time + K1 * S.Along[V] + 0.35f * K1 * S.Down[V] + S.Phase)
+					+ 0.3f * FMath::Sin(W2 * Time + K2 * S.Along[V] - 0.6f * K2 * S.Down[V] + 1.3f + S.Phase)));
+			const float Shiver = Lead * 0.8f * FMath::Sin(W4 * Time - K4 * FromLead + 2.1f * S.Down[V] + S.Phase);
+			const float F = Run + Shiver + 0.2f * Breath;
 			S.X[V] = Shape + S.RestNormal[V] * (A * F);
 		}
 		UpdateNormals(Spec, S.X, S.Normal);

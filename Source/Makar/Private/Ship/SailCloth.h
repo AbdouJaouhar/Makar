@@ -210,6 +210,12 @@ private:
 		/** How full it is (1: filled; 0: the wind out of it), eased towards what the wind gives it. */
 		float Fill = 1.f;
 		float LastTime = -1.f;
+		/** Across the canvas, from the edge at Along 0 to the other (ship space), and the canvas' width. */
+		FVector3f AcrossDir = FVector3f::YAxisVector;
+		float Width = 1.f;
+		/** Eased each frame: the share of the waves running from the edge at Along 0 (1) or from the other (0), the
+		 * leading edge's luffing (0 to 1), and how deep the belly is drawn (1: running free; less on a wind). */
+		float FromNear = 1.f, Luff = 0.f, Depth = 1.f;
 	};
 
 	void UpdateNormals(const FShipSail& Spec, const TArray<FVector3f>& X, TArray<FVector3f>& OutNormal) const;
