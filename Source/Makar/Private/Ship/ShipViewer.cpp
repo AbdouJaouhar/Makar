@@ -24,6 +24,7 @@ void AShipViewerPawn::Frame(const FBox& Bounds)
 		return;
 	}
 	Target = Bounds.GetCenter();
+	FramedCenter = Target;
 	const float Radius = Bounds.GetExtent().Size();
 	MinDistance = Radius * 0.35f;
 	MaxDistance = Radius * 5.f;
@@ -43,11 +44,44 @@ void AShipViewerPawn::Tick(float DeltaSeconds)
 		const bool bDrag = PC->IsInputKeyDown(EKeys::LeftMouseButton) || PC->IsInputKeyDown(EKeys::RightMouseButton);
 		float DX = 0.f, DY = 0.f;
 		PC->GetInputMouseDelta(DX, DY);
-		if (bDrag && (DX != 0.f || DY != 0.f))
+		const FRotator View(Pitch, Yaw, 0.f);
+		const FVector ViewRight = FRotationMatrix(View).GetUnitAxis(EAxis::Y);
+		const FVector ViewUp = FRotationMatrix(View).GetUnitAxis(EAxis::Z);
+		const bool bPan = PC->IsInputKeyDown(EKeys::MiddleMouseButton)
+			|| (bDrag && (PC->IsInputKeyDown(EKeys::LeftShift) || PC->IsInputKeyDown(EKeys::RightShift)));
+		if (bPan && (DX != 0.f || DY != 0.f))
+		{
+			// The ship follows the mouse: as far as the cursor moves on screen, at the ship's distance.
+			const float Scale = Distance * 0.0045f;
+			Target -= ViewRight * (DX * Scale) + ViewUp * (DY * Scale);
+			IdleTime = 0.f;
+		}
+		else if (bDrag && (DX != 0.f || DY != 0.f))
 		{
 			Yaw += DX * 2.5f;
 			Pitch = FMath::Clamp(Pitch + DY * 2.5f, -80.f, 35.f);
 			IdleTime = 0.f;
+		}
+		// Keys: horizontal along the view, E / C vertical; Shift for faster.
+		auto Down = [PC](std::initializer_list<FKey> Keys) { for (const FKey& K : Keys) { if (PC->IsInputKeyDown(K)) { return true; } } return false; };
+		const float Forward = (Down({ EKeys::W, EKeys::Z, EKeys::Up }) ? 1.f : 0.f) - (Down({ EKeys::S, EKeys::Down }) ? 1.f : 0.f);
+		const float Side = (Down({ EKeys::D, EKeys::Right }) ? 1.f : 0.f) - (Down({ EKeys::A, EKeys::Q, EKeys::Left }) ? 1.f : 0.f);
+		const float Lift = (Down({ EKeys::E, EKeys::PageUp }) ? 1.f : 0.f) - (Down({ EKeys::C, EKeys::PageDown }) ? 1.f : 0.f);
+		if (Forward != 0.f || Side != 0.f || Lift != 0.f)
+		{
+			const FVector Flat = FRotator(0.f, Yaw, 0.f).Vector();
+			const FVector FlatRight = FRotator(0.f, Yaw + 90.f, 0.f).Vector();
+			const float Speed = Distance * 0.5f * (Down({ EKeys::LeftShift, EKeys::RightShift }) ? 3.f : 1.f);
+			Target += (Flat * Forward + FlatRight * Side + FVector::UpVector * Lift) * (Speed * DeltaSeconds);
+			IdleTime = 0.f;
+		}
+		if (PC->WasInputKeyJustPressed(EKeys::R))
+		{
+			bAutoRotate = !bAutoRotate;
+		}
+		if (PC->WasInputKeyJustPressed(EKeys::F))
+		{
+			Recenter();
 		}
 		if (PC->WasInputKeyJustPressed(EKeys::MouseScrollUp))
 		{
@@ -61,7 +95,7 @@ void AShipViewerPawn::Tick(float DeltaSeconds)
 		}
 	}
 	IdleTime += DeltaSeconds;
-	if (IdleTime > 4.f)
+	if (bAutoRotate && IdleTime > 4.f)
 	{
 		Yaw += AutoRotateSpeed * DeltaSeconds * FMath::Min((IdleTime - 4.f) * 0.5f, 1.f);
 	}

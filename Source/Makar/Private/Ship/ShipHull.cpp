@@ -931,7 +931,7 @@ namespace
 			const float FT = L.FrameThickness;
 			const FLinearColor Painted = (D.Type == EShipType::Frigate || D.Type == EShipType::Galleon)
 				? FLinearColor(0.26f, 0.055f, 0.035f, 1.f) : FLinearColor(D.TopsideColor.R * 1.6f, D.TopsideColor.G * 1.6f, D.TopsideColor.B * 1.6f, 1.f);
-			const FLinearColor Oak(0.2f, 0.14f, 0.085f, 1.f);
+			const FLinearColor TransomOak(0.2f, 0.14f, 0.085f, 1.f);
 			const float Low = FMath::Max(Start, Interior ? Interior->FloorH : Start);
 			TArray<float> Cuts1 = { Low, Top, L.MainDeck(-L.HalfLength) };
 			for (const FVector4f& W : Windows)
@@ -960,7 +960,7 @@ namespace
 					}
 				}
 				Gaps.Sort([](const FVector2f& A, const FVector2f& Bv) { return A.X < Bv.X; });
-				const FLinearColor C = Hm > L.MainDeck(-L.HalfLength) - 0.05f ? Painted : Oak;
+				const FLinearColor C = Hm > L.MainDeck(-L.HalfLength) - 0.05f ? Painted : TransomOak;
 				float Y = -1e6f;
 				TArray<FVector2f> Spans;
 				for (const FVector2f& G : Gaps)
@@ -1574,8 +1574,8 @@ namespace
 						}
 					}
 					// The balustrade on the edge above: nobody walks off the raised deck, but where the ladders come up.
-					const float Gap = StairHalf + 0.06f;
-					const float Pieces[][2] = { { -Hb, -StairY - Gap }, { -StairY + Gap, StairY - Gap }, { StairY + Gap, Hb } };
+					const float StairGap = StairHalf + 0.06f;
+					const float Pieces[][2] = { { -Hb, -StairY - StairGap }, { -StairY + StairGap, StairY - StairGap }, { StairY + StairGap, Hb } };
 					for (const auto& Piece : Pieces)
 					{
 						if (Piece[1] - Piece[0] > 0.02f)
@@ -1611,8 +1611,8 @@ namespace
 				{
 					TArray<FVector3f> Path = { FVector3f(X + Outward * 0.04f, -HbTop, L.Z(Top) - 0.06f), FVector3f(X + Outward * 0.04f, HbTop, L.Z(Top) - 0.06f) };
 					B.Beam(Wood, Path, FVector3f::UpVector, 0.16f, 0.16f, FLinearColor(D.WaleColor.R * 1.5f, D.WaleColor.G * 1.5f, D.WaleColor.B * 1.5f, 1.f));
-					const float Gap = StairHalf + 0.06f;
-					const float Pieces[][2] = { { -HbTop, -StairY - Gap }, { -StairY + Gap, StairY - Gap }, { StairY + Gap, HbTop } };
+					const float StairGap = StairHalf + 0.06f;
+					const float Pieces[][2] = { { -HbTop, -StairY - StairGap }, { -StairY + StairGap, StairY - StairGap }, { StairY + StairGap, HbTop } };
 					for (const auto& Piece : Pieces)
 					{
 						if (Piece[1] - Piece[0] > 0.05f)

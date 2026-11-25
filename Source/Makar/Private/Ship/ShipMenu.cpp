@@ -94,7 +94,7 @@ void SShipMenu::Construct(const FArguments& InArgs)
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 4.f, 0.f, 0.f)
 				[
-					SNew(STextBlock).Text(LOCTEXT("Help", "Glisser : tourner autour   ·   Molette : zoom")).Font(Font(9)).ColorAndOpacity(MenuDim)
+					SNew(STextBlock).Text(LOCTEXT("Help", "Glisser : tourner   ·   Molette : zoom   ·   Clic milieu ou Maj + glisser : déplacer\nZQSD / flèches : avancer, côtés   ·   E / C : monter, descendre   ·   F : recentrer   ·   R : rotation auto")).Font(Font(9)).ColorAndOpacity(MenuDim).AutoWrapText(true)
 				]
 			]
 		]
@@ -306,6 +306,27 @@ TSharedRef<SWidget> SShipMenu::TypeTab()
 		.OnClicked_Lambda([this]() { if (AShipViewerController* PC = Controller.Get()) { PC->StartVisit(); } return FReply::Handled(); })
 		[
 			SNew(STextBlock).Text(LOCTEXT("Visit", "Monter à bord  (Tab : revenir)")).Font(Font(11, "Bold")).ColorAndOpacity(TextColour)
+		]
+	];
+	Box->AddSlot().AutoHeight().Padding(0.f, 4.f)
+	[
+		SNew(SCheckBox)
+		.IsChecked_Lambda([this]()
+		{
+			const AShipViewerController* PC = Controller.Get();
+			const AShipViewerPawn* Viewer = PC ? Cast<AShipViewerPawn>(PC->GetPawn()) : nullptr;
+			return Viewer && !Viewer->bAutoRotate ? ECheckBoxState::Unchecked : ECheckBoxState::Checked;
+		})
+		.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+		{
+			const AShipViewerController* PC = Controller.Get();
+			if (AShipViewerPawn* Viewer = PC ? Cast<AShipViewerPawn>(PC->GetPawn()) : nullptr)
+			{
+				Viewer->bAutoRotate = State == ECheckBoxState::Checked;
+			}
+		})
+		[
+			SNew(STextBlock).Text(LOCTEXT("AutoRotate", "Rotation automatique de la caméra  (R)")).Font(Font(10)).ColorAndOpacity(TextColour)
 		]
 	];
 	Box->AddSlot().AutoHeight().Padding(0.f, 12.f, 0.f, 6.f)[Heading(LOCTEXT("Variant", "Variante"))];

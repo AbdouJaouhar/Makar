@@ -13,7 +13,9 @@ class SShipMenu;
 
 /**
  * A camera orbiting the ship: drag with the left or right mouse button to turn around it, the wheel to come closer or
- * step back; left alone, it turns slowly by itself.
+ * step back; drag with the middle button (or Shift + drag) to slide it sideways and up or down; ZQSD / WASD / arrows
+ * move it horizontally, E and C up and down, F frames the ship again, R stops or starts the slow turn it makes by
+ * itself when left alone.
  */
 UCLASS()
 class MAKAR_API AShipViewerPawn : public APawn
@@ -31,11 +33,19 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Viewer")
 	float AutoRotateSpeed = 6.f; // degrees per second
 
+	/** Whether the camera turns by itself round the ship when left alone. */
+	UPROPERTY(EditAnywhere, Category = "Viewer")
+	bool bAutoRotate = true;
+
+	/** Back to the ship's centre (the distance kept). */
+	void Recenter() { Target = FramedCenter; }
+
 private:
 	UPROPERTY(VisibleAnywhere, Category = "Viewer")
 	TObjectPtr<UCameraComponent> Camera;
 
 	FVector Target = FVector::ZeroVector;
+	FVector FramedCenter = FVector::ZeroVector;
 	float Yaw = -35.f;
 	float Pitch = -12.f;
 	float Distance = 6000.f;
