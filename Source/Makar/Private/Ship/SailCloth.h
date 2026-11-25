@@ -130,6 +130,9 @@ struct FShipSail
 	/** The same sail with its belly gone (the wind out of it), and the share of the way to it each point may go. */
 	TArray<FVector3f> Flat;
 	TArray<float> Slack;
+	/** The sail with its belly drawn half as deep again (a hard wind on its back), and the share of the way to it. */
+	TArray<FVector3f> Deep;
+	TArray<float> DeepShare;
 	/** The way the sail bellies (its canvas' mean normal, towards the belly). */
 	FVector3f BellyDir = FVector3f::ForwardVector;
 
@@ -186,7 +189,7 @@ public:
 	 * space): each fills when the wind is on its back, empties and flogs as the wind comes along it or onto its face.
 	 * ForcedFill (0 to 1) sets every sail's filling instead (diagnostics).
 	 */
-	void Evaluate(float Time, float Strength, const FVector3f& WindDir = FVector3f::ForwardVector, float ForcedFill = -1.f, float Pace = 1.f);
+	void Evaluate(float Time, float Strength, const FVector3f& WindDir = FVector3f::ForwardVector, float ForcedFill = -1.f, float Pace = 1.f, float Press = 0.f);
 
 	/** Every sail merged: the triangles, UVs and colours once; positions (cm) and normals each frame. */
 	void GetTopology(TArray<int32>& OutTriangles, TArray<FVector2D>& OutUV, TArray<FColor>& OutColors) const;
@@ -218,6 +221,11 @@ private:
 		float FromNear = 1.f, Luff = 0.f, Depth = 1.f;
 		/** The waves' own time: it runs at the wind's pace (no jump when the wind freshens). */
 		float Clock = 0.f;
+		/** Its middle and half its span (for the wind shadow one sail casts on another), and how deep its belly is drawn
+		 * beyond its cut (0 to 1: a hard wind right on its back). */
+		FVector3f Centre = FVector3f::ZeroVector;
+		float Span = 1.f;
+		float Deepen = 0.f;
 	};
 
 	void UpdateNormals(const FShipSail& Spec, const TArray<FVector3f>& X, TArray<FVector3f>& OutNormal) const;
