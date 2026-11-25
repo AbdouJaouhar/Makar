@@ -92,11 +92,10 @@ private:
 	TObjectPtr<class UShipCollisionComponent> Collision;
 
 	bool bBuilt = false;
-	TSharedPtr<class FSailSimulation> Sails;
+	TSharedPtr<class FSailAnimation> Sails;
 	float SimulationTime = 0.f;
-	/** The cloth's cost: milliseconds spent stepping it, frames, since the last report. */
-	double SimulationMs = 0.0;
-	int32 SimulationFrames = 0;
+	/** The wind's strength for the sails' movement (0 to 1). */
+	float SailStrength() const { return FMath::Clamp(0.35f + WindSpeed / 12.f, 0.35f, 1.f); }
 	void UpdateSails();
 	int32 Ticket = 0;
 	void ApplyResult(struct FShipBuildResult& Result);

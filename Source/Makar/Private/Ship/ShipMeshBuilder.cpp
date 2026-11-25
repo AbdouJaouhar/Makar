@@ -109,6 +109,10 @@ namespace ShipMesh
 		{
 			Blocks->Add({ F.O, F.X, F.Y, F.Z, H });
 		}
+		if (Pieces && (Section == Wood || Section == Metal))
+		{
+			Pieces->Add({ F.O, F.X, F.Y, F.Z, H });
+		}
 		auto P = [&](float SX, float SY, float SZ) { return F.At(SX * H.X, SY * H.Y, SZ * H.Z); };
 		// +X / -X ends, +Y / -Y sides, +Z top, -Z bottom.
 		FlatQuad(Section, P(1, -1, -1), P(1, 1, -1), P(1, 1, 1), P(1, -1, 1), Color, F.X);
@@ -241,6 +245,26 @@ namespace ShipMesh
 		const FShipFrame F = FShipFrame::Along(Origin, Axis);
 		const int32 Count = Profile.Num();
 		const int32 First = Data.Vertices.Num();
+		// A turned piece (lantern, bell, capstan...) recorded as the box round it, when asked.
+		if (((Blocks && bLatheBlocks) || Pieces) && Count > 0 && (Section == Wood || Section == Metal))
+		{
+			float X0 = Profile[0].X, X1 = Profile[0].X, R = 0.f;
+			for (const FVector2f& P : Profile)
+			{
+				X0 = FMath::Min(X0, P.X);
+				X1 = FMath::Max(X1, P.X);
+				R = FMath::Max(R, P.Y);
+			}
+			const FShipBlock Piece{ F.O + F.X * (0.5f * (X0 + X1)), F.X, F.Y, F.Z, FVector3f(FMath::Max(0.5f * (X1 - X0), 0.02f), R, R) };
+			if (Blocks && bLatheBlocks && R >= 0.04f)
+			{
+				Blocks->Add(Piece);
+			}
+			if (Pieces)
+			{
+				Pieces->Add(Piece);
+			}
+		}
 		float Along = 0.f;
 		for (int32 I = 0; I < Count; ++I)
 		{

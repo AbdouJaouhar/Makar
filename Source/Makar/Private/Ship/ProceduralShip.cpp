@@ -23,6 +23,13 @@ struct FShipBuildResult
 	/** What the sails rest on: the hull's walking solids and the rig's blocks. */
 	TArray<FShipBlock> Solids;
 	FShipHullShape HullShape;
+	/** How the sails were fitted (the success criteria). */
+	int32 FitFails = 0;
+	uint32 FitMasts = 0;
+	float FitReduced = 0.f;
+	FString FitText;
+	/** The solids the sails were fitted against (diagnostics). */
+	TArray<FShipBlock> FitObstacles;
 	TSharedPtr<FShipVoxels> Voxels;
 	FShipInterior Interior;
 	float Ground = 0.f;
@@ -35,14 +42,16 @@ struct FShipBuildResult
 namespace
 {
 	/** Pure geometry, no engine objects: runs on any thread. */
-	FShipBuildResult Generate(const FShipDesign& Design, bool bCradle, float CradleHeight)
+	FShipBuildResult GenerateOnce(const FShipDesign& Design, bool bCradle, float CradleHeight)
 	{
 		const double Start = FPlatformTime::Seconds();
 		FShipBuildResult Result;
 		Result.Design = Design;
 		FOceanMeshData Data(ShipMesh::NumSections);
 		ShipMesh::FBuilder Builder(Data);
-		const FHullLines Lines(Design);
+		// The design as trimmed: the crew may ease a mast's trim below (the lines refer to it).
+		FShipDesign Trial = Design;
+		const FHullLines Lines(Trial);
 		TArray<FShipGunPort> Ports;
 		TArray<FShipMastInfo> Masts;
 		Result.Ground = Lines.Z(-Design.KeelDepth);
@@ -73,12 +82,39 @@ namespace
 		Stage(TEXT("hull"), [&]() { ShipHull::Build(Builder, Lines, Ports, Result.Interior); });
 		TArray<FShipRope> Ropes;
 		TArray<FShipBlock> Blocks;
+		TArray<FShipBlock> Pieces;
+		// The hull stays as built; if the sails do not fit as trimmed, the crew eases the masts whose sails fail (a
+		// quarter less each time, three times) and only the rig, fittings, ropes and sails are made again.
+		const int32 HullVertices = Data.Vertices.Num();
+		TArray<int32> HullIndices;
+		for (const TArray<int32>& Section : Data.Sections)
+		{
+			HullIndices.Add(Section.Num());
+		}
+		FString Eased;
+		for (int32 Try = 0; ; ++Try)
+		{
+		if (Try > 0)
+		{
+			Data.Vertices.SetNum(HullVertices);
+			for (int32 Section = 0; Section < Data.Sections.Num(); ++Section)
+			{
+				Data.Sections[Section].SetNum(HullIndices[Section]);
+			}
+			Result.Colliders.Reset();
+			Result.Sails.Reset();
+			Ropes.Reset();
+			Blocks.Reset();
+			Pieces.Reset();
+			Masts.Reset();
+		}
 		Stage(TEXT("rig"), [&]()
 		{
 			// The spars and blocks recorded as obstacles, the ropes kept to be laid; the sails set come out as cloth.
 			Builder.Colliders = &Result.Colliders;
 			Builder.Ropes = &Ropes;
 			Builder.Blocks = &Blocks;
+			Builder.Pieces = &Pieces;
 			ShipRig::Build(Builder, Lines, Masts, &Result.Sails);
 			Builder.Colliders = nullptr;
 			Builder.Blocks = nullptr;
@@ -87,8 +123,11 @@ namespace
 		{
 			// The fittings' solid pieces (bitts, belfry, carriages...) recorded too: the sails are fitted clear of them.
 			Builder.Blocks = &Blocks;
+			Builder.bLatheBlocks = true;
 			ShipFittings::Build(Builder, Lines, Ports, Masts, Result.Interior);
+			Builder.bLatheBlocks = false;
 			Builder.Blocks = nullptr;
+			Builder.Pieces = nullptr;
 		});
 		int32 Crossing = 0;
 		Stage(TEXT("ropes"), [&]()
@@ -174,9 +213,36 @@ namespace
 		{
 			// Obstacles: the rig's and fittings' blocks, and the decks, rails, balustrades, bulkheads one walks among.
 			TArray<FShipBlock> Obstacles = Blocks;
+			Obstacles.Append(Pieces);
+			Result.FitObstacles = Obstacles;
 			Obstacles.Append(Result.Interior.Collision);
-			Result.Times += TEXT(", ") + ShipSails::Fit(Result.Sails, Result.Colliders, Obstacles, Result.HullShape);
+			const ShipSails::FFitReport Fit = ShipSails::Fit(Result.Sails, Result.Colliders, Obstacles, Result.HullShape);
+			Result.FitFails = Fit.ShapeFails;
+			Result.FitMasts = Fit.FailMasts;
+			Result.FitReduced = Fit.Reduced;
+			Result.FitText = Fit.Text;
+			Result.Times += TEXT(", ") + Fit.Text;
 		}
+		if (Result.FitFails == 0 || Try >= 3)
+		{
+			break;
+		}
+		if (Try == 0)
+		{
+			const int32 At = Result.FitText.Find(TEXT("; fails: "));
+			Eased = FString::Printf(TEXT(" [at full trim: %d fails%s]"), Result.FitFails, At != INDEX_NONE ? *Result.FitText.Mid(At, 400) : TEXT(""));
+		}
+		for (int32 Mast = 0; Mast < 4; ++Mast)
+		{
+			if (Result.FitMasts & (1u << Mast))
+			{
+				Trial.MastEase[Mast] *= 0.75f;
+			}
+		}
+		Result.Times += FString::Printf(TEXT(", trim eased to %.0f/%.0f/%.0f/%.0f%%"), Trial.MastEase[0] * 100.f, Trial.MastEase[1] * 100.f, Trial.MastEase[2] * 100.f, Trial.MastEase[3] * 100.f);
+		}
+		Result.Design = Trial;
+		Result.FitText += Eased;
 
 		// Verification only (MAKAR_VERIFY_SAILS=1): everything drawn, in 7 cm cubes (sparse), over the whole ship from a
 		// metre under the waterline to the trucks, to measure that the canvas crosses nothing (wood, iron, ropes...).
@@ -274,6 +340,11 @@ namespace
 		Result.GeometryMs = (FPlatformTime::Seconds() - Start) * 1000.0;
 		return Result;
 	}
+
+	FShipBuildResult Generate(const FShipDesign& Design, bool bCradle, float CradleHeight)
+	{
+		return GenerateOnce(Design, bCradle, CradleHeight);
+	}
 }
 
 AProceduralShip::AProceduralShip()
@@ -340,6 +411,11 @@ FShipDesign AProceduralShip::Trimmed(const FShipDesign& InDesign) const
 {
 	FShipDesign Out = InDesign;
 	Out.WindFrom = WindFrom;
+	Out.TrimEase = 1.f;
+	for (float& Ease : Out.MastEase)
+	{
+		Ease = 1.f;
+	}
 	return Out;
 }
 
@@ -399,10 +475,41 @@ void AProceduralShip::ApplyResult(FShipBuildResult& Result)
 	// The ground (or the keel) at the actor's origin.
 	Mesh->SetRelativeLocation(FVector(0.0, 0.0, bOnCradle ? -Result.Ground * 100.0 : 0.0));
 	Mesh->UpdateBounds();
-	// The sails: cloth simulated each frame, in their own sections (canvas, and the sheets holding their clews).
-	Sails = MakeShared<FSailSimulation>();
+	// The sails: their fitted shapes, moving each frame within their room, in their own section.
+	Sails = MakeShared<FSailAnimation>();
 	Sails->Init(MoveTemp(Result.Sails), Result.Voxels);
 	SimulationTime = 0.f;
+	if (Sails->CanVerify())
+	{
+		// Verification (MAKAR_VERIFY_SAILS=1): the whole movement played against everything drawn.
+		int32 Inside = 0, Crossings = 0;
+		FVector3f First = FVector3f(1e9f);
+		FString Cycle = Sails->VerifyCycle(48, 12.f, Inside, Crossings, &First);
+		if (Inside > 0)
+		{
+			// The solid of the fitting nearest the first sample found inside something drawn.
+			float Best = 1e9f;
+			const FShipBlock* Near = nullptr;
+			for (const FShipBlock& K : Result.FitObstacles)
+			{
+				const float D = (K.O - First).Size() - K.Half.GetMax();
+				if (D < Best)
+				{
+					Best = D;
+					Near = &K;
+				}
+			}
+			if (Near)
+			{
+				Cycle += FString::Printf(TEXT(" nearest fitted solid: block (%.2f %.2f %.2f) half (%.2f %.2f %.2f), %.2f m"), Near->O.X, Near->O.Y, Near->O.Z, Near->Half.X, Near->Half.Y, Near->Half.Z, Best);
+			}
+		}
+		UE_LOG(LogShip, Display, TEXT("SAILCHECK %s seed %d wind %.0f trim %.0f%%: %s fit fails %d, cut %.1f%%, inside %d, crossings %d | %s | %s"),
+			*UEnum::GetValueAsString(Result.Design.Type), Result.Design.Seed, Result.Design.WindFrom, FMath::Min(FMath::Min(Result.Design.MastEase[0], Result.Design.MastEase[1]), FMath::Min(Result.Design.MastEase[2], Result.Design.MastEase[3])) * Result.Design.TrimEase * 100.f,
+			(Result.FitFails == 0 && Inside == 0 && Crossings == 0 && Result.FitReduced < 0.05f) ? TEXT("PASS") : TEXT("FAIL"),
+			Result.FitFails, Result.FitReduced * 100.f, Inside, Crossings, *Cycle, *Result.FitText);
+	}
+	Sails->Evaluate(0.f, SailStrength());
 	if (!Sails->IsEmpty())
 	{
 		TArray<int32> SailTriangles;
@@ -413,7 +520,6 @@ void AProceduralShip::ApplyResult(FShipBuildResult& Result)
 		Sails->GetSurface(Positions, Normals);
 		Mesh->CreateMeshSection(ShipMesh::NumSections, Positions, SailTriangles, Normals, UV, Colors, {}, false);
 		Mesh->SetMaterial(ShipMesh::NumSections, LoadObject<UMaterialInterface>(nullptr, Paths[ShipMesh::Sail]));
-		Mesh->SetMaterial(ShipMesh::NumSections + 1, LoadObject<UMaterialInterface>(nullptr, Paths[ShipMesh::Rope]));
 		Result.Triangles += SailTriangles.Num() / 3;
 		UpdateSails();
 	}
@@ -490,30 +596,8 @@ void AProceduralShip::Tick(float DeltaSeconds)
 			BuildFromDesignAsync(Design, nullptr);
 		}
 	}
-	// The true wind in ship space: where the air goes (the ship does not move yet: true wind = apparent wind).
-	const float From = FMath::DegreesToRadians(WindFrom);
-	const FVector3f Wind = -FVector3f(FMath::Cos(From), FMath::Sin(From), 0.f) * WindSpeed;
-	const double StepStart = FPlatformTime::Seconds();
-	Sails->Step(FMath::Min(DeltaSeconds, 0.05f), Wind, SimulationTime);
+	Sails->Evaluate(SimulationTime, SailStrength());
 	UpdateSails();
-	SimulationMs += (FPlatformTime::Seconds() - StepStart) * 1000.0;
-	++SimulationFrames;
-	// Verification (MAKAR_VERIFY_SAILS=1): every 5 s for the first minute, canvas inside anything drawn, through
-	// another sail, and the cloth's cost.
-	if (Sails->CanVerify() && FMath::FloorToInt(SimulationTime / 5.f) != FMath::FloorToInt((SimulationTime - DeltaSeconds) / 5.f) && SimulationTime < 61.f)
-	{
-		int32 Samples = 0;
-		FString Detail;
-		const int32 Inside = Sails->CountInDrawn(Samples, &Detail);
-		if (!Detail.IsEmpty())
-		{
-			UE_LOG(LogShip, Display, TEXT("ProceduralShip: canvas inside:%s"), *Detail);
-		}
-		UE_LOG(LogShip, Display, TEXT("ProceduralShip: sails at %.0f s, wind from %.0f: %d of %d canvas samples inside anything drawn (wood, iron, rope), %d canvas edges through another sail; %s (%.2f ms with the mesh update)"),
-			SimulationTime, WindFrom, Inside, Samples, Sails->CountSailCrossings(), *Sails->TakeProfile(), SimulationMs / FMath::Max(SimulationFrames, 1));
-		SimulationMs = 0.0;
-		SimulationFrames = 0;
-	}
 }
 
 void AProceduralShip::UpdateSails()
@@ -521,46 +605,4 @@ void AProceduralShip::UpdateSails()
 	TArray<FVector> Positions, Normals;
 	Sails->GetSurface(Positions, Normals);
 	Mesh->UpdateMeshSection(ShipMesh::NumSections, Positions, Normals, {}, {}, {});
-	// The sheets: thin square ropes from each clew to its block, rebuilt each frame.
-	TArray<TPair<FVector3f, FVector3f>> Sheets;
-	Sails->GetSheets(Sheets);
-	if (Sheets.Num() == 0)
-	{
-		return;
-	}
-	TArray<FVector> Vertices, SheetNormals;
-	TArray<int32> Indices;
-	const float Radius = 1.6f; // cm
-	for (const TPair<FVector3f, FVector3f>& Sheet : Sheets)
-	{
-		const FVector A(Sheet.Key * 100.f), B(Sheet.Value * 100.f);
-		const FVector Axis = (B - A).GetSafeNormal();
-		const FVector X = FVector::CrossProduct(Axis, FMath::Abs(Axis.Z) < 0.9 ? FVector::UpVector : FVector::ForwardVector).GetSafeNormal();
-		const FVector Y = FVector::CrossProduct(Axis, X);
-		const int32 First = Vertices.Num();
-		for (int32 Side = 0; Side < 4; ++Side)
-		{
-			const double Angle = UE_HALF_PI * Side;
-			const FVector Out = X * FMath::Cos(Angle) + Y * FMath::Sin(Angle);
-			Vertices.Add(A + Out * Radius);
-			Vertices.Add(B + Out * Radius);
-			SheetNormals.Add(Out);
-			SheetNormals.Add(Out);
-		}
-		for (int32 Side = 0; Side < 4; ++Side)
-		{
-			const int32 A0 = First + Side * 2, B0 = A0 + 1, A1 = First + ((Side + 1) % 4) * 2, B1 = A1 + 1;
-			Indices.Append({ A0, A1, B0, A1, B1, B0 });
-		}
-	}
-	if (Mesh->GetNumSections() > ShipMesh::NumSections + 1 && Mesh->GetProcMeshSection(ShipMesh::NumSections + 1)->ProcVertexBuffer.Num() == Vertices.Num())
-	{
-		Mesh->UpdateMeshSection(ShipMesh::NumSections + 1, Vertices, SheetNormals, {}, {}, {});
-	}
-	else
-	{
-		TArray<FColor> Colors;
-		Colors.Init(FColor(48, 38, 26), Vertices.Num());
-		Mesh->CreateMeshSection(ShipMesh::NumSections + 1, Vertices, Indices, SheetNormals, {}, Colors, {}, false);
-	}
 }

@@ -108,10 +108,9 @@ struct FShipVoxels
 };
 
 /**
- * A sail as the generator cuts it: a grid of (NU + 1) x (NV + 1) points in its cut shape, filled by the wind it is
- * trimmed to (the canvas' built-in camber: the rest lengths of the cloth, and the shape it keeps to), the points bent
- * to the spars and stays (pinned), the clews held by sheets. Fitted into the ship (ShipSails::Fit): nothing passes
- * through its shape, and each point has the room it may move in (Margin) without meeting anything.
+ * A sail as the generator cuts it: a grid of (NU + 1) x (NV + 1) points in its shape, trimmed to the wind (the belly
+ * its cut and the wind give it), the points bent to its spars and stays held. Fitted into the ship (ShipSails::Fit):
+ * its shape clear of everything, and each point's movement (Amplitude) no more than the room it has.
  */
 struct FShipSail
 {
@@ -121,81 +120,90 @@ struct FShipSail
 	TArray<bool> Pinned;
 	TArray<FVector2f> UV;
 	TArray<FLinearColor> Color;
-	/** Metres each point may stray from Rest without touching a rope, spar, the hull or another sail. */
-	TArray<float> Margin;
-
-	/** A sheet: a rope from a clew to its block, which pulls but cannot push. */
-	struct FSheet
-	{
-		int32 Particle = 0;
-		FVector3f Anchor = FVector3f::ZeroVector;
-		float Length = 0.f;
-	};
-	TArray<FSheet> Sheets;
+	/** The mast it belongs to (headsails: the foremast). */
+	int32 Mast = 0;
+	/** The most this kind of sail moves, away from its held edges (m). */
+	float MaxSwing = 0.3f;
+	/** Each point's movement as designed (MaxSwing, fading to nothing at the held edges), and as fitted. */
+	TArray<float> Swing;
+	TArray<float> Amplitude;
 
 	int32 Index(int32 I, int32 J) const { return J * (NU + 1) + I; }
 };
 
 namespace ShipSails
 {
+	/** Air kept between a sail at the far end of its movement and anything else (m). */
+	constexpr float Keep = 0.12f;
+	/** The band along a sail's held edges (yard, stay, mast, gaff, boom) where it is bent to them and may touch its
+	 *  own fittings there (lacing, hoops, jaws, robands) (m). */
+	constexpr float Bent = 0.3f;
+
+	/** Distance from P to the sail's held edges (segments between neighbouring held points). */
+	float ToHeld(const struct FShipSail& Sail, const FVector3f& P);
+
+	/** How the fitting went: what the success criteria measure. */
+	struct FFitReport
+	{
+		/** Points or facet samples of a shape nearer than Keep to something (must be 0). */
+		int32 ShapeFails = 0;
+		/** The masts whose sails fail (bit per mast). */
+		uint32 FailMasts = 0;
+		/** Share of the canvas (that is meant to move) whose movement had to be cut by more than half. */
+		float Reduced = 0.f;
+		FString Text;
+	};
+
 	/**
-	 * Done once when the ship is generated, as an artist would for a hand-made ship: every sail's shape kept clear of
-	 * every rope, spar, top, the hull and the other sails (a point too near is moved off; a facet a rope goes through is
-	 * moved to the side the sail bellies to), then each point's room measured (Margin). Returns a report for the log.
+	 * Done once when the ship is generated, as a rigger and an artist would for a hand-made ship. Each sail's shape is
+	 * moved clear of every rope, spar, block, fitting, deck, the hull and the other sails (by smooth bulges, square to
+	 * the canvas); then each point's room is measured, exactly for the ropes and spars, and its movement bounded by it:
+	 * at the far end of its movement, no sail comes nearer than Keep to anything, nor to another sail at the far end of
+	 * its own (each takes half the gap).
 	 */
-	FString Fit(TArray<FShipSail>& Sails, const TArray<FShipCapsule>& Colliders, const TArray<FShipBlock>& Blocks, const FShipHullShape& Hull);
+	FFitReport Fit(TArray<FShipSail>& Sails, const TArray<FShipCapsule>& Colliders, const TArray<FShipBlock>& Blocks, const FShipHullShape& Hull);
 }
 
 /**
- * The sails as cloth (position-based dynamics, small substeps): canvas that does not stretch but folds, weight,
- * aerodynamic pressure of the apparent wind on each facet, held by its spars and sheets, and each point kept within its
- * margin of the fitted shape: it ripples, fills and flogs, and never reaches anything (no collision to search for while
- * playing). Ship space.
+ * The sails moving: each point off its fitted shape, square to the canvas, by its amplitude times a bounded sum of
+ * waves (the flutter running through the canvas, a slower breathing of the whole sail), scaled by the wind's strength.
+ * A pure function of time: no state, nothing to collide, and never further from the shape than its amplitude. Ship space.
  */
-class FSailSimulation
+class FSailAnimation
 {
 public:
 	/** Verify (optional): everything drawn, in cubes, to measure that nothing is crossed (diagnostics only). */
-	void Init(TArray<FShipSail> InSails, TSharedPtr<const FShipVoxels> Verify);
+	void Init(TArray<FShipSail> InSails, TSharedPtr<const FShipVoxels> InVerify);
 	bool IsEmpty() const { return Sails.Num() == 0; }
 
-	/** Advances by DeltaTime under Wind (m/s, ship space: where the air goes). Time: for the gusts. */
-	void Step(float DeltaTime, const FVector3f& Wind, float Time);
+	/** The sails at Time, under a wind of Strength (0 to 1: the share of their movement). */
+	void Evaluate(float Time, float Strength);
 
 	/** Every sail merged: the triangles, UVs and colours once; positions (cm) and normals each frame. */
 	void GetTopology(TArray<int32>& OutTriangles, TArray<FVector2D>& OutUV, TArray<FColor>& OutColors) const;
 	void GetSurface(TArray<FVector>& OutPositionsCm, TArray<FVector>& OutNormals) const;
-	/** The sheets: clew, block. */
-	void GetSheets(TArray<TPair<FVector3f, FVector3f>>& Out) const;
 
-	/** Diagnostics. The canvas sampled 4 x 4 a facet: samples inside anything drawn (needs Verify), out of how many. */
+	/**
+	 * Diagnostics: the whole movement played at full strength, Times instants over Seconds; at each, the canvas sampled
+	 * 4 x 4 a facet against everything drawn (Verify), and every canvas edge against the other sails' facets.
+	 */
 	bool CanVerify() const { return Verify.IsValid() && Verify->IsValid(); }
-	int32 CountInDrawn(int32& OutSamples, FString* OutDetail = nullptr) const;
-	/** Edges of a sail's canvas through another sail's facets. */
-	int32 CountSailCrossings() const;
-	/** Milliseconds a frame spent stepping, substeps a frame, since the last call. */
-	FString TakeProfile();
+	FString VerifyCycle(int32 Times, float Seconds, int32& OutInside, int32& OutCrossings, FVector3f* OutFirst = nullptr);
 
 private:
-	struct FConstraint
-	{
-		int32 A, B;
-		float Rest, Stretch, Compress;
-	};
-
 	struct FSailState
 	{
 		FShipSail Spec;
-		TArray<FVector3f> X, Prev, Normal, Force;
-		TArray<float> InvMass;
-		TArray<FConstraint> Constraints;
+		TArray<FVector3f> X, Normal, RestNormal;
+		/** Metres along the canvas from its luff, and down from its head: where each point is in the waves. */
+		TArray<float> Along, Down;
+		float Phase = 0.f;
 	};
 
-	void Substep(FSailState& S, float H, const FVector3f& Wind, float Time) const;
-	void UpdateNormals(FSailState& S) const;
+	void UpdateNormals(const FShipSail& Spec, const TArray<FVector3f>& X, TArray<FVector3f>& OutNormal) const;
+	int32 CountInDrawn(int32& OutSamples, FString* OutDetail, FVector3f* OutFirst = nullptr) const;
+	int32 CountSailCrossings() const;
 
 	TArray<FSailState> Sails;
 	TSharedPtr<const FShipVoxels> Verify;
-	float Accumulator = 0.f;
-	double ProfileSeconds = 0.0, ProfileSubsteps = 0.0, ProfileFrames = 0.0;
 };

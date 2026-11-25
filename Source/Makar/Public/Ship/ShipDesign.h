@@ -124,6 +124,10 @@ struct MAKAR_API FShipDesign
 	/** The wind the rig is trimmed to (degrees from the bow, clockwise): the yards braced, the booms swung out, the
 	 *  fore-and-aft sails sheeted to leeward. Set by the ship from its wind, not part of the design's look. */
 	float WindFrom = 210.f;
+	/** How hard the yards are braced and the booms swung out (1: as the wind asks; less when the sails would not fit). */
+	float TrimEase = 1.f;
+	/** The same, mast by mast (the crew trims each mast as its sails allow). */
+	float MastEase[4] = { 1.f, 1.f, 1.f, 1.f };
 
 	/** How the crew trims to a wind: the yards' angle from square (degrees, + : starboard arms forward), the side the
 	 *  fore-and-aft sails go to (+1 starboard), the booms' swing out (degrees). */
