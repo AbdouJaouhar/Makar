@@ -23,6 +23,38 @@ struct FShipBlock
 };
 
 /**
+ * The hull's outer shape for the sails: its half breadth outside the planking, tabulated by length X and height H above
+ * the keel (ship space z = H + ZOffset), the height of its rail along it, and the thickness of its side.
+ */
+struct FShipHullShape
+{
+	float X0 = 0.f, DX = 0.25f;
+	float H0 = 0.f, DH = 0.1f;
+	int32 NX = 0, NH = 0;
+	float ZOffset = 0.f;
+	float Wall = 0.3f;
+	TArray<float> Half;
+	TArray<float> Rail;
+
+	bool IsValid() const { return NX > 1 && NH > 1; }
+	/** Half breadth at X, H (0 off the hull). */
+	float HalfAt(float X, float H) const
+	{
+		const float FX = FMath::Clamp((X - X0) / DX, 0.f, NX - 1.001f), FH = FMath::Clamp((H - H0) / DH, 0.f, NH - 1.001f);
+		const int32 IX = FMath::FloorToInt(FX), IH = FMath::FloorToInt(FH);
+		const float AX = FX - IX, AH = FH - IH;
+		auto V = [&](int32 I, int32 J) { return Half[J * NX + I]; };
+		return FMath::Lerp(FMath::Lerp(V(IX, IH), V(IX + 1, IH), AX), FMath::Lerp(V(IX, IH + 1), V(IX + 1, IH + 1), AX), AH);
+	}
+	float RailAt(float X) const
+	{
+		const float FX = FMath::Clamp((X - X0) / DX, 0.f, NX - 1.001f);
+		const int32 IX = FMath::FloorToInt(FX);
+		return FMath::Lerp(Rail[IX], Rail[IX + 1], FX - IX);
+	}
+};
+
+/**
  * A sail as the generator cuts it: a grid of (NU + 1) x (NV + 1) points in its cut shape (the canvas' built-in
  * camber: the rest lengths of the cloth), the points bent to the spars and stays (pinned), the clews held by sheets.
  */
@@ -56,7 +88,7 @@ struct FShipSail
 class FSailSimulation
 {
 public:
-	void Init(TArray<FShipSail> InSails, const TArray<FShipCapsule>& Colliders, const TArray<FShipBlock>& Solids);
+	void Init(TArray<FShipSail> InSails, const TArray<FShipCapsule>& Colliders, const TArray<FShipBlock>& Solids, const FShipHullShape& InHull);
 	bool IsEmpty() const { return Sails.Num() == 0; }
 
 	/** Advances by DeltaTime under Wind (m/s, ship space: where the air goes). Time: for the gusts. */
@@ -67,6 +99,8 @@ public:
 	void GetSurface(TArray<FVector>& OutPositionsCm, TArray<FVector>& OutNormals) const;
 	/** The sheets: clew, block. */
 	void GetSheets(TArray<TPair<FVector3f, FVector3f>>& Out) const;
+	/** The canvas sampled finely (4 x 4 per facet): how many samples lie inside the hull's side, out of how many. */
+	int32 CountInHull(int32& OutSamples) const;
 
 private:
 	struct FConstraint
@@ -93,5 +127,6 @@ private:
 	void CollideSolids(FSailState& S) const;
 
 	TArray<FSailState> Sails;
+	FShipHullShape Hull;
 	float Accumulator = 0.f;
 };

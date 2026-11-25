@@ -22,6 +22,7 @@ struct FShipBuildResult
 	TArray<FShipCapsule> Colliders;
 	/** What the sails rest on: the hull's walking solids and the rig's blocks. */
 	TArray<FShipBlock> Solids;
+	FShipHullShape HullShape;
 	FShipInterior Interior;
 	float Ground = 0.f;
 	int32 Triangles = 0;
@@ -107,6 +108,59 @@ namespace
 		Result.Guns = 2 * Ports.Num();
 		Result.Solids = Result.Interior.Collision;
 		Result.Solids.Append(Blocks);
+		// The hull's shape for the sails, and its rails as lines they rest against (a rail would slip between two
+		// points of the canvas).
+		{
+			FShipHullShape& Shape = Result.HullShape;
+			Shape.DX = 0.25f;
+			Shape.DH = 0.1f;
+			Shape.X0 = -Lines.HalfLength - 0.5f;
+			Shape.NX = FMath::CeilToInt((2.f * Lines.HalfLength + 1.f) / Shape.DX) + 1;
+			float Top = 0.f;
+			Shape.Rail.SetNum(Shape.NX);
+			for (int32 I = 0; I < Shape.NX; ++I)
+			{
+				const float X = FMath::Clamp(Shape.X0 + I * Shape.DX, -Lines.HalfLength, Lines.HalfLength);
+				Shape.Rail[I] = Lines.RailAt(X);
+				Top = FMath::Max(Top, Shape.Rail[I]);
+			}
+			Shape.H0 = 0.f;
+			Shape.NH = FMath::CeilToInt((Top + 0.2f) / Shape.DH) + 1;
+			Shape.ZOffset = Lines.Z(0.f);
+			Shape.Wall = Lines.FrameThickness + Design.PlankThickness;
+			Shape.Half.SetNum(Shape.NX * Shape.NH);
+			for (int32 J = 0; J < Shape.NH; ++J)
+			{
+				for (int32 I = 0; I < Shape.NX; ++I)
+				{
+					const float X = Shape.X0 + I * Shape.DX;
+					const float H = FMath::Min(Shape.H0 + J * Shape.DH, Shape.Rail[I]);
+					const float B = Lines.HalfBreadth(X, H);
+					Shape.Half[J * Shape.NX + I] = B > 0.f ? B + Design.PlankThickness : 0.f;
+				}
+			}
+			for (float Side : { -1.f, 1.f })
+			{
+				FVector3f Last = FVector3f::ZeroVector;
+				bool bLast = false;
+				for (float X = -Lines.HalfLength; X <= Lines.HalfLength + 0.01f; X += 0.5f)
+				{
+					const float Rail = Lines.RailAt(X);
+					const float B = Lines.HalfBreadth(X, Rail);
+					const FVector3f P(X, Side * (B + Design.PlankThickness * 0.5f), Lines.Z(Rail));
+					if (B > 0.05f && bLast)
+					{
+						FShipCapsule Capsule;
+						Capsule.A = Last;
+						Capsule.B = P;
+						Capsule.Radius = 0.08f;
+						Result.Colliders.Add(Capsule);
+					}
+					Last = P;
+					bLast = B > 0.05f;
+				}
+			}
+		}
 
 		// Mesh sections: each material's triangles with their own vertices. The vertex colour is stored as it is (the
 		// vertex factory reads the bytes without decoding): the materials get the linear albedo they were given.
@@ -265,7 +319,7 @@ void AProceduralShip::ApplyResult(FShipBuildResult& Result)
 	Mesh->UpdateBounds();
 	// The sails: cloth simulated each frame, in their own sections (canvas, and the sheets holding their clews).
 	Sails = MakeShared<FSailSimulation>();
-	Sails->Init(MoveTemp(Result.Sails), Result.Colliders, Result.Solids);
+	Sails->Init(MoveTemp(Result.Sails), Result.Colliders, Result.Solids, Result.HullShape);
 	SimulationTime = 0.f;
 	if (!Sails->IsEmpty())
 	{
@@ -346,6 +400,13 @@ void AProceduralShip::Tick(float DeltaSeconds)
 	const FVector3f Wind = -FVector3f(FMath::Cos(From), FMath::Sin(From), 0.f) * WindSpeed;
 	Sails->Step(FMath::Min(DeltaSeconds, 0.05f), Wind, SimulationTime);
 	UpdateSails();
+	// Diagnostics: canvas through the hull's side, every 5 s for the first half minute.
+	if (FMath::FloorToInt(SimulationTime / 5.f) != FMath::FloorToInt((SimulationTime - DeltaSeconds) / 5.f) && SimulationTime < 61.f)
+	{
+		int32 Samples = 0;
+		const int32 Inside = Sails->CountInHull(Samples);
+		UE_LOG(LogShip, Display, TEXT("ProceduralShip: sails at %.0f s, wind from %.0f: %d of %d canvas samples inside the hull's side"), SimulationTime, WindFrom, Inside, Samples);
+	}
 }
 
 void AProceduralShip::UpdateSails()

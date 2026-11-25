@@ -40,9 +40,10 @@ namespace
 	}
 }
 
-void FSailSimulation::Init(TArray<FShipSail> InSails, const TArray<FShipCapsule>& Colliders, const TArray<FShipBlock>& Solids)
+void FSailSimulation::Init(TArray<FShipSail> InSails, const TArray<FShipCapsule>& Colliders, const TArray<FShipBlock>& Solids, const FShipHullShape& InHull)
 {
 	Sails.Reset();
+	Hull = InHull;
 	Accumulator = 0.f;
 	for (FShipSail& Spec : InSails)
 	{
@@ -257,6 +258,48 @@ void FSailSimulation::CollideSolids(FSailState& S) const
 			continue;
 		}
 		FVector3f& P = S.X[V];
+		// The hull's side, as its lines draw it: a point does not go through the planking; one that would comes back to
+		// the side it was on (outboard, or inboard over the deck), or over the rail if that is nearer.
+		if (Hull.IsValid())
+		{
+			const float H = P.Z - Hull.ZOffset;
+			const float Rail = Hull.RailAt(P.X);
+			const float Half = H < Rail + Clearance ? Hull.HalfAt(P.X, FMath::Min(H, Rail)) : 0.f;
+			if (Half > 0.05f)
+			{
+				const FVector3f& P0 = S.FrameStart[V];
+				const float Half0 = Hull.HalfAt(P0.X, FMath::Min(P0.Z - Hull.ZOffset, Hull.RailAt(P0.X)));
+				const bool bWasOutside = Half0 <= 0.05f || FMath::Abs(P0.Y) >= Half0 - 0.5f * Hull.Wall;
+				const float Sign = FMath::Abs(P0.Y) > 1e-3f ? FMath::Sign(P0.Y) : (P.Y >= 0.f ? 1.f : -1.f);
+				const float Over = Rail + Clearance - H; // to go over the rail
+				if (bWasOutside && FMath::Abs(P.Y) < Half + Clearance)
+				{
+					const float Out = Half + Clearance - Sign * P.Y;
+					if (Over < Out)
+					{
+						P.Z += Over;
+					}
+					else
+					{
+						P.Y = Sign * (Half + Clearance);
+					}
+					S.Prev[V] = P;
+				}
+				else if (!bWasOutside && FMath::Abs(P.Y) > Half - Hull.Wall - Clearance)
+				{
+					const float In = Sign * P.Y - (Half - Hull.Wall - Clearance);
+					if (Over < In)
+					{
+						P.Z += Over;
+					}
+					else
+					{
+						P.Y = Sign * (Half - Hull.Wall - Clearance);
+					}
+					S.Prev[V] = P;
+				}
+			}
+		}
 		for (const FShipBlock& K : S.NearSolids)
 		{
 			const FVector3f D = P - K.O;
@@ -349,6 +392,50 @@ void FSailSimulation::CollideSolids(FSailState& S) const
 		}
 	}
 	S.FrameStart = S.X;
+}
+
+int32 FSailSimulation::CountInHull(int32& OutSamples) const
+{
+	OutSamples = 0;
+	int32 Inside = 0;
+	if (!Hull.IsValid())
+	{
+		return 0;
+	}
+	for (const FSailState& S : Sails)
+	{
+		const FShipSail& Spec = S.Spec;
+		for (int32 J = 0; J < Spec.NV; ++J)
+		{
+			for (int32 I = 0; I < Spec.NU; ++I)
+			{
+				const FVector3f& A = S.X[Spec.Index(I, J)];
+				const FVector3f& B = S.X[Spec.Index(I + 1, J)];
+				const FVector3f& C = S.X[Spec.Index(I + 1, J + 1)];
+				const FVector3f& D = S.X[Spec.Index(I, J + 1)];
+				for (int32 U = 0; U < 4; ++U)
+				{
+					for (int32 V = 0; V < 4; ++V)
+					{
+						const float FU = (U + 0.5f) / 4.f, FV = (V + 0.5f) / 4.f;
+						const FVector3f P = FMath::Lerp(FMath::Lerp(A, B, FU), FMath::Lerp(D, C, FU), FV);
+						++OutSamples;
+						const float H = P.Z - Hull.ZOffset;
+						if (H >= Hull.RailAt(P.X))
+						{
+							continue;
+						}
+						const float Half = Hull.HalfAt(P.X, H);
+						if (Half > 0.05f && FMath::Abs(P.Y) < Half && FMath::Abs(P.Y) > Half - Hull.Wall)
+						{
+							++Inside;
+						}
+					}
+				}
+			}
+		}
+	}
+	return Inside;
 }
 
 void FSailSimulation::CollideSails()
