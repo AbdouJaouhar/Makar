@@ -21,7 +21,7 @@ namespace
 	}
 }
 
-void FShipDesign::Trim(float WindFrom, float& OutBrace, float& OutLeeward, float& OutSwing)
+void FShipDesign::Trim(float WindFrom, float& OutBrace, float& OutLeeward, float& OutSwing, bool& bOutAback)
 {
 	// The wind's angle off the bow, 0 (dead ahead) to 180 (dead astern), and the side it comes over.
 	const float Off = FMath::Abs(FMath::UnwindDegrees(WindFrom));
@@ -31,6 +31,8 @@ void FShipDesign::Trim(float WindFrom, float& OutBrace, float& OutLeeward, float
 	// the windward arms aft. Booms: right out running, close in on the wind.
 	OutBrace = OutLeeward * FMath::Clamp((180.f - Off) * 0.5f, 0.f, 35.f);
 	OutSwing = FMath::Clamp(Off * 0.45f - 5.f, 8.f, 70.f);
+	// Square sails can be braced up to about 55 degrees off the wind: closer, it is on their faces.
+	bOutAback = Off < 55.f;
 }
 
 FShipDesign FShipDesign::Make(EShipType Type, int32 Seed)

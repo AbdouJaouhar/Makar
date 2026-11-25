@@ -1,4 +1,4 @@
-#include "SailCloth.h"
+﻿#include "SailCloth.h"
 
 #include "Async/ParallelFor.h"
 
@@ -10,9 +10,6 @@ namespace
 	constexpr float SubstepTime = 1.f / 300.f;
 	constexpr int32 ClothMaxSubsteps = 10;          // per frame; a slow frame slows the cloth rather than exploding it
 	constexpr float Damping = 0.004f;          // per substep
-	constexpr float Clearance = 0.05f;         // m of air kept between the canvas and a rope or spar
-	constexpr float SailSpacing = 0.18f;       // m kept between two sails
-	constexpr float CapsuleCell = 0.6f;        // m: the ropes' grid (no rope or spar keeps the canvas further off)
 
 	FVector3f ClothClosest(const FVector3f& P, const FVector3f& A, const FVector3f& B)
 	{
@@ -21,23 +18,25 @@ namespace
 		const float T = Length2 > 1e-8f ? FMath::Clamp(FVector3f::DotProduct(P - A, AB) / Length2, 0.f, 1.f) : 0.f;
 		return A + AB * T;
 	}
+}
 
-	/** Closest points of segments P0-P1 and A-B: the parameters along each. */
-	void ClothSegments(const FVector3f& P0, const FVector3f& P1, const FVector3f& A, const FVector3f& B, float& OutS, float& OutT)
+namespace
+{
+	/** Points over a triangle no more than Step apart. */
+	template <typename FVisit>
+	void SampleTriangle(const FVector3f& A, const FVector3f& B, const FVector3f& C, float Step, FVisit&& Visit)
 	{
-		const FVector3f D1 = P1 - P0, D2 = B - A, R = P0 - A;
-		const float AA = D1.SizeSquared(), EE = D2.SizeSquared(), F = FVector3f::DotProduct(D2, R);
-		const float C = FVector3f::DotProduct(D1, R), Bd = FVector3f::DotProduct(D1, D2);
-		const float Denominator = AA * EE - Bd * Bd;
-		float S = Denominator > 1e-9f ? FMath::Clamp((Bd * F - C * EE) / Denominator, 0.f, 1.f) : 0.f;
-		float T = EE > 1e-9f ? (Bd * S + F) / EE : 0.f;
-		if (T < 0.f || T > 1.f)
+		const int32 NU = FMath::Clamp(FMath::CeilToInt((B - A).Size() / Step), 1, 4000);
+		const int32 NV = FMath::Clamp(FMath::CeilToInt((C - A).Size() / Step), 1, 4000);
+		for (int32 I = 0; I <= NU; ++I)
 		{
-			T = FMath::Clamp(T, 0.f, 1.f);
-			S = AA > 1e-9f ? FMath::Clamp((Bd * T - C) / AA, 0.f, 1.f) : 0.f;
+			const float S = float(I) / NU;
+			const int32 JMax = FMath::Min(NV, FMath::CeilToInt((1.f - S) * NV));
+			for (int32 J = 0; J <= JMax; ++J)
+			{
+				Visit(A + (B - A) * S + (C - A) * FMath::Min(float(J) / NV, 1.f - S));
+			}
 		}
-		OutS = S;
-		OutT = T;
 	}
 }
 
@@ -45,80 +44,628 @@ void FShipVoxels::Reset(const FBox3f& Bounds, float InCell)
 {
 	Cell = InCell;
 	Origin = Bounds.Min;
-	const FVector3f Extent = Bounds.GetSize() / Cell;
-	Size = FIntVector(FMath::CeilToInt(Extent.X) + 1, FMath::CeilToInt(Extent.Y) + 1, FMath::CeilToInt(Extent.Z) + 1);
-	Cells.SetNumZeroed(int64(Size.X) * Size.Y * Size.Z);
+	const FVector3f Extent = Bounds.GetSize() / (Cell * 8.f);
+	Bricks = FIntVector(FMath::Clamp(FMath::CeilToInt(Extent.X) + 1, 1, 400), FMath::Clamp(FMath::CeilToInt(Extent.Y) + 1, 1, 400), FMath::Clamp(FMath::CeilToInt(Extent.Z) + 1, 1, 400));
+	Touched.SetNumZeroed(Bricks.X * Bricks.Y * Bricks.Z);
+	Top.Init(-1, Bricks.X * Bricks.Y * Bricks.Z);
+	Where.Reset();
+	Cells.Reset();
 }
 
-void FShipVoxels::Fill(const FVector3f& A, const FVector3f& B, const FVector3f& C)
+void FShipVoxels::Touch(const FVector3f& A, const FVector3f& B, const FVector3f& C)
 {
-	FBox3f Box(ForceInit);
-	Box += A;
-	Box += B;
-	Box += C;
-	if (Box.Max.X < Origin.X || Box.Max.Y < Origin.Y || Box.Max.Z < Origin.Z
-		|| Box.Min.X > Origin.X + Size.X * Cell || Box.Min.Y > Origin.Y + Size.Y * Cell || Box.Min.Z > Origin.Z + Size.Z * Cell)
+	const float Size = Cell * 8.f;
+	SampleTriangle(A, B, C, Size * 0.5f, [&](const FVector3f& P)
 	{
-		return;
-	}
-	// Samples 0.8 cell apart over the triangle: every cell it passes through is marked.
-	const float Step = Cell * 0.8f; // a cell skipped at a corner is filled by Grow
-	const int32 NU = FMath::Clamp(FMath::CeilToInt((B - A).Size() / Step), 1, 4000);
-	const int32 NV = FMath::Clamp(FMath::CeilToInt((C - A).Size() / Step), 1, 4000);
-	for (int32 I = 0; I <= NU; ++I)
-	{
-		const float S = float(I) / NU;
-		const int32 JMax = FMath::Min(NV, FMath::CeilToInt((1.f - S) * NV));
-		for (int32 J = 0; J <= JMax; ++J)
+		const FVector3f Q = (P - Origin) / Size;
+		const int32 X = FMath::FloorToInt(Q.X), Y = FMath::FloorToInt(Q.Y), Z = FMath::FloorToInt(Q.Z);
+		if (X >= 0 && Y >= 0 && Z >= 0 && X < Bricks.X && Y < Bricks.Y && Z < Bricks.Z)
 		{
-			const float T = FMath::Min(float(J) / NV, 1.f - S);
-			const FVector3f Q = ((A + (B - A) * S + (C - A) * T) - Origin) / Cell;
-			const int32 X = FMath::FloorToInt(Q.X), Y = FMath::FloorToInt(Q.Y), Z = FMath::FloorToInt(Q.Z);
-			if (X >= 0 && Y >= 0 && Z >= 0 && X < Size.X && Y < Size.Y && Z < Size.Z)
+			Touched[(Z * Bricks.Y + Y) * Bricks.X + X] = 1; // the same value from any thread
+		}
+	});
+}
+
+void FShipVoxels::Allocate()
+{
+	// A brick wherever something is drawn and round it (the grown cells may spill into the next brick).
+	for (int32 Z = 0; Z < Bricks.Z; ++Z)
+	{
+		for (int32 Y = 0; Y < Bricks.Y; ++Y)
+		{
+			for (int32 X = 0; X < Bricks.X; ++X)
 			{
-				Cells[(int64(Z) * Size.Y + Y) * Size.X + X] = 1; // the same value from any thread
+				bool bNear = false;
+				for (int32 DZ = -1; DZ <= 1 && !bNear; ++DZ)
+				{
+					for (int32 DY = -1; DY <= 1 && !bNear; ++DY)
+					{
+						for (int32 DX = -1; DX <= 1 && !bNear; ++DX)
+						{
+							const int32 I = X + DX, J = Y + DY, K = Z + DZ;
+							bNear = I >= 0 && J >= 0 && K >= 0 && I < Bricks.X && J < Bricks.Y && K < Bricks.Z && Touched[(K * Bricks.Y + J) * Bricks.X + I];
+						}
+					}
+				}
+				if (bNear)
+				{
+					Top[(Z * Bricks.Y + Y) * Bricks.X + X] = Where.Num();
+					Where.Add(FIntVector(X, Y, Z));
+				}
 			}
 		}
 	}
+	Cells.SetNumZeroed(Where.Num() * 512);
+	Touched.Empty();
+}
+
+void FShipVoxels::Fill(const FVector3f& A, const FVector3f& B, const FVector3f& C, uint8 Kind)
+{
+	// Samples 0.8 cell apart: a cell skipped at a corner is filled by Grow.
+	SampleTriangle(A, B, C, Cell * 0.8f, [&](const FVector3f& P)
+	{
+		const FVector3f Q = (P - Origin) / Cell;
+		const int32 X = FMath::FloorToInt(Q.X), Y = FMath::FloorToInt(Q.Y), Z = FMath::FloorToInt(Q.Z);
+		if (X < 0 || Y < 0 || Z < 0)
+		{
+			return;
+		}
+		const int32 BX = X >> 3, BY = Y >> 3, BZ = Z >> 3;
+		if (BX >= Bricks.X || BY >= Bricks.Y || BZ >= Bricks.Z)
+		{
+			return;
+		}
+		const int32 Brick = Top[(BZ * Bricks.Y + BY) * Bricks.X + BX];
+		if (Brick >= 0)
+		{
+			Cells[Brick * 512 + ((Z & 7) * 8 + (Y & 7)) * 8 + (X & 7)] |= uint8(1 | Kind); // a kind lost to a race only blurs the diagnostics
+		}
+	});
 }
 
 void FShipVoxels::Grow()
 {
-	ParallelFor(Size.Z, [this](int32 Z)
+	ParallelFor(Where.Num(), [this](int32 Brick)
 	{
-		for (int32 Y = 0; Y < Size.Y; ++Y)
+		const FIntVector Base = Where[Brick] * 8;
+		for (int32 Z = 0; Z < 8; ++Z)
 		{
-			for (int32 X = 0; X < Size.X; ++X)
+			for (int32 Y = 0; Y < 8; ++Y)
 			{
-				uint8& C = Cells[(int64(Z) * Size.Y + Y) * Size.X + X];
-				if (C & 1)
+				for (int32 X = 0; X < 8; ++X)
 				{
-					continue;
-				}
-				auto Wood = [this](int32 I, int32 J, int32 K)
-				{
-					return I >= 0 && J >= 0 && K >= 0 && I < Size.X && J < Size.Y && K < Size.Z && (Cells[(int64(K) * Size.Y + J) * Size.X + I] & 1);
-				};
-				if (Wood(X - 1, Y, Z) || Wood(X + 1, Y, Z) || Wood(X, Y - 1, Z) || Wood(X, Y + 1, Z) || Wood(X, Y, Z - 1) || Wood(X, Y, Z + 1))
-				{
-					C |= 2; // only the wood bit is read: no cell grows from a grown one
+					uint8& C = Cells[Brick * 512 + (Z * 8 + Y) * 8 + X];
+					if (C & 1)
+					{
+						continue;
+					}
+					const int32 I = Base.X + X, J = Base.Y + Y, K = Base.Z + Z;
+					// Only the drawn bit is read: no cell grows from a grown one.
+					if ((GetCell(I - 1, J, K) | GetCell(I + 1, J, K) | GetCell(I, J - 1, K) | GetCell(I, J + 1, K) | GetCell(I, J, K - 1) | GetCell(I, J, K + 1)) & 1)
+					{
+						C |= 2;
+					}
 				}
 			}
 		}
 	});
 }
 
-void FSailSimulation::Init(TArray<FShipSail> InSails, const TArray<FShipCapsule>& Colliders, const TArray<FShipBlock>& Solids, const FShipHullShape& InHull,
-	TSharedPtr<const FShipVoxels> InVoxels)
+bool FShipVoxels::NearestFree(const FVector3f& P, int32 Radius, FVector3f& Out) const
+{
+	const FVector3f Q = (P - Origin) / Cell;
+	const int32 X = FMath::FloorToInt(Q.X), Y = FMath::FloorToInt(Q.Y), Z = FMath::FloorToInt(Q.Z);
+	float Best = 1e9f;
+	for (int32 DZ = -Radius; DZ <= Radius; ++DZ)
+	{
+		for (int32 DY = -Radius; DY <= Radius; ++DY)
+		{
+			for (int32 DX = -Radius; DX <= Radius; ++DX)
+			{
+				if (GetCell(X + DX, Y + DY, Z + DZ) != 0)
+				{
+					continue;
+				}
+				const FVector3f Centre = Origin + FVector3f(X + DX + 0.5f, Y + DY + 0.5f, Z + DZ + 0.5f) * Cell;
+				const float D = (Centre - P).SizeSquared();
+				if (D < Best)
+				{
+					Best = D;
+					Out = Centre;
+				}
+			}
+		}
+	}
+	return Best < 1e9f;
+}
+
+namespace
+{
+	constexpr float SailFitKeep = 0.12f;   // m of air kept between a fitted sail and anything
+	constexpr float SailMaxRoom = 0.6f;  // m a point may stray from its fitted shape at most
+	constexpr float SailFar = 1e6f;
+
+	float CapsuleDistance(const FVector3f& P, const FShipCapsule& C, FVector3f& Out)
+	{
+		const FVector3f D = P - ClothClosest(P, C.A, C.B);
+		const float L = D.Size();
+		Out = L > 1e-5f ? D / L : FVector3f::UpVector;
+		return L - C.Radius;
+	}
+
+	float BlockDistance(const FVector3f& P, const FShipBlock& K, FVector3f& Out)
+	{
+		const FVector3f D = P - K.O;
+		const FVector3f Q(FVector3f::DotProduct(D, K.X), FVector3f::DotProduct(D, K.Y), FVector3f::DotProduct(D, K.Z));
+		const FVector3f E(FMath::Abs(Q.X) - K.Half.X, FMath::Abs(Q.Y) - K.Half.Y, FMath::Abs(Q.Z) - K.Half.Z);
+		const FVector3f Outside(FMath::Max(E.X, 0.f) * FMath::Sign(Q.X), FMath::Max(E.Y, 0.f) * FMath::Sign(Q.Y), FMath::Max(E.Z, 0.f) * FMath::Sign(Q.Z));
+		const float L = Outside.Size();
+		if (L > 1e-6f)
+		{
+			Out = (K.X * Outside.X + K.Y * Outside.Y + K.Z * Outside.Z) / L;
+			return L;
+		}
+		const int32 Axis = E.X > E.Y ? (E.X > E.Z ? 0 : 2) : (E.Y > E.Z ? 1 : 2);
+		const FVector3f Axes[3] = { K.X, K.Y, K.Z };
+		Out = Axes[Axis] * (Q[Axis] >= 0.f ? 1.f : -1.f);
+		return E[Axis];
+	}
+
+	/** The hull's side as a wall from its rail down, as thick as its timbers and planking. */
+	float HullDistance(const FVector3f& P, const FShipHullShape& Hull, FVector3f& Out)
+	{
+		if (!Hull.IsValid())
+		{
+			return SailFar;
+		}
+		const float H = P.Z - Hull.ZOffset;
+		const float Rail = Hull.RailAt(P.X);
+		const float Half = Hull.HalfAt(P.X, FMath::Min(H, Rail));
+		if (Half <= 0.05f)
+		{
+			return SailFar;
+		}
+		const float Y = FMath::Abs(P.Y), Side = P.Y >= 0.f ? 1.f : -1.f;
+		const float Inner = Half - Hull.Wall;
+		const float CY = FMath::Clamp(Y, Inner, Half), CH = FMath::Min(H, Rail);
+		const float DY = Y - CY, DH = H - CH;
+		const float L = FMath::Sqrt(DY * DY + DH * DH);
+		if (L > 1e-6f)
+		{
+			Out = FVector3f(0.f, Side * DY, DH) / L;
+			return L;
+		}
+		// Inside the wall: out by the nearest face.
+		const float ToIn = Y - Inner, ToOut = Half - Y, ToTop = Rail - H;
+		if (ToTop <= ToIn && ToTop <= ToOut)
+		{
+			Out = FVector3f::UpVector;
+			return -ToTop;
+		}
+		Out = FVector3f(0.f, ToOut < ToIn ? Side : -Side, 0.f);
+		return -FMath::Min(ToIn, ToOut);
+	}
+}
+
+FString ShipSails::Fit(TArray<FShipSail>& Sails, const TArray<FShipCapsule>& Colliders, const TArray<FShipBlock>& Blocks, const FShipHullShape& Hull)
+{
+	const double Start = FPlatformTime::Seconds();
+	const int32 N = Sails.Num();
+	// What each sail can reach: the ropes, spars, blocks and other sails near its shape.
+	TArray<FBox3f> Boxes;
+	for (const FShipSail& S : Sails)
+	{
+		FBox3f Box(ForceInit);
+		for (const FVector3f& P : S.Rest)
+		{
+			Box += P;
+		}
+		Boxes.Add(Box.ExpandBy(SailMaxRoom + 1.f));
+	}
+	TArray<TArray<int32>> NearCapsules, NearSails;
+	NearCapsules.SetNum(N);
+	NearSails.SetNum(N);
+	FBox3f All(ForceInit);
+	for (const FBox3f& Box : Boxes)
+	{
+		All += Box;
+	}
+	// Ropes, spars and blocks in a grid of 1 m cells: a cell lists every one nearer than the room any point can have
+	// (whatever is further does not count). Capsules as their index, blocks as -1 - index.
+	constexpr float GridCell = 1.f;
+	const float Reach = SailMaxRoom + SailFitKeep + 0.05f;
+	const FVector3f GridOrigin = All.Min;
+	const FIntVector GridSize(FMath::CeilToInt(All.GetSize().X / GridCell) + 1, FMath::CeilToInt(All.GetSize().Y / GridCell) + 1, FMath::CeilToInt(All.GetSize().Z / GridCell) + 1);
+	TArray<uint64> Pairs;
+	auto ToCell = [&](const FVector3f& P)
+	{
+		const FVector3f Q = (P - GridOrigin) / GridCell;
+		return FIntVector(FMath::FloorToInt(Q.X), FMath::FloorToInt(Q.Y), FMath::FloorToInt(Q.Z));
+	};
+	auto AddBox = [&](const FBox3f& Box, int32 Item)
+	{
+		const FIntVector Lo = ToCell(Box.Min), Hi = ToCell(Box.Max);
+		for (int32 Z = FMath::Max(Lo.Z, 0); Z <= FMath::Min(Hi.Z, GridSize.Z - 1); ++Z)
+		{
+			for (int32 Y = FMath::Max(Lo.Y, 0); Y <= FMath::Min(Hi.Y, GridSize.Y - 1); ++Y)
+			{
+				for (int32 X = FMath::Max(Lo.X, 0); X <= FMath::Min(Hi.X, GridSize.X - 1); ++X)
+				{
+					Pairs.Add((uint64((Z * GridSize.Y + Y) * GridSize.X + X) << 32) | uint32(Item));
+				}
+			}
+		}
+	};
+	for (int32 C = 0; C < Colliders.Num(); ++C)
+	{
+		// Along the capsule in short pieces (a long stay's box would fill half the grid).
+		const FShipCapsule& Capsule = Colliders[C];
+		const int32 Pieces = FMath::Clamp(FMath::CeilToInt((Capsule.B - Capsule.A).Size() / GridCell), 1, 200);
+		for (int32 K = 0; K < Pieces; ++K)
+		{
+			FBox3f Box(ForceInit);
+			Box += FMath::Lerp(Capsule.A, Capsule.B, float(K) / Pieces);
+			Box += FMath::Lerp(Capsule.A, Capsule.B, float(K + 1) / Pieces);
+			AddBox(Box.ExpandBy(Capsule.Radius + Reach), C);
+		}
+	}
+	for (int32 K = 0; K < Blocks.Num(); ++K)
+	{
+		const FShipBlock& B = Blocks[K];
+		const FVector3f Extent = (B.X * B.Half.X).GetAbs() + (B.Y * B.Half.Y).GetAbs() + (B.Z * B.Half.Z).GetAbs();
+		AddBox(FBox3f(B.O - Extent, B.O + Extent).ExpandBy(Reach), -1 - K);
+	}
+	Pairs.Sort();
+	TArray<int32> GridStart, GridItems;
+	GridStart.Init(0, GridSize.X * GridSize.Y * GridSize.Z + 1);
+	{
+		uint64 Last = ~uint64(0);
+		for (const uint64 Pair : Pairs)
+		{
+			if (Pair == Last)
+			{
+				continue;
+			}
+			Last = Pair;
+			++GridStart[int32(Pair >> 32) + 1];
+			GridItems.Add(int32(uint32(Pair & 0xffffffffu)));
+		}
+		for (int32 I = 0; I + 1 < GridStart.Num(); ++I)
+		{
+			GridStart[I + 1] += GridStart[I];
+		}
+	}
+	auto ObstaclesAt = [&](const FVector3f& P) -> TArrayView<const int32>
+	{
+		const FIntVector C = ToCell(P);
+		if (C.X < 0 || C.Y < 0 || C.Z < 0 || C.X >= GridSize.X || C.Y >= GridSize.Y || C.Z >= GridSize.Z)
+		{
+			return TArrayView<const int32>();
+		}
+		const int32 Cell = (C.Z * GridSize.Y + C.Y) * GridSize.X + C.X;
+		return TArrayView<const int32>(GridItems.GetData() + GridStart[Cell], GridStart[Cell + 1] - GridStart[Cell]);
+	};
+	for (int32 S = 0; S < N; ++S)
+	{
+		for (int32 C = 0; C < Colliders.Num(); ++C)
+		{
+			FBox3f Box(ForceInit);
+			Box += Colliders[C].A;
+			Box += Colliders[C].B;
+			if (Box.ExpandBy(Colliders[C].Radius).Intersect(Boxes[S]))
+			{
+				NearCapsules[S].Add(C);
+			}
+		}
+		for (int32 O = 0; O < N; ++O)
+		{
+			if (O != S && Boxes[O].Intersect(Boxes[S]))
+			{
+				NearSails[S].Add(O);
+			}
+		}
+	}
+	// The other sails' facets: centre and reach, refreshed as the shapes are moved.
+	struct FFacet
+	{
+		FVector3f Centre;
+		float Reach;
+	};
+	TArray<TArray<FFacet>> Facets;
+	Facets.SetNum(N);
+	TArray<TArray<FBox3f>> Rows; // each row of facets' bounds: whole rows far off are passed over
+	Rows.SetNum(N);
+	auto UpdateFacets = [&]()
+	{
+		ParallelFor(N, [&](int32 S)
+		{
+			const FShipSail& Spec = Sails[S];
+			Facets[S].Reset();
+			Rows[S].Init(FBox3f(ForceInit), Spec.NV);
+			for (int32 J = 0; J < Spec.NV; ++J)
+			{
+				for (int32 I = 0; I <= Spec.NU; ++I)
+				{
+					Rows[S][J] += Spec.Rest[Spec.Index(I, J)];
+					Rows[S][J] += Spec.Rest[Spec.Index(I, J + 1)];
+				}
+				for (int32 I = 0; I < Spec.NU; ++I)
+				{
+					const FVector3f C[4] = { Spec.Rest[Spec.Index(I, J)], Spec.Rest[Spec.Index(I + 1, J)], Spec.Rest[Spec.Index(I + 1, J + 1)], Spec.Rest[Spec.Index(I, J + 1)] };
+					const FVector3f Centre = (C[0] + C[1] + C[2] + C[3]) * 0.25f;
+					float Reach = 0.f;
+					for (const FVector3f& P : C)
+					{
+						Reach = FMath::Max(Reach, (P - Centre).Size());
+					}
+					Facets[S].Add({ Centre, Reach });
+				}
+			}
+		});
+	};
+	// The nearest thing to P (sail S's point): its distance and the way off it. Another sail counts for SailShare of
+	// the gap (both sails move: each gets half the room).
+	auto Nearest = [&](int32 S, const FVector3f& P, float SailShare, FVector3f& OutDir) -> float
+	{
+		float Best = SailFar;
+		FVector3f Dir;
+		auto Take = [&](float D, const FVector3f& Away)
+		{
+			if (D < Best)
+			{
+				Best = D;
+				OutDir = Away;
+			}
+		};
+		for (const int32 Item : ObstaclesAt(P))
+		{
+			const float D = Item >= 0 ? CapsuleDistance(P, Colliders[Item], Dir) : BlockDistance(P, Blocks[-1 - Item], Dir);
+			Take(D, Dir);
+		}
+		{
+			const float D = HullDistance(P, Hull, Dir);
+			Take(D, Dir);
+		}
+		for (const int32 O : NearSails[S])
+		{
+			const FShipSail& Other = Sails[O];
+			for (int32 F = 0; F < Facets[O].Num(); ++F)
+			{
+				if (F % Other.NU == 0)
+				{
+					const float Reach = FMath::Min(Best, SailMaxRoom + SailFitKeep) / SailShare;
+					if (Rows[O][F / Other.NU].ComputeSquaredDistanceToPoint(P) > Reach * Reach)
+					{
+						F += Other.NU - 1; // the whole row is out of reach
+						continue;
+					}
+				}
+				const FFacet& Facet = Facets[O][F];
+				if ((P - Facet.Centre).Size() - Facet.Reach > FMath::Min(Best, SailMaxRoom + SailFitKeep) / SailShare)
+				{
+					continue;
+				}
+				const int32 I = F % Other.NU, J = F / Other.NU;
+				const FVector Q0(Other.Rest[Other.Index(I, J)]), Q1(Other.Rest[Other.Index(I + 1, J)]), Q2(Other.Rest[Other.Index(I + 1, J + 1)]), Q3(Other.Rest[Other.Index(I, J + 1)]);
+				for (int32 T = 0; T < 2; ++T)
+				{
+					const FVector3f Closest(FMath::ClosestPointOnTriangleToPoint(FVector(P), Q0, T == 0 ? Q1 : Q2, T == 0 ? Q2 : Q3));
+					const FVector3f Away = P - Closest;
+					const float L = Away.Size();
+					Take(L * SailShare, L > 1e-5f ? Away / L : FVector3f::UpVector);
+				}
+			}
+		}
+		return Best;
+	};
+	// Each sail bellies one way: the side its facets are moved to when a rope goes through them.
+	TArray<FVector3f> Belly;
+	for (const FShipSail& S : Sails)
+	{
+		FVector3f Mean = FVector3f::ZeroVector, Corners = FVector3f::ZeroVector;
+		for (const FVector3f& P : S.Rest)
+		{
+			Mean += P;
+		}
+		Mean /= FMath::Max(S.Rest.Num(), 1);
+		for (const int32 V : { S.Index(0, 0), S.Index(S.NU, 0), S.Index(S.NU, S.NV), S.Index(0, S.NV) })
+		{
+			Corners += S.Rest[V] * 0.25f;
+		}
+		Belly.Add((Mean - Corners).GetSafeNormal());
+	}
+
+	int32 Moved = 0, Pierced = 0;
+	for (int32 Pass = 0; Pass < 8; ++Pass)
+	{
+		UpdateFacets();
+		for (int32 S = 0; S < N; ++S)
+		{
+			FShipSail& Spec = Sails[S];
+			// Points too near anything: off it.
+			TArray<FVector3f> Next = Spec.Rest;
+			int32 MovedHere = 0;
+			ParallelFor(Spec.Rest.Num(), [&](int32 V)
+			{
+				if (Spec.Pinned[V])
+				{
+					return;
+				}
+				FVector3f Dir;
+				const float D = Nearest(S, Spec.Rest[V], 1.f, Dir);
+				if (D < SailFitKeep)
+				{
+					Next[V] = Spec.Rest[V] + Dir * (SailFitKeep - D + 0.01f);
+				}
+			});
+			for (int32 V = 0; V < Next.Num(); ++V)
+			{
+				MovedHere += Next[V] != Spec.Rest[V] ? 1 : 0;
+			}
+			Spec.Rest = MoveTemp(Next);
+			Moved += MovedHere;
+			// Facets: a rope through one between its points, or any of its 3 x 3 samples too near anything, moves it off,
+			// square to itself, away from what it nears (a rope through it: to the side the sail bellies to).
+			TArray<FVector3f> Shift;
+			Shift.Init(FVector3f::ZeroVector, Spec.Rest.Num());
+			TArray<int32> Shares;
+			Shares.Init(0, Spec.Rest.Num());
+			FCriticalSection Lock;
+			int32 PiercedHere = 0;
+			ParallelFor(Spec.NU * Spec.NV, [&](int32 F)
+			{
+				const int32 I = F % Spec.NU, J = F / Spec.NU;
+				const int32 C[4] = { Spec.Index(I, J), Spec.Index(I + 1, J), Spec.Index(I + 1, J + 1), Spec.Index(I, J + 1) };
+				if (Spec.Pinned[C[0]] || Spec.Pinned[C[1]] || Spec.Pinned[C[2]] || Spec.Pinned[C[3]])
+				{
+					return; // a facet on its spar or stay: what is made fast there touches it by design
+				}
+				FVector3f Normal = FVector3f::CrossProduct(Spec.Rest[C[2]] - Spec.Rest[C[0]], Spec.Rest[C[3]] - Spec.Rest[C[1]]).GetSafeNormal();
+				if (FVector3f::DotProduct(Normal, Belly[S]) < 0.f)
+				{
+					Normal = -Normal;
+				}
+				float Move = 0.f;
+				const FVector Q0(Spec.Rest[C[0]]), Q1(Spec.Rest[C[1]]), Q2(Spec.Rest[C[2]]), Q3(Spec.Rest[C[3]]);
+				for (const int32 K : NearCapsules[S])
+				{
+					const FShipCapsule& Capsule = Colliders[K];
+					FVector Hit, HitNormal;
+					if (!FMath::SegmentTriangleIntersection(FVector(Capsule.A), FVector(Capsule.B), Q0, Q1, Q2, Hit, HitNormal)
+						&& !FMath::SegmentTriangleIntersection(FVector(Capsule.A), FVector(Capsule.B), Q0, Q2, Q3, Hit, HitNormal))
+					{
+						continue;
+					}
+					float Lowest = SailFar;
+					for (const int32 V : C)
+					{
+						Lowest = FMath::Min(Lowest, FVector3f::DotProduct(Spec.Rest[V] - FVector3f(Hit), Normal));
+					}
+					Move = FMath::Max(Move, Capsule.Radius + SailFitKeep + 0.01f - Lowest);
+				}
+				if (Move <= 0.f)
+				{
+					float Worst = SailFitKeep;
+					FVector3f Away = Normal;
+					for (int32 U = 0; U < 3; ++U)
+					{
+						for (int32 W = 0; W < 3; ++W)
+						{
+							const float FU = (U + 0.5f) / 3.f, FW = (W + 0.5f) / 3.f;
+							FVector3f Dir;
+							const float D = Nearest(S, FMath::Lerp(FMath::Lerp(Spec.Rest[C[0]], Spec.Rest[C[1]], FU), FMath::Lerp(Spec.Rest[C[3]], Spec.Rest[C[2]], FU), FW), 1.f, Dir);
+							if (D < Worst)
+							{
+								Worst = D;
+								Away = Dir;
+							}
+						}
+					}
+					if (Worst < SailFitKeep)
+					{
+						const float Side = FVector3f::DotProduct(Away, Normal) >= 0.f ? 1.f : -1.f;
+						Normal *= Side;
+						Move = SailFitKeep - Worst + 0.01f;
+					}
+				}
+				if (Move > 0.f)
+				{
+					FScopeLock Guard(&Lock);
+					for (const int32 V : C)
+					{
+						Shift[V] += Normal * Move;
+						++Shares[V];
+					}
+					++PiercedHere;
+				}
+			});
+			for (int32 V = 0; V < Spec.Rest.Num(); ++V)
+			{
+				if (Shares[V] > 0 && !Spec.Pinned[V])
+				{
+					Spec.Rest[V] += Shift[V] / float(Shares[V]);
+				}
+			}
+			Pierced += PiercedHere;
+		}
+	}
+
+	// The room each point has: the least of its own and of the facets round it (3 x 3 samples each), less the air kept.
+	UpdateFacets();
+	int32 Points = 0, Held = 0;
+	double MarginSum = 0.0;
+	for (int32 S = 0; S < N; ++S)
+	{
+		FShipSail& Spec = Sails[S];
+		TArray<float> FacetRoom;
+		FacetRoom.Init(SailFar, Spec.NU * Spec.NV);
+		ParallelFor(Spec.NU * Spec.NV, [&](int32 F)
+		{
+			const int32 I = F % Spec.NU, J = F / Spec.NU;
+			const FVector3f A = Spec.Rest[Spec.Index(I, J)], B = Spec.Rest[Spec.Index(I + 1, J)], C = Spec.Rest[Spec.Index(I + 1, J + 1)], D = Spec.Rest[Spec.Index(I, J + 1)];
+			FVector3f Dir;
+			for (int32 U = 0; U < 3; ++U)
+			{
+				for (int32 W = 0; W < 3; ++W)
+				{
+					const float FU = (U + 0.5f) / 3.f, FW = (W + 0.5f) / 3.f;
+					FacetRoom[F] = FMath::Min(FacetRoom[F], Nearest(S, FMath::Lerp(FMath::Lerp(A, B, FU), FMath::Lerp(D, C, FU), FW), 0.5f, Dir));
+				}
+			}
+			// A rope may pass between two samples: no sample is further from it than half their spacing.
+			const float Spacing = FMath::Max(FMath::Max((B - A).Size(), (C - D).Size()), FMath::Max((D - A).Size(), (C - B).Size())) / 3.f;
+			FacetRoom[F] -= Spacing * 0.75f;
+		});
+		Spec.Margin.Init(0.f, Spec.Rest.Num());
+		ParallelFor(Spec.Rest.Num(), [&](int32 V)
+		{
+			if (Spec.Pinned[V])
+			{
+				return;
+			}
+			FVector3f Dir;
+			float Room = Nearest(S, Spec.Rest[V], 0.5f, Dir);
+			const int32 I = V % (Spec.NU + 1), J = V / (Spec.NU + 1);
+			for (int32 DJ = -1; DJ <= 0; ++DJ)
+			{
+				for (int32 DI = -1; DI <= 0; ++DI)
+				{
+					const int32 FI = I + DI, FJ = J + DJ;
+					if (FI >= 0 && FJ >= 0 && FI < Spec.NU && FJ < Spec.NV)
+					{
+						Room = FMath::Min(Room, FacetRoom[FJ * Spec.NU + FI]);
+					}
+				}
+			}
+			Spec.Margin[V] = FMath::Clamp(Room - SailFitKeep, 0.f, SailMaxRoom);
+		});
+		for (int32 V = 0; V < Spec.Rest.Num(); ++V)
+		{
+			if (!Spec.Pinned[V])
+			{
+				++Points;
+				Held += Spec.Margin[V] < 0.02f ? 1 : 0;
+				MarginSum += Spec.Margin[V];
+			}
+		}
+	}
+	return FString::Printf(TEXT("sails fitted in %.0f ms: %d points moved off, %d facets moved off, room %.2f m on average, %d of %d points with none"),
+		(FPlatformTime::Seconds() - Start) * 1000.0, Moved, Pierced, Points > 0 ? MarginSum / Points : 0.0, Held, Points);
+}
+
+void FSailSimulation::Init(TArray<FShipSail> InSails, TSharedPtr<const FShipVoxels> InVerify)
 {
 	Sails.Reset();
-	Hull = InHull;
-	Voxels = InVoxels;
+	Verify = InVerify;
 	Accumulator = 0.f;
 	for (FShipSail& Spec : InSails)
 	{
 		FSailState& S = Sails.AddDefaulted_GetRef();
 		const int32 Count = Spec.Rest.Num();
+		if (Spec.Margin.Num() != Count)
+		{
+			Spec.Margin.Init(0.f, Count);
+		}
 		S.X = Spec.Rest;
 		S.Prev = Spec.Rest;
 		S.Normal.Init(FVector3f::UpVector, Count);
@@ -169,107 +716,9 @@ void FSailSimulation::Init(TArray<FShipSail> InSails, const TArray<FShipCapsule>
 				Link(I, J, I, J + 2, 0.15f, 0.02f);
 			}
 		}
-		// The ropes and spars this sail can reach.
-		FBox3f Box(ForceInit);
-		for (const FVector3f& P : Spec.Rest)
-		{
-			Box += P;
-		}
-		Box = Box.ExpandBy(FMath::Max(Box.GetExtent().GetMax() * 0.5f, 1.f));
-		for (const FShipCapsule& Capsule : Colliders)
-		{
-			FBox3f CapsuleBox(ForceInit);
-			CapsuleBox += Capsule.A;
-			CapsuleBox += Capsule.B;
-			if (CapsuleBox.ExpandBy(Capsule.Radius).Intersect(Box))
-			{
-				S.Near.Add(Capsule);
-			}
-		}
-		for (const FShipBlock& Solid : Solids)
-		{
-			const FVector3f Reach = (Solid.X * Solid.Half.X).GetAbs() + (Solid.Y * Solid.Half.Y).GetAbs() + (Solid.Z * Solid.Half.Z).GetAbs();
-			if (FBox3f(Solid.O - Reach, Solid.O + Reach).Intersect(Box))
-			{
-				S.NearSolids.Add(Solid);
-			}
-		}
-		S.FrameStart = S.X;
-		S.GridOrigin = Box.Min;
 		S.Spec = MoveTemp(Spec);
 		UpdateNormals(S);
 	}
-	ParallelFor(Sails.Num(), [this](int32 Index) { BuildGrid(Sails[Index]); });
-}
-
-void FSailSimulation::BuildGrid(FSailState& S)
-{
-	FBox3f Box(ForceInit);
-	for (const FVector3f& P : S.Spec.Rest)
-	{
-		Box += P;
-	}
-	Box = Box.ExpandBy(FMath::Max(Box.GetExtent().GetMax() * 0.5f, 1.f));
-	S.GridOrigin = Box.Min;
-	const FVector3f Extent = Box.GetSize() / CapsuleCell;
-	S.GridSize = FIntVector(FMath::CeilToInt(Extent.X) + 1, FMath::CeilToInt(Extent.Y) + 1, FMath::CeilToInt(Extent.Z) + 1);
-	const int32 Cells = S.GridSize.X * S.GridSize.Y * S.GridSize.Z;
-	// Each capsule into the cells round points half a cell apart along it.
-	TArray<uint64> Pairs;
-	for (int32 C = 0; C < S.Near.Num(); ++C)
-	{
-		const FShipCapsule& Capsule = S.Near[C];
-		const int32 N = FMath::Clamp(FMath::CeilToInt((Capsule.B - Capsule.A).Size() / (CapsuleCell * 0.5f)), 1, 1000);
-		for (int32 K = 0; K <= N; ++K)
-		{
-			const FVector3f Q = (FMath::Lerp(Capsule.A, Capsule.B, float(K) / N) - S.GridOrigin) / CapsuleCell;
-			const int32 X = FMath::FloorToInt(Q.X), Y = FMath::FloorToInt(Q.Y), Z = FMath::FloorToInt(Q.Z);
-			for (int32 DZ = -1; DZ <= 1; ++DZ)
-			{
-				for (int32 DY = -1; DY <= 1; ++DY)
-				{
-					for (int32 DX = -1; DX <= 1; ++DX)
-					{
-						const int32 I = X + DX, J = Y + DY, L = Z + DZ;
-						if (I >= 0 && J >= 0 && L >= 0 && I < S.GridSize.X && J < S.GridSize.Y && L < S.GridSize.Z)
-						{
-							Pairs.Add((uint64((L * S.GridSize.Y + J) * S.GridSize.X + I) << 32) | uint32(C));
-						}
-					}
-				}
-			}
-		}
-	}
-	Pairs.Sort();
-	S.GridStart.Init(0, Cells + 1);
-	S.GridItems.Reset(Pairs.Num());
-	uint64 Last = ~uint64(0);
-	for (const uint64 Pair : Pairs)
-	{
-		if (Pair == Last)
-		{
-			continue;
-		}
-		Last = Pair;
-		++S.GridStart[int32(Pair >> 32) + 1];
-		S.GridItems.Add(int32(Pair & 0xffffffffu));
-	}
-	for (int32 I = 0; I < Cells; ++I)
-	{
-		S.GridStart[I + 1] += S.GridStart[I];
-	}
-}
-
-TArrayView<const int32> FSailSimulation::CapsulesAt(const FSailState& S, const FVector3f& P)
-{
-	const FVector3f Q = (P - S.GridOrigin) / CapsuleCell;
-	const int32 X = FMath::FloorToInt(Q.X), Y = FMath::FloorToInt(Q.Y), Z = FMath::FloorToInt(Q.Z);
-	if (X < 0 || Y < 0 || Z < 0 || X >= S.GridSize.X || Y >= S.GridSize.Y || Z >= S.GridSize.Z || S.GridStart.Num() == 0)
-	{
-		return TArrayView<const int32>();
-	}
-	const int32 Cell = (Z * S.GridSize.Y + Y) * S.GridSize.X + X;
-	return TArrayView<const int32>(S.GridItems.GetData() + S.GridStart[Cell], S.GridStart[Cell + 1] - S.GridStart[Cell]);
 }
 
 void FSailSimulation::UpdateNormals(FSailState& S) const
@@ -338,442 +787,48 @@ void FSailSimulation::Substep(FSailState& S, float H, const FVector3f& Wind, flo
 		S.Prev[V] = S.X[V];
 		S.X[V] += Velocity + (Gravity + S.Force[V] * S.InvMass[V]) * (H * H);
 	}
-	// Canvas.
-	for (const FConstraint& C : S.Constraints)
+	// Canvas, sheets, then each point back within its room, twice: a 20 m sail does not stretch under its own weight,
+	// and nothing it could reach is ever reached.
+	for (int32 Iteration = 0; Iteration < 2; ++Iteration)
 	{
-		const float WA = S.InvMass[C.A], WB = S.InvMass[C.B];
-		const FVector3f Delta = S.X[C.B] - S.X[C.A];
-		const float Length = Delta.Size();
-		if (Length < 1e-6f)
+		for (const FConstraint& C : S.Constraints)
 		{
-			continue;
-		}
-		const float Error = Length - C.Rest;
-		const float K = Error > 0.f ? C.Stretch : C.Compress;
-		const FVector3f Correction = Delta * (K * Error / (Length * (WA + WB)));
-		S.X[C.A] += Correction * WA;
-		S.X[C.B] -= Correction * WB;
-	}
-	// Sheets: they pull the clews in, never push them out.
-	for (const FShipSail::FSheet& Sheet : Spec.Sheets)
-	{
-		FVector3f& P = S.X[Sheet.Particle];
-		const FVector3f Delta = P - Sheet.Anchor;
-		const float Length = Delta.Size();
-		if (Length > Sheet.Length)
-		{
-			P = Sheet.Anchor + Delta * (Sheet.Length / Length);
-		}
-	}
-	// Ropes and spars.
-	for (int32 V = 0; V < Count; ++V)
-	{
-		if (S.InvMass[V] <= 0.f)
-		{
-			continue;
-		}
-		FVector3f& P = S.X[V];
-		for (const int32 CapsuleIndex : CapsulesAt(S, P))
-		{
-			const FShipCapsule& Capsule = S.Near[CapsuleIndex];
-			const FVector3f C = ClothClosest(P, Capsule.A, Capsule.B);
-			const FVector3f Away = P - C;
-			const float Distance = Away.Size();
-			const float Keep = Capsule.Radius + Clearance;
-			if (Distance < Keep)
-			{
-				// Out the way it came in (the side its previous position was on).
-				const FVector3f Side = Distance > 1e-4f ? Away / Distance : (S.Prev[V] - C).GetSafeNormal();
-				P = C + Side * Keep;
-			}
-		}
-	}
-}
-
-void FSailSimulation::CollideSolids(FSailState& S) const
-{
-	// The canvas rests on the decks, rails, bulwarks and tops instead of passing into them: a point inside a solid
-	// goes back out through the face it came in by (the side it was on when the frame began), and stops there.
-	for (int32 V = 0; V < S.X.Num(); ++V)
-	{
-		if (S.InvMass[V] <= 0.f)
-		{
-			continue;
-		}
-		FVector3f& P = S.X[V];
-		// The hull's side, as its lines draw it: a point does not go through the planking; one that would comes back to
-		// the side it was on (outboard, or inboard over the deck), or over the rail if that is nearer.
-		if (Hull.IsValid())
-		{
-			const float H = P.Z - Hull.ZOffset;
-			const float Rail = Hull.RailAt(P.X);
-			const float Half = H < Rail + Clearance ? Hull.HalfAt(P.X, FMath::Min(H, Rail)) : 0.f;
-			if (Half > 0.05f)
-			{
-				const FVector3f& P0 = S.FrameStart[V];
-				const float Half0 = Hull.HalfAt(P0.X, FMath::Min(P0.Z - Hull.ZOffset, Hull.RailAt(P0.X)));
-				const bool bWasOutside = Half0 <= 0.05f || FMath::Abs(P0.Y) >= Half0 - 0.5f * Hull.Wall;
-				const float Sign = FMath::Abs(P0.Y) > 1e-3f ? FMath::Sign(P0.Y) : (P.Y >= 0.f ? 1.f : -1.f);
-				const float Over = Rail + Clearance - H; // to go over the rail
-				if (bWasOutside && FMath::Abs(P.Y) < Half + Clearance)
-				{
-					const float Out = Half + Clearance - Sign * P.Y;
-					if (Over < Out)
-					{
-						P.Z += Over;
-					}
-					else
-					{
-						P.Y = Sign * (Half + Clearance);
-					}
-					S.Prev[V] = P;
-				}
-				else if (!bWasOutside && FMath::Abs(P.Y) > Half - Hull.Wall - Clearance)
-				{
-					const float In = Sign * P.Y - (Half - Hull.Wall - Clearance);
-					if (Over < In)
-					{
-						P.Z += Over;
-					}
-					else
-					{
-						P.Y = Sign * (Half - Hull.Wall - Clearance);
-					}
-					S.Prev[V] = P;
-				}
-			}
-		}
-		for (const FShipBlock& K : S.NearSolids)
-		{
-			const FVector3f D = P - K.O;
-			const FVector3f Q(FVector3f::DotProduct(D, K.X), FVector3f::DotProduct(D, K.Y), FVector3f::DotProduct(D, K.Z));
-			const FVector3f Keep = K.Half + FVector3f(Clearance);
-			if (FMath::Abs(Q.X) >= Keep.X || FMath::Abs(Q.Y) >= Keep.Y || FMath::Abs(Q.Z) >= Keep.Z)
+			const float WA = S.InvMass[C.A], WB = S.InvMass[C.B];
+			const FVector3f Delta = S.X[C.B] - S.X[C.A];
+			const float Length = Delta.Size();
+			if (Length < 1e-6f)
 			{
 				continue;
 			}
-			const FVector3f D0 = S.FrameStart[V] - K.O;
-			const FVector3f Q0(FVector3f::DotProduct(D0, K.X), FVector3f::DotProduct(D0, K.Y), FVector3f::DotProduct(D0, K.Z));
-			int32 Axis = INDEX_NONE;
-			float Sign = 1.f, Best = 1e9f;
-			bool bFromOutside = false;
-			for (int32 A = 0; A < 3; ++A)
-			{
-				const bool bOutside = FMath::Abs(Q0[A]) >= Keep[A] - 1e-4f;
-				if (bFromOutside && !bOutside)
-				{
-					continue;
-				}
-				const float S0 = bOutside ? FMath::Sign(Q0[A]) : (Q[A] >= 0.f ? 1.f : -1.f);
-				const float Depth = Keep[A] - S0 * Q[A];
-				if ((bOutside && !bFromOutside) || Depth < Best)
-				{
-					Best = Depth;
-					Axis = A;
-					Sign = S0;
-					bFromOutside = bFromOutside || bOutside;
-				}
-			}
-			const FVector3f Normal = Axis == 0 ? K.X : Axis == 1 ? K.Y : K.Z;
-			P += Normal * (Sign * Best);
-			S.Prev[V] = P; // it stops against the solid
+			const float Error = Length - C.Rest;
+			const float K = Error > 0.f ? C.Stretch : C.Compress;
+			const FVector3f Correction = Delta * (K * Error / (Length * (WA + WB)));
+			S.X[C.A] += Correction * WA;
+			S.X[C.B] -= Correction * WB;
 		}
-	}
-	// The ropes between two points of the canvas: each edge of the cloth kept clear of the ropes and spars near it (the
-	// points alone would let a stay slip through the panel between them).
-	const FShipSail& Spec = S.Spec;
-	auto Edge = [&](int32 E0, int32 E1)
-	{
-		const float W0 = S.InvMass[E0] > 0.f ? 1.f : 0.f, W1 = S.InvMass[E1] > 0.f ? 1.f : 0.f;
-		if (W0 == 0.f || W1 == 0.f)
+		// Sheets: they pull the clews in, never push them out.
+		for (const FShipSail::FSheet& Sheet : Spec.Sheets)
 		{
-			return; // an edge on a spar or a stay is held by it
-		}
-		// The capsules near five points along the edge (no two more than a quarter edge apart).
-		TArray<int32, TInlineAllocator<32>> Candidates;
-		for (int32 K = 0; K <= 4; ++K)
-		{
-			for (const int32 CapsuleIndex : CapsulesAt(S, FMath::Lerp(S.X[E0], S.X[E1], K * 0.25f)))
+			FVector3f& P = S.X[Sheet.Particle];
+			const FVector3f Delta = P - Sheet.Anchor;
+			const float Length = Delta.Size();
+			if (Length > Sheet.Length)
 			{
-				Candidates.AddUnique(CapsuleIndex);
+				P = Sheet.Anchor + Delta * (Sheet.Length / Length);
 			}
 		}
-		for (const int32 CapsuleIndex : Candidates)
-		{
-			const FShipCapsule& Capsule = S.Near[CapsuleIndex];
-			float U, T;
-			ClothSegments(S.X[E0], S.X[E1], Capsule.A, Capsule.B, U, T);
-			if (U < 0.05f || U > 0.95f)
-			{
-				continue; // the points' own test handles it
-			}
-			const FVector3f OnEdge = FMath::Lerp(S.X[E0], S.X[E1], U);
-			const FVector3f OnRope = FMath::Lerp(Capsule.A, Capsule.B, T);
-			const FVector3f Away = OnEdge - OnRope;
-			const float Distance = Away.Size();
-			const float Keep = Capsule.Radius + Clearance;
-			if (Distance >= Keep)
-			{
-				continue;
-			}
-			// Back to the side the edge was on when the frame began.
-			const FVector3f Before = FMath::Lerp(S.FrameStart[E0], S.FrameStart[E1], U) - OnRope;
-			FVector3f Side = Distance > 1e-4f ? Away / Distance : Before.GetSafeNormal();
-			if (FVector3f::DotProduct(Side, Before) < 0.f && Before.SizeSquared() > 1e-8f)
-			{
-				// It crossed during the frame: it goes back.
-				Side = (Before - FVector3f::DotProduct(Before, (Capsule.B - Capsule.A).GetSafeNormal()) * (Capsule.B - Capsule.A).GetSafeNormal()).GetSafeNormal();
-			}
-			const FVector3f Delta = OnRope + Side * Keep - OnEdge;
-			const float A0 = 1.f - U, A1 = U, Scale = 1.f / (A0 * A0 + A1 * A1);
-			S.X[E0] += Delta * (A0 * Scale);
-			S.X[E1] += Delta * (A1 * Scale);
-		}
-	};
-	for (int32 J = 0; J <= Spec.NV; ++J)
-	{
-		for (int32 I = 0; I <= Spec.NU; ++I)
-		{
-			if (I < Spec.NU)
-			{
-				Edge(Spec.Index(I, J), Spec.Index(I + 1, J));
-			}
-			if (J < Spec.NV)
-			{
-				Edge(Spec.Index(I, J), Spec.Index(I, J + 1));
-			}
-		}
-	}
-	// Everything drawn in wood and iron: each point followed along its whole path of the frame, stopped where it
-	// would enter the solid; a facet whose middle or an edge whose middle would enter it goes back to where it was
-	// (where nothing went through). Points that began inside (the cut sail) are let out.
-	if (Voxels.IsValid() && Voxels->IsValid())
-	{
-		const FShipVoxels& G = *Voxels;
-		const float Step = G.Cell * 0.5f;
-		for (int32 V = 0; V < S.X.Num(); ++V)
+		for (int32 V = 0; V < Count; ++V)
 		{
 			if (S.InvMass[V] <= 0.f)
 			{
 				continue;
 			}
-			const FVector3f A = S.FrameStart[V], Bp = S.X[V];
-			if (G.Blocked(A))
+			const FVector3f Away = S.X[V] - Spec.Rest[V];
+			const float Room = Spec.Margin[V];
+			const float Distance2 = Away.SizeSquared();
+			if (Distance2 > Room * Room)
 			{
-				continue;
-			}
-			const int32 Steps = FMath::Clamp(FMath::CeilToInt((Bp - A).Size() / Step), 1, 64);
-			FVector3f Free = A;
-			for (int32 K = 1; K <= Steps; ++K)
-			{
-				const FVector3f Q = FMath::Lerp(A, Bp, float(K) / Steps);
-				if (G.Blocked(Q))
-				{
-					S.X[V] = Free;
-					S.Prev[V] = Free;
-					break;
-				}
-				Free = Q;
-			}
-		}
-		auto Back = [&](int32 V)
-		{
-			if (S.InvMass[V] > 0.f)
-			{
-				S.X[V] = S.FrameStart[V];
-				S.Prev[V] = S.FrameStart[V];
-			}
-		};
-		auto Enters = [&](const FVector3f& Now, const FVector3f& Before) { return G.Blocked(Now) && !G.Blocked(Before); };
-		for (int32 J = 0; J < Spec.NV; ++J)
-		{
-			for (int32 I = 0; I < Spec.NU; ++I)
-			{
-				const int32 C0 = Spec.Index(I, J), C1 = Spec.Index(I + 1, J), C2 = Spec.Index(I + 1, J + 1), C3 = Spec.Index(I, J + 1);
-				const FVector3f Mid = (S.X[C0] + S.X[C1] + S.X[C2] + S.X[C3]) * 0.25f;
-				const FVector3f Mid0 = (S.FrameStart[C0] + S.FrameStart[C1] + S.FrameStart[C2] + S.FrameStart[C3]) * 0.25f;
-				if (Enters(Mid, Mid0) || Enters((S.X[C0] + S.X[C1]) * 0.5f, (S.FrameStart[C0] + S.FrameStart[C1]) * 0.5f)
-					|| Enters((S.X[C0] + S.X[C3]) * 0.5f, (S.FrameStart[C0] + S.FrameStart[C3]) * 0.5f))
-				{
-					Back(C0);
-					Back(C1);
-					Back(C2);
-					Back(C3);
-				}
-			}
-		}
-	}
-	S.FrameStart = S.X;
-}
-
-int32 FSailSimulation::CountInWood(int32& OutSamples) const
-{
-	OutSamples = 0;
-	int32 Inside = 0;
-	if (!Voxels.IsValid() || !Voxels->IsValid())
-	{
-		return 0;
-	}
-	for (const FSailState& S : Sails)
-	{
-		const FShipSail& Spec = S.Spec;
-		for (int32 J = 0; J < Spec.NV; ++J)
-		{
-			for (int32 I = 0; I < Spec.NU; ++I)
-			{
-				const FVector3f& A = S.X[Spec.Index(I, J)];
-				const FVector3f& B = S.X[Spec.Index(I + 1, J)];
-				const FVector3f& C = S.X[Spec.Index(I + 1, J + 1)];
-				const FVector3f& D = S.X[Spec.Index(I, J + 1)];
-				// Facets on a spar (pinned along it) touch its wood by design.
-				if (S.InvMass[Spec.Index(I, J)] <= 0.f || S.InvMass[Spec.Index(I + 1, J)] <= 0.f || S.InvMass[Spec.Index(I + 1, J + 1)] <= 0.f || S.InvMass[Spec.Index(I, J + 1)] <= 0.f)
-				{
-					continue;
-				}
-				for (int32 U = 0; U < 4; ++U)
-				{
-					for (int32 V = 0; V < 4; ++V)
-					{
-						const float FU = (U + 0.5f) / 4.f, FV = (V + 0.5f) / 4.f;
-						++OutSamples;
-						Inside += Voxels->InWood(FMath::Lerp(FMath::Lerp(A, B, FU), FMath::Lerp(D, C, FU), FV)) ? 1 : 0;
-					}
-				}
-			}
-		}
-	}
-	return Inside;
-}
-
-int32 FSailSimulation::CountInHull(int32& OutSamples) const
-{
-	OutSamples = 0;
-	int32 Inside = 0;
-	if (!Hull.IsValid())
-	{
-		return 0;
-	}
-	for (const FSailState& S : Sails)
-	{
-		const FShipSail& Spec = S.Spec;
-		for (int32 J = 0; J < Spec.NV; ++J)
-		{
-			for (int32 I = 0; I < Spec.NU; ++I)
-			{
-				const FVector3f& A = S.X[Spec.Index(I, J)];
-				const FVector3f& B = S.X[Spec.Index(I + 1, J)];
-				const FVector3f& C = S.X[Spec.Index(I + 1, J + 1)];
-				const FVector3f& D = S.X[Spec.Index(I, J + 1)];
-				for (int32 U = 0; U < 4; ++U)
-				{
-					for (int32 V = 0; V < 4; ++V)
-					{
-						const float FU = (U + 0.5f) / 4.f, FV = (V + 0.5f) / 4.f;
-						const FVector3f P = FMath::Lerp(FMath::Lerp(A, B, FU), FMath::Lerp(D, C, FU), FV);
-						++OutSamples;
-						const float H = P.Z - Hull.ZOffset;
-						if (H >= Hull.RailAt(P.X))
-						{
-							continue;
-						}
-						const float Half = Hull.HalfAt(P.X, H);
-						if (Half > 0.05f && FMath::Abs(P.Y) < Half && FMath::Abs(P.Y) > Half - Hull.Wall)
-						{
-							++Inside;
-						}
-					}
-				}
-			}
-		}
-	}
-	return Inside;
-}
-
-void FSailSimulation::CollideSails()
-{
-	// Every point hashed by its cell (SailSpacing) into a table sorted once (counting sort); points of different
-	// sails closer than SailSpacing are pushed apart.
-	struct FEntry
-	{
-		int32 Sail, Point;
-	};
-	int32 Total = 0;
-	for (const FSailState& S : Sails)
-	{
-		Total += S.X.Num();
-	}
-	const uint32 Mask = FMath::RoundUpToPowerOfTwo(uint32(FMath::Max(Total * 2, 64))) - 1;
-	auto Cell = [](const FVector3f& P) { return FIntVector(FMath::FloorToInt(P.X / SailSpacing), FMath::FloorToInt(P.Y / SailSpacing), FMath::FloorToInt(P.Z / SailSpacing)); };
-	auto Bucket = [Mask](const FIntVector& C) { return (uint32(C.X) * 73856093u ^ uint32(C.Y) * 19349663u ^ uint32(C.Z) * 83492791u) & Mask; };
-	TArray<int32> Start;
-	Start.Init(0, Mask + 2);
-	TArray<uint32> Of;
-	Of.SetNumUninitialized(Total);
-	int32 N = 0;
-	for (const FSailState& S : Sails)
-	{
-		for (const FVector3f& P : S.X)
-		{
-			Of[N] = Bucket(Cell(P));
-			++Start[Of[N] + 1];
-			++N;
-		}
-	}
-	for (uint32 B = 0; B <= Mask; ++B)
-	{
-		Start[B + 1] += Start[B];
-	}
-	TArray<FEntry> Items;
-	Items.SetNumUninitialized(Total);
-	TArray<int32> Fill = Start;
-	N = 0;
-	for (int32 S = 0; S < Sails.Num(); ++S)
-	{
-		for (int32 V = 0; V < Sails[S].X.Num(); ++V)
-		{
-			Items[Fill[Of[N]]++] = { S, V };
-			++N;
-		}
-	}
-	for (int32 S = 0; S < Sails.Num(); ++S)
-	{
-		FSailState& Sail = Sails[S];
-		for (int32 V = 0; V < Sail.X.Num(); ++V)
-		{
-			if (Sail.InvMass[V] <= 0.f)
-			{
-				continue;
-			}
-			const FIntVector C = Cell(Sail.X[V]);
-			for (int32 DX = -1; DX <= 1; ++DX)
-			{
-				for (int32 DY = -1; DY <= 1; ++DY)
-				{
-					for (int32 DZ = -1; DZ <= 1; ++DZ)
-					{
-						const uint32 B = Bucket(C + FIntVector(DX, DY, DZ));
-						for (int32 K = Start[B]; K < Start[B + 1]; ++K)
-						{
-							const FEntry& E = Items[K];
-							if (E.Sail == S)
-							{
-								continue;
-							}
-							FSailState& Other = Sails[E.Sail];
-							const FVector3f Delta = Sail.X[V] - Other.X[E.Point];
-							const float Distance2 = Delta.SizeSquared();
-							if (Distance2 >= SailSpacing * SailSpacing || Distance2 < 1e-10f)
-							{
-								continue;
-							}
-							const float Distance = FMath::Sqrt(Distance2);
-							const float WA = Sail.InvMass[V], WB = Other.InvMass[E.Point];
-							const FVector3f Push = Delta * ((SailSpacing - Distance) / (Distance * (WA + WB)));
-							Sail.X[V] += Push * WA;
-							Other.X[E.Point] -= Push * WB;
-						}
-					}
-				}
+				S.X[V] = Spec.Rest[V] + Away * (Room / FMath::Sqrt(Distance2));
 			}
 		}
 	}
@@ -792,26 +847,149 @@ void FSailSimulation::Step(float DeltaTime, const FVector3f& Wind, float Time)
 		return;
 	}
 	Accumulator -= Steps * SubstepTime;
-	double T = FPlatformTime::Seconds();
+	const double T = FPlatformTime::Seconds();
 	ParallelFor(Sails.Num(), [&](int32 Index)
 	{
 		for (int32 Step = 0; Step < Steps; ++Step)
 		{
 			Substep(Sails[Index], SubstepTime, Wind, Time + Step * SubstepTime);
 		}
+		UpdateNormals(Sails[Index]);
 	});
-	Profile[0] += FPlatformTime::Seconds() - T;
-	T = FPlatformTime::Seconds();
-	ParallelFor(Sails.Num(), [&](int32 Index) { CollideSolids(Sails[Index]); });
-	Profile[1] += FPlatformTime::Seconds() - T;
-	T = FPlatformTime::Seconds();
-	CollideSails();
-	Profile[2] += FPlatformTime::Seconds() - T;
-	T = FPlatformTime::Seconds();
-	ParallelFor(Sails.Num(), [&](int32 Index) { UpdateNormals(Sails[Index]); });
-	Profile[3] += FPlatformTime::Seconds() - T;
-	Profile[4] += Steps;
-	Profile[5] += 1.0;
+	ProfileSeconds += FPlatformTime::Seconds() - T;
+	ProfileSubsteps += Steps;
+	ProfileFrames += 1.0;
+}
+
+FString FSailSimulation::TakeProfile()
+{
+	const double F = FMath::Max(ProfileFrames, 1.0);
+	int32 Points = 0;
+	for (const FSailState& S : Sails)
+	{
+		Points += S.X.Num();
+	}
+	const FString Out = FString::Printf(TEXT("cloth %.2f ms a frame, %.1f substeps a frame, %d points"), ProfileSeconds * 1000.0 / F, ProfileSubsteps / F, Points);
+	ProfileSeconds = ProfileSubsteps = ProfileFrames = 0.0;
+	return Out;
+}
+
+int32 FSailSimulation::CountInDrawn(int32& OutSamples, FString* OutDetail) const
+{
+	OutSamples = 0;
+	int32 Inside = 0;
+	if (!CanVerify())
+	{
+		return 0;
+	}
+	for (const FSailState& S : Sails)
+	{
+		const FShipSail& Spec = S.Spec;
+		for (int32 J = 0; J < Spec.NV; ++J)
+		{
+			for (int32 I = 0; I < Spec.NU; ++I)
+			{
+				const int32 C[4] = { Spec.Index(I, J), Spec.Index(I + 1, J), Spec.Index(I + 1, J + 1), Spec.Index(I, J + 1) };
+				// Facets on a spar or stay (held along it) touch it by design.
+				if (S.InvMass[C[0]] <= 0.f || S.InvMass[C[1]] <= 0.f || S.InvMass[C[2]] <= 0.f || S.InvMass[C[3]] <= 0.f)
+				{
+					continue;
+				}
+				for (int32 U = 0; U < 4; ++U)
+				{
+					for (int32 V = 0; V < 4; ++V)
+					{
+						const float FU = (U + 0.5f) / 4.f, FV = (V + 0.5f) / 4.f;
+						++OutSamples;
+						const FVector3f P = FMath::Lerp(FMath::Lerp(S.X[C[0]], S.X[C[1]], FU), FMath::Lerp(S.X[C[3]], S.X[C[2]], FU), FV);
+						const uint8 Cell = Verify->Get(P);
+						if (Cell & 1)
+						{
+							++Inside;
+							if (OutDetail && Inside <= 12)
+							{
+								static const TCHAR* const Kinds[5] = { TEXT("wood"), TEXT("canvas"), TEXT("rope"), TEXT("iron"), TEXT("glass") };
+								FString What;
+								for (int32 K = 0; K < 5; ++K)
+								{
+									if (Cell & (4 << K))
+									{
+										What += FString(What.IsEmpty() ? TEXT("") : TEXT("+")) + Kinds[K];
+									}
+								}
+								*OutDetail += FString::Printf(TEXT(" [sail %d facet %d,%d at %.1f %.1f %.1f: %s]"), int32(&S - Sails.GetData()), I, J, P.X, P.Y, P.Z, *What);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return Inside;
+}
+
+int32 FSailSimulation::CountSailCrossings() const
+{
+	TArray<FBox3f> Boxes;
+	for (const FSailState& S : Sails)
+	{
+		FBox3f Box(ForceInit);
+		for (const FVector3f& P : S.X)
+		{
+			Box += P;
+		}
+		Boxes.Add(Box);
+	}
+	int32 Crossings = 0;
+	for (int32 A = 0; A < Sails.Num(); ++A)
+	{
+		for (int32 B = 0; B < Sails.Num(); ++B)
+		{
+			if (A == B || !Boxes[A].Intersect(Boxes[B]))
+			{
+				continue;
+			}
+			const FSailState& SA = Sails[A];
+			const FSailState& SB = Sails[B];
+			const FShipSail& EA = SA.Spec;
+			const FShipSail& EB = SB.Spec;
+			for (int32 J = 0; J <= EA.NV; ++J)
+			{
+				for (int32 I = 0; I <= EA.NU; ++I)
+				{
+					for (int32 Dir = 0; Dir < 2; ++Dir)
+					{
+						const int32 I1 = I + (Dir == 0 ? 1 : 0), J1 = J + (Dir == 1 ? 1 : 0);
+						if (I1 > EA.NU || J1 > EA.NV)
+						{
+							continue;
+						}
+						const FVector P0(SA.X[EA.Index(I, J)]), P1(SA.X[EA.Index(I1, J1)]);
+						FBox3f Edge(ForceInit);
+						Edge += FVector3f(P0);
+						Edge += FVector3f(P1);
+						if (!Edge.Intersect(Boxes[B]))
+						{
+							continue;
+						}
+						for (int32 L = 0; L < EB.NV; ++L)
+						{
+							for (int32 K = 0; K < EB.NU; ++K)
+							{
+								const FVector Q0(SB.X[EB.Index(K, L)]), Q1(SB.X[EB.Index(K + 1, L)]), Q2(SB.X[EB.Index(K + 1, L + 1)]), Q3(SB.X[EB.Index(K, L + 1)]);
+								FVector Hit, Normal;
+								if (FMath::SegmentTriangleIntersection(P0, P1, Q0, Q1, Q2, Hit, Normal) || FMath::SegmentTriangleIntersection(P0, P1, Q0, Q2, Q3, Hit, Normal))
+								{
+									++Crossings;
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return Crossings;
 }
 
 void FSailSimulation::GetTopology(TArray<int32>& OutTriangles, TArray<FVector2D>& OutUV, TArray<FColor>& OutColors) const

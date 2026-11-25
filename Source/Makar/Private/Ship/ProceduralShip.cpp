@@ -83,7 +83,13 @@ namespace
 			Builder.Colliders = nullptr;
 			Builder.Blocks = nullptr;
 		});
-		Stage(TEXT("fittings"), [&]() { ShipFittings::Build(Builder, Lines, Ports, Masts, Result.Interior); });
+		Stage(TEXT("fittings"), [&]()
+		{
+			// The fittings' solid pieces (bitts, belfry, carriages...) recorded too: the sails are fitted clear of them.
+			Builder.Blocks = &Blocks;
+			ShipFittings::Build(Builder, Lines, Ports, Masts, Result.Interior);
+			Builder.Blocks = nullptr;
+		});
 		int32 Crossing = 0;
 		Stage(TEXT("ropes"), [&]()
 		{
@@ -163,33 +169,68 @@ namespace
 			}
 		}
 
-		// The wood and iron as drawn, in 7 cm cubes, from a metre under the waterline to 2.5 m over the highest rail,
-		// over the hull's length and breadth with the channels: what the sails can meet.
+		// The sails fitted into the ship once, as an artist would: clear of everything, each point given its room.
 		if (Result.Sails.Num() > 0)
 		{
+			// Obstacles: the rig's and fittings' blocks, and the decks, rails, balustrades, bulkheads one walks among.
+			TArray<FShipBlock> Obstacles = Blocks;
+			Obstacles.Append(Result.Interior.Collision);
+			Result.Times += TEXT(", ") + ShipSails::Fit(Result.Sails, Result.Colliders, Obstacles, Result.HullShape);
+		}
+
+		// Verification only (MAKAR_VERIFY_SAILS=1): everything drawn, in 7 cm cubes (sparse), over the whole ship from a
+		// metre under the waterline to the trucks, to measure that the canvas crosses nothing (wood, iron, ropes...).
+		if (Result.Sails.Num() > 0 && !FPlatformMisc::GetEnvironmentVariable(TEXT("MAKAR_VERIFY_SAILS")).IsEmpty())
+		{
 			const double TV = FPlatformTime::Seconds();
-			float TopRail = 0.f;
-			for (float X = -Lines.HalfLength; X <= Lines.HalfLength; X += 0.5f)
+			const int32 Drawn[] = { int32(ShipMesh::Wood), 1, 2, int32(ShipMesh::Metal), 4 };
+			FBox3f Bounds(ForceInit);
+			int32 Wild = 0;
+			for (const FOceanMeshData::FVertex& V : Data.Vertices)
 			{
-				TopRail = FMath::Max(TopRail, Lines.RailAt(X));
+				// Only sane points (a stray infinite one would make the grid absurd).
+				if (V.Position.GetAbsMax() < 30000.f)
+				{
+					Bounds += V.Position * 0.01f; // the mesh is in centimetres, the sails in metres
+				}
+				else
+				{
+					++Wild;
+				}
 			}
+			if (Wild > 0)
+			{
+				UE_LOG(LogShip, Warning, TEXT("ProceduralShip: %d vertices out of all reason (beyond 300 m)"), Wild);
+			}
+			Bounds.Min.Z = FMath::Max(Bounds.Min.Z, -1.f);
+			Bounds = Bounds.ExpandBy(0.2f);
 			Result.Voxels = MakeShared<FShipVoxels>();
 			FShipVoxels& G = *Result.Voxels;
-			G.Reset(FBox3f(FVector3f(-Lines.HalfLength - 1.f, -Lines.HalfBeam - 1.2f, -1.f), FVector3f(Lines.HalfLength + 1.f, Lines.HalfBeam + 1.2f, Lines.Z(TopRail) + 2.5f)), 0.07f);
-			for (int32 Section : { int32(ShipMesh::Wood), int32(ShipMesh::Metal) })
+			G.Reset(Bounds, 0.07f);
+			auto EachTriangle = [&](TFunctionRef<void(const FVector3f&, const FVector3f&, const FVector3f&, int32)> Visit)
 			{
-				const TArray<int32>& Indices = Data.Sections[Section];
-				ParallelFor((Indices.Num() / 3 + 255) / 256, [&](int32 Chunk)
+				for (int32 Section : Drawn)
 				{
-					const int32 End = FMath::Min((Chunk + 1) * 256, Indices.Num() / 3);
-					for (int32 T = Chunk * 256; T < End; ++T)
+					if (Section >= Data.Sections.Num())
 					{
-						G.Fill(Data.Vertices[Indices[3 * T]].Position, Data.Vertices[Indices[3 * T + 1]].Position, Data.Vertices[Indices[3 * T + 2]].Position);
+						continue;
 					}
-				});
-			}
+					const TArray<int32>& Indices = Data.Sections[Section];
+					ParallelFor((Indices.Num() / 3 + 255) / 256, [&](int32 Chunk)
+					{
+						const int32 End = FMath::Min((Chunk + 1) * 256, Indices.Num() / 3);
+						for (int32 T = Chunk * 256; T < End; ++T)
+						{
+							Visit(Data.Vertices[Indices[3 * T]].Position * 0.01f, Data.Vertices[Indices[3 * T + 1]].Position * 0.01f, Data.Vertices[Indices[3 * T + 2]].Position * 0.01f, Section);
+						}
+					});
+				}
+			};
+			EachTriangle([&](const FVector3f& A, const FVector3f& B, const FVector3f& C, int32) { G.Touch(A, B, C); });
+			G.Allocate();
+			EachTriangle([&](const FVector3f& A, const FVector3f& B, const FVector3f& C, int32 Section) { G.Fill(A, B, C, uint8(4 << Section)); });
 			G.Grow();
-			Result.Times += FString::Printf(TEXT(", voxels %.0f ms (%d x %d x %d)"), (FPlatformTime::Seconds() - TV) * 1000.0, G.Size.X, G.Size.Y, G.Size.Z);
+			Result.Times += FString::Printf(TEXT(", voxels %.0f ms (%d bricks, %.0f MB)"), (FPlatformTime::Seconds() - TV) * 1000.0, G.NumBricks(), G.Cells.Num() / 1048576.0);
 		}
 
 		// Mesh sections: each material's triangles with their own vertices. The vertex colour is stored as it is (the
@@ -360,7 +401,7 @@ void AProceduralShip::ApplyResult(FShipBuildResult& Result)
 	Mesh->UpdateBounds();
 	// The sails: cloth simulated each frame, in their own sections (canvas, and the sheets holding their clews).
 	Sails = MakeShared<FSailSimulation>();
-	Sails->Init(MoveTemp(Result.Sails), Result.Colliders, Result.Solids, Result.HullShape, Result.Voxels);
+	Sails->Init(MoveTemp(Result.Sails), Result.Voxels);
 	SimulationTime = 0.f;
 	if (!Sails->IsEmpty())
 	{
@@ -440,9 +481,10 @@ void AProceduralShip::Tick(float DeltaSeconds)
 	if (!bBuildPending && FPlatformTime::Seconds() - LastTrimTime > 0.4)
 	{
 		float Brace0, Lee0, Swing0, Brace1, Lee1, Swing1;
-		FShipDesign::Trim(Design.WindFrom, Brace0, Lee0, Swing0);
-		FShipDesign::Trim(WindFrom, Brace1, Lee1, Swing1);
-		if (Lee0 != Lee1 || FMath::Abs(Brace0 - Brace1) > 3.f || FMath::Abs(Swing0 - Swing1) > 5.f)
+		bool bAback0, bAback1;
+		FShipDesign::Trim(Design.WindFrom, Brace0, Lee0, Swing0, bAback0);
+		FShipDesign::Trim(WindFrom, Brace1, Lee1, Swing1, bAback1);
+		if (Lee0 != Lee1 || bAback0 != bAback1 || FMath::Abs(Brace0 - Brace1) > 3.f || FMath::Abs(Swing0 - Swing1) > 5.f)
 		{
 			LastTrimTime = FPlatformTime::Seconds();
 			BuildFromDesignAsync(Design, nullptr);
@@ -456,18 +498,21 @@ void AProceduralShip::Tick(float DeltaSeconds)
 	UpdateSails();
 	SimulationMs += (FPlatformTime::Seconds() - StepStart) * 1000.0;
 	++SimulationFrames;
-	// Diagnostics: canvas through the hull's side, every 5 s for the first half minute.
-	if (FMath::FloorToInt(SimulationTime / 5.f) != FMath::FloorToInt((SimulationTime - DeltaSeconds) / 5.f) && SimulationTime < 61.f)
+	// Verification (MAKAR_VERIFY_SAILS=1): every 5 s for the first minute, canvas inside anything drawn, through
+	// another sail, and the cloth's cost.
+	if (Sails->CanVerify() && FMath::FloorToInt(SimulationTime / 5.f) != FMath::FloorToInt((SimulationTime - DeltaSeconds) / 5.f) && SimulationTime < 61.f)
 	{
 		int32 Samples = 0;
-		const int32 Inside = Sails->CountInHull(Samples);
-		int32 WoodSamples = 0;
-		const int32 InWood = Sails->CountInWood(WoodSamples);
-		UE_LOG(LogShip, Display, TEXT("ProceduralShip: sails at %.0f s, wind from %.0f: %d of %d canvas samples inside the hull's side, %d of %d inside drawn wood or iron; cloth %.2f ms a frame"),
-			SimulationTime, WindFrom, Inside, Samples, InWood, WoodSamples, SimulationMs / FMath::Max(SimulationFrames, 1));
+		FString Detail;
+		const int32 Inside = Sails->CountInDrawn(Samples, &Detail);
+		if (!Detail.IsEmpty())
+		{
+			UE_LOG(LogShip, Display, TEXT("ProceduralShip: canvas inside:%s"), *Detail);
+		}
+		UE_LOG(LogShip, Display, TEXT("ProceduralShip: sails at %.0f s, wind from %.0f: %d of %d canvas samples inside anything drawn (wood, iron, rope), %d canvas edges through another sail; %s (%.2f ms with the mesh update)"),
+			SimulationTime, WindFrom, Inside, Samples, Sails->CountSailCrossings(), *Sails->TakeProfile(), SimulationMs / FMath::Max(SimulationFrames, 1));
 		SimulationMs = 0.0;
 		SimulationFrames = 0;
-		UE_LOG(LogShip, Display, TEXT("ProceduralShip: cloth %s"), *Sails->TakeProfile());
 	}
 }
 

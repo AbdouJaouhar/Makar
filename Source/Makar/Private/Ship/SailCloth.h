@@ -55,42 +55,63 @@ struct FShipHullShape
 };
 
 /**
- * The ship's wood and iron as drawn, in cubes (ship space): what the canvas never passes through. Each cell: bit 1, a
- * drawn surface goes through it; bit 2, next to one (the solid grown by a cell: no gap between two cells touching only
- * at a corner, and a little air kept round everything).
+ * Everything of the ship that is drawn (wood, iron, ropes, glass, furled canvas), in 7 cm cubes over the whole ship from
+ * a metre under the waterline to the trucks: what the canvas never passes through. Sparse: bricks of 8 x 8 x 8 cells
+ * where something is. Each cell: bit 1, a drawn surface goes through it; bit 2, next to one (the solid grown by a
+ * cell: no gap between two cells touching only at a corner, and a little air kept round everything).
  */
 struct FShipVoxels
 {
 	FVector3f Origin = FVector3f::ZeroVector;
 	float Cell = 0.07f;
-	FIntVector Size = FIntVector::ZeroValue;
-	TArray<uint8> Cells;
+	FIntVector Bricks = FIntVector::ZeroValue;
+	TArray<int32> Top;          // brick index, or -1 where nothing is
+	TArray<FIntVector> Where;   // each brick's place in Top
+	TArray<uint8> Cells;        // 512 a brick
+	TArray<uint8> Touched;      // while building
 
 	bool IsValid() const { return Cells.Num() > 0; }
-	uint8 Get(const FVector3f& P) const
+	uint8 GetCell(int32 X, int32 Y, int32 Z) const
 	{
-		const FVector3f Q = (P - Origin) / Cell;
-		const int32 X = FMath::FloorToInt(Q.X), Y = FMath::FloorToInt(Q.Y), Z = FMath::FloorToInt(Q.Z);
-		if (X < 0 || Y < 0 || Z < 0 || X >= Size.X || Y >= Size.Y || Z >= Size.Z)
+		if (X < 0 || Y < 0 || Z < 0)
 		{
 			return 0;
 		}
-		return Cells[(int64(Z) * Size.Y + Y) * Size.X + X];
+		const int32 BX = X >> 3, BY = Y >> 3, BZ = Z >> 3;
+		if (BX >= Bricks.X || BY >= Bricks.Y || BZ >= Bricks.Z)
+		{
+			return 0;
+		}
+		const int32 Brick = Top[(BZ * Bricks.Y + BY) * Bricks.X + BX];
+		return Brick < 0 ? 0 : Cells[Brick * 512 + ((Z & 7) * 8 + (Y & 7)) * 8 + (X & 7)];
+	}
+	uint8 Get(const FVector3f& P) const
+	{
+		const FVector3f Q = (P - Origin) / Cell;
+		return GetCell(FMath::FloorToInt(Q.X), FMath::FloorToInt(Q.Y), FMath::FloorToInt(Q.Z));
 	}
 	/** Inside the grown solid: the canvas stops here. */
 	bool Blocked(const FVector3f& P) const { return Get(P) != 0; }
-	/** Inside the drawn wood itself: a true crossing. */
+	/** Inside something drawn itself: a true crossing. */
 	bool InWood(const FVector3f& P) const { return (Get(P) & 1) != 0; }
+	/** The free cell nearest P within Radius cells (its centre); false if none. */
+	bool NearestFree(const FVector3f& P, int32 Radius, FVector3f& Out) const;
 
-	/** The grid over Bounds; then Fill each triangle, then Grow. */
+	/** Building: Reset over Bounds; Touch every triangle (in parallel); Allocate; Fill every triangle; Grow. */
 	void Reset(const FBox3f& Bounds, float InCell);
-	void Fill(const FVector3f& A, const FVector3f& B, const FVector3f& C);
+	void Touch(const FVector3f& A, const FVector3f& B, const FVector3f& C);
+	void Allocate();
+	/** Kind: a bit telling what is drawn there (4 << mesh section), for the diagnostics. */
+	void Fill(const FVector3f& A, const FVector3f& B, const FVector3f& C, uint8 Kind = 0);
 	void Grow();
+	int32 NumBricks() const { return Where.Num(); }
 };
 
 /**
- * A sail as the generator cuts it: a grid of (NU + 1) x (NV + 1) points in its cut shape (the canvas' built-in
- * camber: the rest lengths of the cloth), the points bent to the spars and stays (pinned), the clews held by sheets.
+ * A sail as the generator cuts it: a grid of (NU + 1) x (NV + 1) points in its cut shape, filled by the wind it is
+ * trimmed to (the canvas' built-in camber: the rest lengths of the cloth, and the shape it keeps to), the points bent
+ * to the spars and stays (pinned), the clews held by sheets. Fitted into the ship (ShipSails::Fit): nothing passes
+ * through its shape, and each point has the room it may move in (Margin) without meeting anything.
  */
 struct FShipSail
 {
@@ -100,6 +121,8 @@ struct FShipSail
 	TArray<bool> Pinned;
 	TArray<FVector2f> UV;
 	TArray<FLinearColor> Color;
+	/** Metres each point may stray from Rest without touching a rope, spar, the hull or another sail. */
+	TArray<float> Margin;
 
 	/** A sheet: a rope from a clew to its block, which pulls but cannot push. */
 	struct FSheet
@@ -113,17 +136,27 @@ struct FShipSail
 	int32 Index(int32 I, int32 J) const { return J * (NU + 1) + I; }
 };
 
+namespace ShipSails
+{
+	/**
+	 * Done once when the ship is generated, as an artist would for a hand-made ship: every sail's shape kept clear of
+	 * every rope, spar, top, the hull and the other sails (a point too near is moved off; a facet a rope goes through is
+	 * moved to the side the sail bellies to), then each point's room measured (Margin). Returns a report for the log.
+	 */
+	FString Fit(TArray<FShipSail>& Sails, const TArray<FShipCapsule>& Colliders, const TArray<FShipBlock>& Blocks, const FShipHullShape& Hull);
+}
+
 /**
  * The sails as cloth (position-based dynamics, small substeps): canvas that does not stretch but folds, weight,
- * aerodynamic pressure of the apparent wind on each facet (it fills when the wind is on its back, flogs when it lies
- * along it, is taken aback when on its face), held by its spars and sheets, resting against the ropes and spars
- * (capsules) and the other sails instead of passing through them. Ship space.
+ * aerodynamic pressure of the apparent wind on each facet, held by its spars and sheets, and each point kept within its
+ * margin of the fitted shape: it ripples, fills and flogs, and never reaches anything (no collision to search for while
+ * playing). Ship space.
  */
 class FSailSimulation
 {
 public:
-	void Init(TArray<FShipSail> InSails, const TArray<FShipCapsule>& Colliders, const TArray<FShipBlock>& Solids, const FShipHullShape& InHull,
-		TSharedPtr<const FShipVoxels> InVoxels);
+	/** Verify (optional): everything drawn, in cubes, to measure that nothing is crossed (diagnostics only). */
+	void Init(TArray<FShipSail> InSails, TSharedPtr<const FShipVoxels> Verify);
 	bool IsEmpty() const { return Sails.Num() == 0; }
 
 	/** Advances by DeltaTime under Wind (m/s, ship space: where the air goes). Time: for the gusts. */
@@ -134,10 +167,14 @@ public:
 	void GetSurface(TArray<FVector>& OutPositionsCm, TArray<FVector>& OutNormals) const;
 	/** The sheets: clew, block. */
 	void GetSheets(TArray<TPair<FVector3f, FVector3f>>& Out) const;
-	/** The canvas sampled finely (4 x 4 per facet): how many samples lie inside the hull's side, out of how many. */
-	int32 CountInHull(int32& OutSamples) const;
-	/** The same against everything drawn in wood and iron (the voxels' drawn surfaces). */
-	int32 CountInWood(int32& OutSamples) const;
+
+	/** Diagnostics. The canvas sampled 4 x 4 a facet: samples inside anything drawn (needs Verify), out of how many. */
+	bool CanVerify() const { return Verify.IsValid() && Verify->IsValid(); }
+	int32 CountInDrawn(int32& OutSamples, FString* OutDetail = nullptr) const;
+	/** Edges of a sail's canvas through another sail's facets. */
+	int32 CountSailCrossings() const;
+	/** Milliseconds a frame spent stepping, substeps a frame, since the last call. */
+	FString TakeProfile();
 
 private:
 	struct FConstraint
@@ -152,44 +189,13 @@ private:
 		TArray<FVector3f> X, Prev, Normal, Force;
 		TArray<float> InvMass;
 		TArray<FConstraint> Constraints;
-		TArray<FShipCapsule> Near;
-		/** The near ropes and spars sorted into cells: a cell lists every capsule within a cell of it. */
-		FVector3f GridOrigin = FVector3f::ZeroVector;
-		FIntVector GridSize = FIntVector::ZeroValue;
-		TArray<int32> GridStart, GridItems;
-		/** The hull's and the rig's solids this sail can reach, and where its points were when the frame began. */
-		TArray<FShipBlock> NearSolids;
-		TArray<FVector3f> FrameStart;
 	};
 
 	void Substep(FSailState& S, float H, const FVector3f& Wind, float Time) const;
 	void UpdateNormals(FSailState& S) const;
-	void CollideSails();
-	void CollideSolids(FSailState& S) const;
-	static void BuildGrid(FSailState& S);
-	/** The capsules near P (indices into S.Near). */
-	static TArrayView<const int32> CapsulesAt(const FSailState& S, const FVector3f& P);
 
 	TArray<FSailState> Sails;
-	FShipHullShape Hull;
-	TSharedPtr<const FShipVoxels> Voxels;
-
-public:
-	/** Seconds spent: substeps, solids, sails apart, normals; substeps; frames (diagnostics). */
-	double Profile[6] = {};
-	FString TakeProfile()
-	{
-		const double F = FMath::Max(Profile[5], 1.0);
-		int32 Particles = 0, Capsules = 0;
-		for (const FSailState& S : Sails)
-		{
-			Particles += S.X.Num();
-			Capsules += S.Near.Num();
-		}
-		const FString Out = FString::Printf(TEXT("substeps %.1f ms (%.1f a frame), solids %.1f ms, sails apart %.1f ms, normals %.1f ms; %d points, %d capsules near the sails"),
-			Profile[0] * 1000.0 / F, Profile[4] / F, Profile[1] * 1000.0 / F, Profile[2] * 1000.0 / F, Profile[3] * 1000.0 / F, Particles, Capsules);
-		FMemory::Memzero(Profile, sizeof(Profile));
-		return Out;
-	}
+	TSharedPtr<const FShipVoxels> Verify;
 	float Accumulator = 0.f;
+	double ProfileSeconds = 0.0, ProfileSubsteps = 0.0, ProfileFrames = 0.0;
 };

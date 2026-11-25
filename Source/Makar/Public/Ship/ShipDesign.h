@@ -127,5 +127,5 @@ struct MAKAR_API FShipDesign
 
 	/** How the crew trims to a wind: the yards' angle from square (degrees, + : starboard arms forward), the side the
 	 *  fore-and-aft sails go to (+1 starboard), the booms' swing out (degrees). */
-	static void Trim(float WindFrom, float& OutBrace, float& OutLeeward, float& OutSwing);
+	static void Trim(float WindFrom, float& OutBrace, float& OutLeeward, float& OutSwing, bool& bOutAback);
 };
