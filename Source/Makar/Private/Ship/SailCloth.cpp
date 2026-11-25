@@ -587,7 +587,7 @@ ShipSails::FFitReport ShipSails::Fit(TArray<FShipSail>& Sails, const TArray<FShi
 		{
 			const FShipCapsule& Capsule = Colliders[Item];
 			if (!Capsule.bSpar && (ShipSails::ToHeld(Sails[S], Capsule.A) < Bent || ShipSails::ToHeld(Sails[S], Capsule.B) < Bent)
-				&& ShipSails::ToHeld(Sails[S], ClothClosest(Centre, Capsule.A, Capsule.B)) < Bent + 0.5f)
+				&& ShipSails::ToHeld(Sails[S], ClothClosest(Centre, Capsule.A, Capsule.B)) < Bent)
 			{
 				continue; // made fast where the sail is bent on (its yard, lifts, braces, lacing), and met there
 			}
@@ -764,35 +764,41 @@ ShipSails::FFitReport ShipSails::Fit(TArray<FShipSail>& Sails, const TArray<FShi
 					}
 				}
 			}
-			// Spread: each point moves at least 0.6 of its neighbour's move, the same way (a bulge, not a dent).
-			for (int32 Iteration = 0; Iteration < 6; ++Iteration)
+			// Smoothed like a membrane: each point keeps the move it needs, or takes 0.85 of its neighbours' mean move
+			// (the held edges stay put): the canvas bulges smoothly round what it clears, no steps, no kinks.
 			{
-				TArray<FVector3f> Next = Delta;
-				for (int32 J = 0; J <= Spec.NV; ++J)
+				const TArray<FVector3f> Needed = Delta;
+				for (int32 Iteration = 0; Iteration < 20; ++Iteration)
 				{
-					for (int32 I = 0; I <= Spec.NU; ++I)
+					TArray<FVector3f> Next = Delta;
+					for (int32 J = 0; J <= Spec.NV; ++J)
 					{
-						const int32 V = Spec.Index(I, J);
-						if (Spec.Pinned[V])
+						for (int32 I = 0; I <= Spec.NU; ++I)
 						{
-							continue;
-						}
-						const int32 Around[4][2] = { { I - 1, J }, { I + 1, J }, { I, J - 1 }, { I, J + 1 } };
-						for (const auto& A : Around)
-						{
-							if (A[0] < 0 || A[1] < 0 || A[0] > Spec.NU || A[1] > Spec.NV)
+							const int32 V = Spec.Index(I, J);
+							if (Spec.Pinned[V])
 							{
 								continue;
 							}
-							const FVector3f Spread = Delta[Spec.Index(A[0], A[1])] * 0.6f;
-							if (Spread.SizeSquared() > Next[V].SizeSquared())
+							FVector3f Sum = FVector3f::ZeroVector;
+							int32 Around = 0;
+							const int32 Nb[4][2] = { { I - 1, J }, { I + 1, J }, { I, J - 1 }, { I, J + 1 } };
+							for (const auto& A : Nb)
 							{
-								Next[V] = Spread;
+								if (A[0] < 0 || A[1] < 0 || A[0] > Spec.NU || A[1] > Spec.NV)
+								{
+									continue;
+								}
+								const int32 W = Spec.Index(A[0], A[1]);
+								Sum += Spec.Pinned[W] ? FVector3f::ZeroVector : Delta[W];
+								++Around;
 							}
+							const FVector3f Mean = Around > 0 ? Sum * (0.92f / Around) : FVector3f::ZeroVector;
+							Next[V] = !Needed[V].IsZero() && Needed[V].SizeSquared() >= Mean.SizeSquared() ? Needed[V] : Mean;
 						}
 					}
+					Delta = MoveTemp(Next);
 				}
-				Delta = MoveTemp(Next);
 			}
 			for (int32 V = 0; V < Count; ++V)
 			{
@@ -954,7 +960,7 @@ ShipSails::FFitReport ShipSails::Fit(TArray<FShipSail>& Sails, const TArray<FShi
 							continue;
 						}
 						const int32 W = Spec.Index(A[0], A[1]);
-						const float Limit = Spec.Amplitude[W] + 0.35f * (Spec.Rest[V] - Spec.Rest[W]).Size();
+						const float Limit = Spec.Amplitude[W] + 0.18f * (Spec.Rest[V] - Spec.Rest[W]).Size();
 						if (Spec.Amplitude[V] > Limit + 1e-4f)
 						{
 							Spec.Amplitude[V] = Limit;
