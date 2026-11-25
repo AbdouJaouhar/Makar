@@ -126,17 +126,29 @@ void AShipViewerController::EndPlay(const EEndPlayReason::Type Reason)
 	Super::EndPlay(Reason);
 }
 
-void AShipViewerController::ApplyDesign(const FShipDesign& Design)
+void AShipViewerController::ApplyDesign(const FShipDesign& Design, TFunction<void()> OnDone)
 {
 	if (!Ship)
 	{
 		return;
 	}
-	Ship->BuildFromDesign(Design);
-	if (AShipViewerPawn* Viewer = Cast<AShipViewerPawn>(GetPawn()))
+	TWeakObjectPtr<AShipViewerController> Self(this);
+	Ship->BuildFromDesignAsync(Design, [Self, OnDone = MoveTemp(OnDone)]()
 	{
-		Viewer->Frame(Ship->GetShipBounds());
-	}
+		AShipViewerController* PC = Self.Get();
+		if (!PC || !PC->Ship)
+		{
+			return;
+		}
+		if (AShipViewerPawn* Viewer = Cast<AShipViewerPawn>(PC->GetPawn()))
+		{
+			Viewer->Frame(PC->Ship->GetShipBounds());
+		}
+		if (OnDone)
+		{
+			OnDone();
+		}
+	});
 }
 
 AShipViewerGameMode::AShipViewerGameMode()

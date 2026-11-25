@@ -84,6 +84,9 @@ namespace ShipMesh
 			TConstArrayView<FVector3f> Ring);
 	};
 
+	/** Appends From's vertices and triangles to To (parts built in parallel, merged in order). */
+	void Append(FOceanMeshData& To, const FOceanMeshData& From);
+
 	/** Deterministic hash noise in 0-1. */
 	float Hash(int32 A, int32 B = 0, int32 C = 0);
 	/** A colour scaled by a factor around 1 (Amount: its spread), from a hash. */

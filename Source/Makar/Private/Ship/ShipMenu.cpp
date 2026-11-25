@@ -120,12 +120,21 @@ void SShipMenu::Apply()
 {
 	if (AShipViewerController* PC = Controller.Get())
 	{
-		const double Start = FPlatformTime::Seconds();
-		PC->ApplyDesign(Design);
-		const int32 Triangles = PC->GetShip() ? PC->GetShip()->Triangles : 0;
-		Status = FText::Format(LOCTEXT("Status", "{0}, graine {1} · {2} m · {3} triangles · généré en {4} s"), TypeName(Design.Type), Design.Seed,
-			FText::AsNumber(FMath::RoundToInt(Design.Length)), FText::AsNumber(Triangles),
-			FText::AsNumber(FMath::RoundToFloat((FPlatformTime::Seconds() - Start) * 10.0) / 10.0));
+		Status = LOCTEXT("Generating", "Génération…");
+		TWeakPtr<SShipMenu> Weak = StaticCastSharedRef<SShipMenu>(AsShared());
+		const FShipDesign Sent = Design;
+		PC->ApplyDesign(Design, [Weak, Sent, Controller = Controller]()
+		{
+			TSharedPtr<SShipMenu> Menu = Weak.Pin();
+			AShipViewerController* PC = Controller.Get();
+			if (!Menu.IsValid() || !PC || !PC->GetShip())
+			{
+				return;
+			}
+			const AProceduralShip* Ship = PC->GetShip();
+			Menu->Status = FText::Format(LOCTEXT("Status", "{0}, graine {1} · {2} m · {3} triangles · généré en {4} ms"), TypeName(Sent.Type), Sent.Seed,
+				FText::AsNumber(FMath::RoundToInt(Sent.Length)), FText::AsNumber(Ship->Triangles), FText::AsNumber(FMath::RoundToInt(Ship->LastBuildMs)));
+		});
 	}
 }
 

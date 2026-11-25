@@ -2,6 +2,8 @@
 
 #include "ShipMeshBuilder.h"
 
+#include "Async/ParallelFor.h"
+
 using namespace ShipMesh;
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -20,10 +22,10 @@ FHullLines::FHullLines(const FShipDesign& InDesign)
 	PTable.SetNumZeroed((Stations + 1) * (GirthSteps + 1));
 	GirthTable.SetNumZeroed(Stations + 1);
 	constexpr int32 Samples = 320;
-	TArray<float> Lengths;
-	Lengths.SetNumZeroed(Samples + 1);
-	for (int32 K = 0; K <= Stations; ++K)
+	ParallelFor(Stations + 1, [this](int32 K)
 	{
+		TArray<float> Lengths;
+		Lengths.SetNumZeroed(Samples + 1);
 		const float S = -1.f + 2.f * K / Stations;
 		FVector3f Prev = PointSP(S, 0.f);
 		for (int32 I = 1; I <= Samples; ++I)
@@ -45,7 +47,7 @@ FHullLines::FHullLines(const FShipDesign& InDesign)
 			const float Frac = FMath::Clamp((Target - Lengths[I]) / FMath::Max(Lengths[I + 1] - Lengths[I], 1e-6f), 0.f, 1.f);
 			PTable[K * (GirthSteps + 1) + J] = 2.f * (I + Frac) / Samples;
 		}
-	}
+	});
 	NormalSign = 1.f;
 	NormalSign = Normal(0.f, 0.6f).Y >= 0.f ? 1.f : -1.f;
 }
@@ -349,7 +351,8 @@ namespace
 		}
 
 		void PlanPorts();
-		void Planking(float Side);
+		/** One strake (Only), or all of them. */
+		void Planking(float Side, int32 Only = -1);
 		void Bulwarks(float Side);
 		void PortLinings(float Side);
 		void Backbone();
@@ -406,11 +409,11 @@ namespace
 		}
 	}
 
-	void FHullBuild::Planking(float Side)
+	void FHullBuild::Planking(float Side, int32 Only)
 	{
 		const TArray<float> Base = BaseStations(200);
 		const float PlankS = D.PlankLength / L.HalfLength;
-		for (int32 Strake = 0; Strake < Strakes; ++Strake)
+		for (int32 Strake = Only >= 0 ? Only : 0; Strake < (Only >= 0 ? Only + 1 : Strakes); ++Strake)
 		{
 			const float TA = float(Strake) / Strakes, TB = float(Strake + 1) / Strakes;
 			const float Thick = PlankThicknessOf(Strake);
@@ -1144,9 +1147,29 @@ void ShipHull::Build(FBuilder& B, const FHullLines& L, TArray<FShipGunPort>& Out
 		Build.BandTo = Build.Strakes - 2;
 	}
 	Build.PlanPorts();
+	// The planking, most of the work: every strake of both sides on its own core, merged in order.
+	{
+		TArray<FOceanMeshData> Parts;
+		Parts.SetNum(Build.Strakes * 2);
+		ParallelFor(Parts.Num(), [&](int32 Index)
+		{
+			Parts[Index] = FOceanMeshData(B.Data.Sections.Num());
+			FBuilder Local(Parts[Index]);
+			FHullBuild Strake{ Local, L, D, OutPorts };
+			Strake.Cuts = Build.Cuts;
+			Strake.Strakes = Build.Strakes;
+			Strake.WaleStrakes = Build.WaleStrakes;
+			Strake.BandFrom = Build.BandFrom;
+			Strake.BandTo = Build.BandTo;
+			Strake.Planking(Index % 2 ? -1.f : 1.f, Index / 2);
+		});
+		for (const FOceanMeshData& Part : Parts)
+		{
+			Append(B.Data, Part);
+		}
+	}
 	for (float Side : { 1.f, -1.f })
 	{
-		Build.Planking(Side);
 		Build.Bulwarks(Side);
 		Build.PortLinings(Side);
 		Build.Rails(Side);

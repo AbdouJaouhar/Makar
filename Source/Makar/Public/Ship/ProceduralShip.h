@@ -5,13 +5,13 @@
 #include "Ship/ShipDesign.h"
 #include "ProceduralShip.generated.h"
 
-class UStaticMesh;
-class UStaticMeshComponent;
+class UProceduralMeshComponent;
 
 /**
  * A period ship generated from its type and a seed (Source/Makar/Private/Ship): hull planked plank by plank, decks,
- * masts and rigging, sails, guns and fittings, as one static mesh with five materials (/Game/Ship: wood, sail, rope,
- * metal, glass; Scripts/create_ship_materials.py). Built when placed or changed in the editor and on BeginPlay.
+ * masts and rigging, sails, guns and fittings, as one procedural mesh with five sections (/Game/Ship: wood, sail, rope,
+ * metal, glass; Scripts/create_ship_materials.py). Built when placed or changed in the editor and on BeginPlay;
+ * the viewer's menu builds it on a worker thread (BuildFromDesignAsync): the ship in view stays until the new one is ready.
  * bOnCradle stands it on keel blocks and shores with the ground at the actor's origin; otherwise the actor's origin
  * is on the waterline, midships.
  */
@@ -53,6 +53,13 @@ public:
 	/** Generates the ship from a design edited by hand (the viewer's menu); Type and Seed follow it. */
 	void BuildFromDesign(const FShipDesign& InDesign);
 
+	/** The same, generated on a worker thread; OnDone runs on the game thread once the new ship shows (a newer request
+	 *  supersedes an older one, whose OnDone is not called). */
+	void BuildFromDesignAsync(const FShipDesign& InDesign, TFunction<void()> OnDone);
+
+	/** Milliseconds the last generation took (geometry, then mesh update), for the menu. */
+	float LastBuildMs = 0.f;
+
 	/** The generated ship's bounds (world space). */
 	FBox GetShipBounds() const;
 
@@ -60,11 +67,14 @@ public:
 	virtual void BeginPlay() override;
 
 private:
-	UPROPERTY(VisibleAnywhere, Category = "Ship")
-	TObjectPtr<UStaticMeshComponent> Mesh;
-
+	/** Created when first built, transient: the generated geometry (hundreds of MB) is never saved with the level. */
 	UPROPERTY(Transient)
-	TObjectPtr<UStaticMesh> Generated;
+	TObjectPtr<UProceduralMeshComponent> Mesh;
+	UProceduralMeshComponent* GetOrCreateMesh();
+
+	bool bBuilt = false;
+	int32 Ticket = 0;
+	void ApplyResult(struct FShipBuildResult& Result);
 
 	uint32 BuiltKey = 0;
 	uint32 Key() const;

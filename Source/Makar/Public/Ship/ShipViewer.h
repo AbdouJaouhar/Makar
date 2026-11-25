@@ -53,8 +53,8 @@ class MAKAR_API AShipViewerController : public APlayerController
 public:
 	AShipViewerController();
 
-	/** Generates the ship again from the menu's design and frames it. */
-	void ApplyDesign(const struct FShipDesign& Design);
+	/** Generates the ship again from the menu's design (on a worker thread) and frames it; OnDone once it shows. */
+	void ApplyDesign(const struct FShipDesign& Design, TFunction<void()> OnDone = nullptr);
 
 	AProceduralShip* GetShip() const { return Ship; }
 

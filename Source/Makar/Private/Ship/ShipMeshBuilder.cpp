@@ -26,6 +26,21 @@ namespace ShipMesh
 		return Frame;
 	}
 
+	void Append(FOceanMeshData& To, const FOceanMeshData& From)
+	{
+		const int32 Offset = To.Vertices.Num();
+		To.Vertices.Append(From.Vertices);
+		for (int32 Section = 0; Section < From.Sections.Num() && Section < To.Sections.Num(); ++Section)
+		{
+			TArray<int32>& Indices = To.Sections[Section];
+			Indices.Reserve(Indices.Num() + From.Sections[Section].Num());
+			for (int32 Index : From.Sections[Section])
+			{
+				Indices.Add(Index + Offset);
+			}
+		}
+	}
+
 	float Hash(int32 A, int32 B, int32 C)
 	{
 		uint32 H = uint32(A) * 0x8da6b343u ^ uint32(B) * 0xd8163841u ^ uint32(C) * 0xcb1ab31fu;
