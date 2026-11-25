@@ -94,6 +94,8 @@ def build():
     mesh.set_static_mesh(unreal.load_asset("/Engine/BasicShapes/Sphere"))
     mesh.set_material(0, backdrop_material())
     mesh.set_editor_property("cast_shadow", False)
+    mesh.set_collision_profile_name("NoCollision")  # a backdrop: the visitor inside it must not be pushed out
+    mesh.set_collision_enabled(unreal.CollisionEnabled.NO_COLLISION)
     backdrop.set_actor_scale3d(unreal.Vector(2000.0, 2000.0, 2000.0))
 
     # Three-point lighting: a warm key high on the port bow, a cool dim fill from the other side, a rim from behind.

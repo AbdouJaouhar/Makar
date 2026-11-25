@@ -8,12 +8,12 @@ namespace
 	constexpr float PressureCoefficient = 1.3f;
 	constexpr float CanvasDensity = 0.75f;    // kg/m2: heavy flax sailcloth
 	constexpr float SubstepTime = 1.f / 300.f;
-	constexpr int32 MaxSubsteps = 10;          // per frame; a slow frame slows the cloth rather than exploding it
+	constexpr int32 ClothMaxSubsteps = 10;          // per frame; a slow frame slows the cloth rather than exploding it
 	constexpr float Damping = 0.004f;          // per substep
 	constexpr float Clearance = 0.05f;         // m of air kept between the canvas and a rope or spar
 	constexpr float SailSpacing = 0.18f;       // m kept between two sails
 
-	FVector3f ClosestOnSegment(const FVector3f& P, const FVector3f& A, const FVector3f& B)
+	FVector3f ClothClosest(const FVector3f& P, const FVector3f& A, const FVector3f& B)
 	{
 		const FVector3f AB = B - A;
 		const float Length2 = AB.SizeSquared();
@@ -205,7 +205,7 @@ void FSailSimulation::Substep(FSailState& S, float H, const FVector3f& Wind, flo
 		FVector3f& P = S.X[V];
 		for (const FShipCapsule& Capsule : S.Near)
 		{
-			const FVector3f C = ClosestOnSegment(P, Capsule.A, Capsule.B);
+			const FVector3f C = ClothClosest(P, Capsule.A, Capsule.B);
 			const FVector3f Away = P - C;
 			const float Distance = Away.Size();
 			const float Keep = Capsule.Radius + Clearance;
@@ -285,7 +285,7 @@ void FSailSimulation::Step(float DeltaTime, const FVector3f& Wind, float Time)
 	{
 		return;
 	}
-	Accumulator = FMath::Min(Accumulator + DeltaTime, SubstepTime * MaxSubsteps);
+	Accumulator = FMath::Min(Accumulator + DeltaTime, SubstepTime * ClothMaxSubsteps);
 	const int32 Steps = FMath::FloorToInt(Accumulator / SubstepTime);
 	if (Steps <= 0)
 	{

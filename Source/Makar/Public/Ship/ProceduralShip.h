@@ -57,6 +57,11 @@ public:
 	 *  supersedes an older one, whose OnDone is not called). */
 	void BuildFromDesignAsync(const FShipDesign& InDesign, TFunction<void()> OnDone);
 
+	/** Where a visitor comes aboard (ship space, cm): on the weather deck by the open hatch. */
+	UPROPERTY(VisibleAnywhere, Transient, Category = "Ship")
+	FVector Boarding = FVector::ZeroVector;
+	int32 CollisionBoxes = 0;
+
 	/** Milliseconds the last generation took (geometry, then mesh update), for the menu. */
 	float LastBuildMs = 0.f;
 
@@ -82,6 +87,9 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UProceduralMeshComponent> Mesh;
 	UProceduralMeshComponent* GetOrCreateMesh();
+
+	UPROPERTY(Transient)
+	TObjectPtr<class UShipCollisionComponent> Collision;
 
 	bool bBuilt = false;
 	TSharedPtr<class FSailSimulation> Sails;

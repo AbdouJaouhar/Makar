@@ -7,6 +7,7 @@
 #include "ShipViewer.generated.h"
 
 class AProceduralShip;
+class AShipVisitor;
 class UCameraComponent;
 class SShipMenu;
 
@@ -58,6 +59,15 @@ public:
 
 	AProceduralShip* GetShip() const { return Ship; }
 
+	/** Goes aboard in first person (Tab or Escape to come back to the orbiting camera). */
+	UFUNCTION(BlueprintCallable, Category = "Viewer")
+	void StartVisit();
+	UFUNCTION(BlueprintCallable, Category = "Viewer")
+	void EndVisit();
+	bool IsVisiting() const { return Visitor != nullptr; }
+
+	virtual void PlayerTick(float DeltaTime) override;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
@@ -65,6 +75,12 @@ protected:
 private:
 	UPROPERTY(Transient)
 	TObjectPtr<AProceduralShip> Ship;
+
+	UPROPERTY(Transient)
+	TObjectPtr<APawn> Orbit;
+
+	UPROPERTY(Transient)
+	TObjectPtr<AShipVisitor> Visitor;
 
 	TSharedPtr<SShipMenu> Menu;
 };

@@ -6,6 +6,7 @@
 #include "EngineUtils.h"
 #include "ShipMenu.h"
 #include "Ship/ProceduralShip.h"
+#include "Ship/ShipVisitor.h"
 
 AShipViewerPawn::AShipViewerPawn()
 {
@@ -146,6 +147,65 @@ void AShipViewerController::ApplyDesign(const FShipDesign& Design, TFunction<voi
 			OnDone();
 		}
 	});
+}
+
+void AShipViewerController::StartVisit()
+{
+	if (Visitor || !Ship)
+	{
+		return;
+	}
+	Orbit = GetPawn();
+	// On the weather deck by the open hatch, facing forward.
+	const FVector At = Ship->GetActorTransform().TransformPosition(Ship->Boarding) + FVector(0.f, 0.f, 95.f);
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+	Visitor = GetWorld()->SpawnActor<AShipVisitor>(At, Ship->GetActorRotation(), Params);
+	if (!Visitor)
+	{
+		return;
+	}
+	Possess(Visitor);
+	SetControlRotation(Ship->GetActorRotation());
+	UE_LOG(LogTemp, Display, TEXT("ShipViewer: aboard at %s (ship bounds %s)"), *At.ToString(), *Ship->GetShipBounds().ToString());
+	if (Menu.IsValid())
+	{
+		Menu->SetVisibility(EVisibility::Collapsed);
+	}
+	bShowMouseCursor = false;
+	SetInputMode(FInputModeGameOnly());
+}
+
+void AShipViewerController::EndVisit()
+{
+	if (!Visitor)
+	{
+		return;
+	}
+	if (Orbit)
+	{
+		Possess(Orbit);
+	}
+	Visitor->Destroy();
+	Visitor = nullptr;
+	if (Menu.IsValid())
+	{
+		Menu->SetVisibility(EVisibility::SelfHitTestInvisible);
+	}
+	bShowMouseCursor = true;
+	FInputModeGameAndUI Mode;
+	Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+	Mode.SetHideCursorDuringCapture(true);
+	SetInputMode(Mode);
+}
+
+void AShipViewerController::PlayerTick(float DeltaTime)
+{
+	Super::PlayerTick(DeltaTime);
+	if (Visitor && (WasInputKeyJustPressed(EKeys::Tab) || WasInputKeyJustPressed(EKeys::Escape)))
+	{
+		EndVisit();
+	}
 }
 
 AShipViewerGameMode::AShipViewerGameMode()

@@ -103,6 +103,7 @@ namespace
 		const FShipDesign& D;
 		const TArray<FShipGunPort>& Ports;
 		const TArray<FShipMastInfo>& Masts;
+		const FShipInterior& Interior;
 
 		float DeckZ(float X) const { return L.Z(L.DeckAt(X)); }
 		float InnerHalf(float X) const { return FMath::Max(L.HalfBreadth(X, L.DeckAt(X)) - L.FrameThickness, 0.f); }
@@ -110,7 +111,7 @@ namespace
 		bool InWaist(float X) const { return L.RaisedAt(X) <= 0.f; }
 
 		void Guns();
-		void Hatch(float X, float Length, float Width);
+		void Hatch(float X, float Length, float Width, bool bGrating);
 		void Hatches();
 		void Capstan(const FVector3f& At);
 		void Windlass(float X);
@@ -137,7 +138,6 @@ namespace
 				const FVector3f Muzzle = Out + Axis * (D.PlankThickness + (Port.bLower ? 0.12f : 0.3f));
 				const FVector3f Origin = Muzzle - Axis * D.GunLength;
 				Barrel(B, Origin, Axis, D.GunLength, D.Type == EShipType::Galleon ? Bronze : Iron);
-				if (!Port.bLower)
 				{
 					const FVector3f Trunnion = Origin + Axis * (0.43f * D.GunLength);
 					Carriage(B, Trunnion, Axis, D.GunLength, L.Z(Port.DeckH), Id++);
@@ -149,7 +149,7 @@ namespace
 						B.Line(Ring, Origin + Axis * 0.05f, 0.025f, 0.18f);
 					}
 				}
-				else
+				if (Port.bLower)
 				{
 					// The lid, hinged at the top and swung up.
 					const float Sc = L.StationOf(Port.X, Hc);
@@ -188,7 +188,7 @@ namespace
 		}
 	}
 
-	void FFitBuild::Hatch(float X, float Length, float Width)
+	void FFitBuild::Hatch(float X, float Length, float Width, bool bGrating)
 	{
 		const float Z = DeckZ(X);
 		const float Coaming = 0.32f;
@@ -202,15 +202,9 @@ namespace
 			F.O = FVector3f(X, Side * Width * 0.5f, Z + Coaming * 0.5f);
 			B.Box(Wood, F, FVector3f(Length * 0.5f, 0.07f, Coaming * 0.5f), C);
 		}
-		// The hold's darkness under the grating.
-		B.FlatQuad(Wood, FVector3f(X - Length * 0.5f, -Width * 0.5f, Z - 0.6f), FVector3f(X + Length * 0.5f, -Width * 0.5f, Z - 0.6f),
-			FVector3f(X + Length * 0.5f, Width * 0.5f, Z - 0.6f), FVector3f(X - Length * 0.5f, Width * 0.5f, Z - 0.6f), Darkness, FVector3f::UpVector);
-		for (float Side : { -1.f, 1.f })
+		if (!bGrating)
 		{
-			B.FlatQuad(Wood, FVector3f(X + Side * Length * 0.5f, -Width * 0.5f, Z - 0.6f), FVector3f(X + Side * Length * 0.5f, Width * 0.5f, Z - 0.6f),
-				FVector3f(X + Side * Length * 0.5f, Width * 0.5f, Z), FVector3f(X + Side * Length * 0.5f, -Width * 0.5f, Z), Darkness, FVector3f(-Side, 0.f, 0.f));
-			B.FlatQuad(Wood, FVector3f(X - Length * 0.5f, Side * Width * 0.5f, Z - 0.6f), FVector3f(X + Length * 0.5f, Side * Width * 0.5f, Z - 0.6f),
-				FVector3f(X + Length * 0.5f, Side * Width * 0.5f, Z), FVector3f(X - Length * 0.5f, Side * Width * 0.5f, Z), Darkness, FVector3f(0.f, -Side, 0.f));
+			return; // an open hatchway: its ladder goes down below
 		}
 		// Grating: ledges across, battens along, halved into each other.
 		const float Top = Z + Coaming - 0.02f;
@@ -228,40 +222,9 @@ namespace
 
 	void FFitBuild::Hatches()
 	{
-		const float Scale = FMath::Clamp(D.Beam / 8.f, 0.6f, 1.3f);
-		TArray<float> Xs;
-		if (Masts.Num() >= 2)
+		for (const FShipHatch& H : Interior.Hatches)
 		{
-			for (int32 I = 0; I + 1 < Masts.Num(); ++I)
-			{
-				Xs.Add(FMath::Lerp(Masts[I].Foot.X, Masts[I + 1].Foot.X, 0.5f));
-			}
-		}
-		else if (Masts.Num() == 1)
-		{
-			Xs.Add(Masts[0].Foot.X - 2.6f * Scale);
-			Xs.Add(Masts[0].Foot.X - 6.f * Scale);
-		}
-		if (Masts.Num() > 0)
-		{
-			Xs.Add(Masts[0].Foot.X + 2.4f * Scale);
-		}
-		for (float X : Xs)
-		{
-			const float Length = 1.7f * Scale, Width = 1.5f * Scale;
-			if (InnerHalf(X) > Width * 0.5f + 0.6f && FMath::Abs(X) < L.HalfLength * 0.8f)
-			{
-				// Keep clear of the masts.
-				bool bClear = true;
-				for (const FShipMastInfo& M : Masts)
-				{
-					bClear &= FMath::Abs(M.Foot.X - X) > Length * 0.5f + M.Radius + 0.5f;
-				}
-				if (bClear)
-				{
-					Hatch(X, Length, Width);
-				}
-			}
+			Hatch(H.X, H.HalfLength * 2.f, H.HalfWidth * 2.f, !H.bOpen);
 		}
 	}
 
@@ -563,9 +526,10 @@ namespace
 	}
 }
 
-void ShipFittings::Build(FBuilder& B, const FHullLines& L, const TArray<FShipGunPort>& Ports, const TArray<FShipMastInfo>& Masts)
+void ShipFittings::Build(FBuilder& B, const FHullLines& L, const TArray<FShipGunPort>& Ports, const TArray<FShipMastInfo>& Masts,
+	const FShipInterior& Interior)
 {
-	FFitBuild Fit{ B, L, L.D, Ports, Masts };
+	FFitBuild Fit{ B, L, L.D, Ports, Masts, Interior };
 	const FShipDesign& D = L.D;
 	Fit.Guns();
 	Fit.Hatches();

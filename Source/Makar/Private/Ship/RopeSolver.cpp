@@ -8,7 +8,7 @@ namespace
 	constexpr int32 Iterations = 80;
 	constexpr float Gap = 0.005f; // m between a rope and what it rests on
 
-	FVector3f ClosestOnSegment(const FVector3f& P, const FVector3f& A, const FVector3f& B)
+	FVector3f RopeClosest(const FVector3f& P, const FVector3f& A, const FVector3f& B)
 	{
 		const FVector3f AB = B - A;
 		const float Length2 = AB.SizeSquared();
@@ -19,7 +19,7 @@ namespace
 	/** Pushes P out of a capsule; true if it was inside. */
 	bool OutOfCapsule(FVector3f& P, const FShipCapsule& C, float Radius, const FVector3f& Hint)
 	{
-		const FVector3f Q = ClosestOnSegment(P, C.A, C.B);
+		const FVector3f Q = RopeClosest(P, C.A, C.B);
 		const FVector3f Away = P - Q;
 		const float Distance = Away.Size();
 		const float Keep = C.Radius + Radius + Gap;
@@ -189,7 +189,7 @@ int32 ShipRopes::Lay(ShipMesh::FBuilder& B, const TArray<FShipRope>& Ropes, cons
 			// Every point skipped since the last kept one must stay within 1 cm of the chord to the next.
 			for (int32 J = I; J > 0 && Full[J] != From; --J)
 			{
-				if ((Full[J] - ClosestOnSegment(Full[J], From, Next)).Size() > 0.01f)
+				if ((Full[J] - RopeClosest(Full[J], From, Next)).Size() > 0.01f)
 				{
 					bNeeded = true;
 					break;

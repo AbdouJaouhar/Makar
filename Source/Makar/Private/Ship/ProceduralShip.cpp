@@ -4,6 +4,7 @@
 #include "Async/ParallelFor.h"
 #include "Materials/MaterialInterface.h"
 #include "ProceduralMeshComponent.h"
+#include "Ship/ShipCollision.h"
 #include "ShipFittings.h"
 #include "ShipHull.h"
 #include "ShipMeshBuilder.h"
@@ -19,6 +20,7 @@ struct FShipBuildResult
 	TArray<FProcMeshSection> Sections;
 	TArray<FShipSail> Sails;
 	TArray<FShipCapsule> Colliders;
+	FShipInterior Interior;
 	float Ground = 0.f;
 	int32 Triangles = 0;
 	int32 Guns = 0;
@@ -64,7 +66,7 @@ namespace
 				UE_LOG(LogShip, Warning, TEXT("ProceduralShip: %d NaN vertices in %s (zeroed)"), Bad, Name);
 			}
 		};
-		Stage(TEXT("hull"), [&]() { ShipHull::Build(Builder, Lines, Ports); });
+		Stage(TEXT("hull"), [&]() { ShipHull::Build(Builder, Lines, Ports, Result.Interior); });
 		TArray<FShipRope> Ropes;
 		TArray<FShipBlock> Blocks;
 		Stage(TEXT("rig"), [&]()
@@ -77,7 +79,7 @@ namespace
 			Builder.Colliders = nullptr;
 			Builder.Blocks = nullptr;
 		});
-		Stage(TEXT("fittings"), [&]() { ShipFittings::Build(Builder, Lines, Ports, Masts); });
+		Stage(TEXT("fittings"), [&]() { ShipFittings::Build(Builder, Lines, Ports, Masts, Result.Interior); });
 		int32 Crossing = 0;
 		Stage(TEXT("ropes"), [&]()
 		{
@@ -157,8 +159,8 @@ UProceduralMeshComponent* AProceduralShip::GetOrCreateMesh()
 	{
 		Mesh = NewObject<UProceduralMeshComponent>(this, TEXT("Ship"), RF_Transient);
 		Mesh->SetupAttachment(RootComponent);
-		Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Mesh->SetMobility(EComponentMobility::Movable);
+		Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Mesh->RegisterComponent();
 	}
 	return Mesh;
@@ -275,13 +277,56 @@ void AProceduralShip::ApplyResult(FShipBuildResult& Result)
 		Result.Triangles += SailTriangles.Num() / 3;
 		UpdateSails();
 	}
+	// Collision for walking aboard: the interior's boxes as physics box primitives (no cooking).
+	{
+		if (!Collision)
+		{
+			Collision = NewObject<UShipCollisionComponent>(this, TEXT("Collision"), RF_Transient);
+			Collision->SetupAttachment(Mesh);
+			Collision->RegisterComponent();
+		}
+		TArray<UShipCollisionComponent::FBox3> Boxes;
+		Boxes.Reserve(Result.Interior.Collision.Num());
+		for (const FShipBlock& K : Result.Interior.Collision)
+		{
+			const FMatrix Axes(FVector(K.X), FVector(K.Y), FVector(K.Z), FVector::ZeroVector);
+			Boxes.Add({ FVector(K.O * 100.f), Axes.Rotator(), FVector(K.Half * 100.f) });
+		}
+		Collision->SetBoxes(Boxes);
+		// Diagnostics: the largest boxes and any not finite.
+		{
+			int32 Bad = 0;
+			TArray<TPair<float, int32>> Sizes;
+			for (int32 I = 0; I < Result.Interior.Collision.Num(); ++I)
+			{
+				const FShipBlock& K = Result.Interior.Collision[I];
+				if (K.O.ContainsNaN() || K.Half.ContainsNaN() || K.X.ContainsNaN() || K.Z.ContainsNaN())
+				{
+					++Bad;
+				}
+				Sizes.Add({ K.Half.GetMax(), I });
+			}
+			Sizes.Sort([](const TPair<float, int32>& A, const TPair<float, int32>& B) { return A.Key > B.Key; });
+			for (int32 I = 0; I < FMath::Min(3, Sizes.Num()); ++I)
+			{
+				const FShipBlock& K = Result.Interior.Collision[Sizes[I].Value];
+				UE_LOG(LogShip, Display, TEXT("ProceduralShip: collision box at %s half %s axes %s / %s"), *K.O.ToString(), *K.Half.ToString(), *K.X.ToString(), *K.Z.ToString());
+			}
+			if (Bad > 0)
+			{
+				UE_LOG(LogShip, Warning, TEXT("ProceduralShip: %d collision boxes not finite"), Bad);
+			}
+		}
+		Boarding = FVector(Result.Interior.Boarding * 100.f);
+		CollisionBoxes = Boxes.Num();
+	}
 	Triangles = Result.Triangles;
 	bBuilt = true;
 	BuiltKey = Key();
 	const double MeshMs = (FPlatformTime::Seconds() - Start) * 1000.0;
 	LastBuildMs = float(Result.GeometryMs + MeshMs);
-	UE_LOG(LogShip, Display, TEXT("ProceduralShip: %s seed %d, %.1f x %.1f m, %d guns, %d triangles, %.0f ms (%s, mesh %.0f ms)"),
-		*UEnum::GetValueAsString(Type), Seed, Design.Length, Design.Beam, Result.Guns, Triangles, LastBuildMs, *Result.Times, MeshMs);
+	UE_LOG(LogShip, Display, TEXT("ProceduralShip: %s seed %d, %.1f x %.1f m, %d guns, %d triangles, %d collision boxes, %.0f ms (%s, mesh %.0f ms)"),
+		*UEnum::GetValueAsString(Type), Seed, Design.Length, Design.Beam, Result.Guns, Triangles, CollisionBoxes, LastBuildMs, *Result.Times, MeshMs);
 }
 
 void AProceduralShip::Tick(float DeltaSeconds)

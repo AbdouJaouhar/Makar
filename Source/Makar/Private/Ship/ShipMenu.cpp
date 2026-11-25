@@ -298,6 +298,16 @@ TSharedRef<SWidget> SShipMenu::TypeTab()
 			]
 		];
 	}
+	Box->AddSlot().AutoHeight().Padding(0.f, 8.f, 0.f, 4.f)
+	[
+		SNew(SButton)
+		.HAlign(HAlign_Center)
+		.ButtonColorAndOpacity(Accent * 0.6f)
+		.OnClicked_Lambda([this]() { if (AShipViewerController* PC = Controller.Get()) { PC->StartVisit(); } return FReply::Handled(); })
+		[
+			SNew(STextBlock).Text(LOCTEXT("Visit", "Monter à bord  (Tab : revenir)")).Font(Font(11, "Bold")).ColorAndOpacity(TextColour)
+		]
+	];
 	Box->AddSlot().AutoHeight().Padding(0.f, 12.f, 0.f, 6.f)[Heading(LOCTEXT("Variant", "Variante"))];
 	Box->AddSlot().AutoHeight().Padding(0.f, 3.f)
 	[

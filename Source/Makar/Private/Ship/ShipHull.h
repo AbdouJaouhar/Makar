@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "RopeSolver.h"
 #include "Ship/ShipDesign.h"
 
 namespace ShipMesh { class FBuilder; }
@@ -90,8 +91,37 @@ struct FShipGunPort
 	bool bLower = false;
 };
 
+/** A hatch through the decks: open ones have ladders down to the hold, grated ones only a grating on the weather deck. */
+struct FShipHatch
+{
+	float X = 0.f;
+	float HalfLength = 0.8f;
+	float HalfWidth = 0.7f;
+	bool bOpen = false;
+};
+
+/** What is inside the hull, to walk in it: decks, hatches, masts, and the solid boxes a character collides with. */
+struct FShipInterior
+{
+	/** Decks inside the hull: their height below the main deck (m, negative), sheer followed. */
+	TArray<float> DeckOffsets;
+	/** The hold's floor (above the hull bottom). */
+	float FloorH = 0.6f;
+	TArray<FShipHatch> Hatches;
+	/** Masts: X and radius. */
+	TArray<FVector2f> Masts;
+	/** Collision: oriented boxes (floors, sides, bulkheads, ladders, masts...). */
+	TArray<FShipBlock> Collision;
+	/** Where a visitor comes aboard: on the weather deck by the open hatch. */
+	FVector3f Boarding = FVector3f::ZeroVector;
+};
+
 namespace ShipHull
 {
-	/** Keel, stem, sternpost, rudder, planked hull with wales and paint, transom, bulwarks, rails, decks, gun ports. */
-	void Build(ShipMesh::FBuilder& B, const FHullLines& Lines, TArray<FShipGunPort>& OutPorts);
+	/**
+	 * Keel, stem, sternpost, rudder, planked hull with wales and paint, transom, bulwarks, rails, gun ports; the
+	 * interior: ceiling inside the frames down to the hold, every deck (weather decks, decks inside the hull, the hold's
+	 * floor) on beams, hatches and ladders through them, doors in the bulkheads; and its collision (OutInterior).
+	 */
+	void Build(ShipMesh::FBuilder& B, const FHullLines& Lines, TArray<FShipGunPort>& OutPorts, FShipInterior& OutInterior);
 }

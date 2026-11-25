@@ -5,6 +5,7 @@
 class FHullLines;
 struct FShipGunPort;
 struct FShipMastInfo;
+struct FShipInterior;
 namespace ShipMesh { class FBuilder; }
 
 namespace ShipFittings
@@ -14,7 +15,8 @@ namespace ShipFittings
 	 * with gratings, capstan or windlass, wheel or tiller, binnacle, bitts and fife rails with belaying pins, pin rails
 	 * at the shrouds, a bell, stern lanterns, catheads with their anchors, hawse holes, a ship's boat on skids.
 	 */
-	void Build(ShipMesh::FBuilder& B, const FHullLines& Lines, const TArray<FShipGunPort>& Ports, const TArray<FShipMastInfo>& Masts);
+	void Build(ShipMesh::FBuilder& B, const FHullLines& Lines, const TArray<FShipGunPort>& Ports, const TArray<FShipMastInfo>& Masts,
+		const FShipInterior& Interior);
 
 	/**
 	 * The ship on a building berth: keel blocks under the keel and bilge shores both sides, standing on the ground

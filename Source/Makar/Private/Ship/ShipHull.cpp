@@ -1,6 +1,7 @@
 #include "ShipHull.h"
 
 #include "ShipMeshBuilder.h"
+#include "ShipRig.h"
 
 #include "Async/ParallelFor.h"
 
@@ -327,7 +328,10 @@ namespace
 		const FHullLines& L;
 		const FShipDesign& D;
 		TArray<FShipGunPort>& Ports;
+		FShipInterior* Interior = nullptr;
 		TArray<FCut> Cuts;
+		/** Stern windows: centre Y, half width, sill and head heights. */
+		TArray<FVector4f> Windows;
 		int32 Strakes = 0;
 		TArray<int32> WaleStrakes;
 		int32 BandFrom = 1 << 20, BandTo = -1;
@@ -356,6 +360,13 @@ namespace
 		void Bulwarks(float Side);
 		void PortLinings(float Side);
 		void Backbone();
+		void PlanInterior();
+		/** One floor: planks over pitch, waterways, beams below; holes for hatches and masts; its collision. */
+		void DeckFloor(float XA, float XB, TFunctionRef<float(float)> Height, int32 Region, bool bBeams, bool bHoles);
+		void Ladder(const FShipHatch& Hatch, float Upper, float Lower);
+		void InteriorWalls();
+		void Breaks();
+		void AddBlock(const FVector3f& Center, const FVector3f& Half, const FVector3f& X = FVector3f::ForwardVector, const FVector3f& Z = FVector3f::UpVector);
 		void Head();
 		void Transom();
 		void Rails(float Side);
@@ -586,20 +597,28 @@ namespace
 				continue;
 			}
 			const float Sm = 0.5f * (Sv[0] + Sv[1]);
-			const float Td = DeckGirth(L, Sm);
+			// From the hold's floor up: the ceiling, planks laid inside the frames, the whole height of the hull.
+			// (from the very bottom: below the hold's floor the ceiling closes the hull, no void seen past the floor's edge)
+			const float Td = L.GirthAt(Sm, Interior ? 0.05f : L.DeckAt(Sm * L.HalfLength));
+			const float Girth = L.Girth(Sm);
 			for (const FVector2f& Part : Clip(Td, 1.f, Sm, Cuts))
 			{
-				constexpr int32 Rows = 3;
+				const int32 Rows = FMath::Max(1, FMath::CeilToInt((Part.Y - Part.X) * Girth / 0.3f));
 				for (int32 R = 0; R < Rows; ++R)
 				{
 					const float Ta = FMath::Lerp(Part.X, Part.Y, float(R) / Rows), Tb = FMath::Lerp(Part.X, Part.Y, float(R + 1) / Rows);
 					int32 Idx[4];
 					const float Corner[4][2] = { { Sv[0], Ta }, { Sv[1], Ta }, { Sv[1], Tb }, { Sv[0], Tb } };
-					for (int32 C = 0; C < 4; ++C)
+					const float Hm = L.HeightAt(Sm, 0.5f * (Ta + Tb));
+					// Painted above the main deck (bulwarks, gun decks of the castles), raw oak below.
+					const FLinearColor Base = Hm > L.MainDeck(L.Surface(Sm, Ta).X) - 0.05f ? Inside : FLinearColor(0.2f, 0.14f, 0.085f, 1.f);
+					const FLinearColor C = Jitter(Base, 0.1f, K / 9 + R * 31, int32(Side) + int32(Ta * 977.f));
+					for (int32 Ci = 0; Ci < 4; ++Ci)
 					{
-						const FVector3f N = L.Normal(Corner[C][0], Corner[C][1]);
-						const FVector3f P = L.Surface(Corner[C][0], Corner[C][1]) - N * FT;
-						Idx[C] = B.Vertex(Mirror(P, Side), Mirror(-N, Side), FVector2f(P.X, P.Z), Jitter(Inside, 0.08f, K / 6, int32(Side)));
+						const FVector3f N = L.Normal(Corner[Ci][0], Corner[Ci][1]);
+						FVector3f P = L.Surface(Corner[Ci][0], Corner[Ci][1]) - N * FT;
+						P.Y = FMath::Max(P.Y, 0.1f); // the two sides meet at the stem and the keel, never cross
+						Idx[Ci] = B.Vertex(Mirror(P, Side), Mirror(-N, Side), FVector2f(P.X, P.Z), C);
 					}
 					B.Quad(Wood, Idx[0], Idx[1], Idx[2], Idx[3]);
 				}
@@ -632,7 +651,7 @@ namespace
 				B.FlatQuad(Wood, Out[C], Out[Next], In[Next], In[C], Lining, Center - Mid);
 			}
 			// Ports under a raised deck or on the lower gun deck open on the dark inside, not on the open deck.
-			const bool bClosedBehind = Port.bLower || L.RaisedAt(Port.X) > 0.f;
+			const bool bClosedBehind = false; // the inside of the hull is built: the port opens on the gun deck
 			if (bClosedBehind)
 			{
 				const FVector3f Inward = Mirror(FVector3f(0.f, -1.f, 0.f), Side);
@@ -846,16 +865,6 @@ namespace
 			// Caulking behind.
 			B.FlatQuad(Wood, A + FVector3f(0.f, -Half, 0.f), A + FVector3f(0.f, Half, 0.f), Bv + FVector3f(0.f, Half, 0.f), Bv + FVector3f(0.f, -Half, 0.f), Caulk, F.Y);
 		}
-		// Inside of the transom above the top deck.
-		{
-			const float Hd = L.DeckAt(L.XStern(Top) + L.FrameThickness + 0.05f);
-			const float X0 = L.XStern(Hd) + L.FrameThickness, X1 = L.XStern(Top) + L.FrameThickness;
-			const float W0 = L.PointSH(-1.f, Hd).Y - L.FrameThickness, W1 = L.PointSH(-1.f, Top).Y - L.FrameThickness;
-			const FLinearColor Inside = (D.Type == EShipType::Frigate || D.Type == EShipType::Galleon)
-				? FLinearColor(0.26f, 0.055f, 0.035f, 1.f) : D.TopsideColor * 1.6f;
-			B.FlatQuad(Wood, FVector3f(X0, -W0, L.Z(Hd)), FVector3f(X0, W0, L.Z(Hd)), FVector3f(X1, W1, L.Z(Top)), FVector3f(X1, -W1, L.Z(Top)),
-				Inside, FVector3f::ForwardVector);
-		}
 		// Stern windows of the great cabin (frigates, galleons), between the main deck and the quarterdeck.
 		if (D.Type == EShipType::Frigate || D.Type == EShipType::Galleon || D.Type == EShipType::Brigantine)
 		{
@@ -885,6 +894,9 @@ namespace
 					const FVector3f G0 = A + Aft * Offset + FVector3f(0.f, Yc - Wh, 0.f), G1 = A + Aft * Offset + FVector3f(0.f, Yc + Wh, 0.f);
 					const FVector3f G2 = Bv + Aft * Offset + FVector3f(0.f, Yc + Wh, 0.f), G3 = Bv + Aft * Offset + FVector3f(0.f, Yc - Wh, 0.f);
 					B.FlatQuad(Gloss, G0, G1, G2, G3, FLinearColor(0.025f, 0.035f, 0.04f, 1.f), Aft);
+					// The same panes seen from the cabin (old glass: a little greenish, light through it).
+					B.FlatQuad(Gloss, G0, G1, G2, G3, FLinearColor(0.05f, 0.06f, 0.05f, 1.f), -Aft);
+					Windows.Add(FVector4f(Yc, Wh + 0.05f, W0 - 0.05f, W1 + 0.05f));
 					// Frame: four bars; mullions dividing the panes.
 					const FLinearColor FrameColor(0.3f, 0.26f, 0.18f, 1.f);
 					auto Bar = [&](const FVector3f& P, const FVector3f& Q, float Width)
@@ -909,6 +921,61 @@ namespace
 					const FVector3f A(L.XStern(W0 - 0.15f) - D.PlankThickness - 0.05f, 0.f, L.Z(W0 - 0.15f));
 					TArray<FVector3f> Path = { A + FVector3f(0.f, -Half - 0.05f, 0.f), A + FVector3f(0.f, Half + 0.05f, 0.f) };
 					B.Beam(Metal, Path, FVector3f::UpVector, 0.12f, 0.1f, D.Type == EShipType::Galleon ? FLinearColor(0.5f, 0.36f, 0.12f, 1.f) : FLinearColor(0.32f, 0.22f, 0.07f, 1.f));
+				}
+			}
+		}
+		// The transom seen from inside: lined from the hold to the taffrail, open at the windows.
+		{
+			const float FT = L.FrameThickness;
+			const FLinearColor Painted = (D.Type == EShipType::Frigate || D.Type == EShipType::Galleon)
+				? FLinearColor(0.26f, 0.055f, 0.035f, 1.f) : FLinearColor(D.TopsideColor.R * 1.6f, D.TopsideColor.G * 1.6f, D.TopsideColor.B * 1.6f, 1.f);
+			const FLinearColor Oak(0.2f, 0.14f, 0.085f, 1.f);
+			const float Low = FMath::Max(Start, Interior ? Interior->FloorH : Start);
+			TArray<float> Cuts1 = { Low, Top, L.MainDeck(-L.HalfLength) };
+			for (const FVector4f& W : Windows)
+			{
+				Cuts1.Add(W.Z);
+				Cuts1.Add(W.W);
+			}
+			SortUnique(Cuts1);
+			// A little wider than the frames' inside: it tucks behind the ceiling of the sides, no daylight at the corners.
+			auto Inner = [&](float H) { return FMath::Max(L.PointSH(-1.f, H).Y - FT + 0.25f, 0.1f); };
+			auto At = [&](float H, float Y) { return FVector3f(L.XStern(H) + FT, Y, L.Z(H)); };
+			for (int32 I = 0; I + 1 < Cuts1.Num(); ++I)
+			{
+				const float H0 = Cuts1[I], H1 = Cuts1[I + 1];
+				if (H1 - H0 < 0.01f || H0 < Low - 0.01f)
+				{
+					continue;
+				}
+				const float Hm = 0.5f * (H0 + H1);
+				TArray<FVector2f> Gaps;
+				for (const FVector4f& W : Windows)
+				{
+					if (Hm > W.Z && Hm < W.W)
+					{
+						Gaps.Add(FVector2f(W.X - W.Y, W.X + W.Y));
+					}
+				}
+				Gaps.Sort([](const FVector2f& A, const FVector2f& Bv) { return A.X < Bv.X; });
+				const FLinearColor C = Hm > L.MainDeck(-L.HalfLength) - 0.05f ? Painted : Oak;
+				float Y = -1e6f;
+				TArray<FVector2f> Spans;
+				for (const FVector2f& G : Gaps)
+				{
+					Spans.Add(FVector2f(Y, G.X));
+					Y = G.Y;
+				}
+				Spans.Add(FVector2f(Y, 1e6f));
+				for (const FVector2f& Span : Spans)
+				{
+					const float A0 = FMath::Max(Span.X, -Inner(H0)), A1 = FMath::Min(Span.Y, Inner(H0));
+					const float B0 = FMath::Max(Span.X, -Inner(H1)), B1 = FMath::Min(Span.Y, Inner(H1));
+					if (A1 - A0 < 0.01f && B1 - B0 < 0.01f)
+					{
+						continue;
+					}
+					B.FlatQuad(Wood, At(H0, A0), At(H0, A1), At(H1, B1), At(H1, B0), C, FVector3f::ForwardVector);
 				}
 			}
 		}
@@ -938,125 +1005,486 @@ namespace
 		}
 	}
 
-	void FHullBuild::Decks()
+	void FHullBuild::AddBlock(const FVector3f& Center, const FVector3f& Half, const FVector3f& X, const FVector3f& Z)
+	{
+		if (!Interior)
+		{
+			return;
+		}
+		FShipBlock Block;
+		Block.O = Center;
+		Block.X = X.GetSafeNormal();
+		Block.Y = FVector3f::CrossProduct(Z, Block.X).GetSafeNormal();
+		Block.Z = FVector3f::CrossProduct(Block.X, Block.Y);
+		Block.Half = Half;
+		Interior->Collision.Add(Block);
+	}
+
+	void FHullBuild::PlanInterior()
+	{
+		FShipInterior& I = *Interior;
+		I.FloorH = FMath::Clamp(0.12f * D.Depth, 0.45f, 0.9f);
+		// Decks inside the hull, by type: the berth deck of brigantines, the lower deck of frigates, the galleon's
+		// lower gun deck (its ports at its height) and orlop. Each with standing room above the floor below.
+		TArray<float> Offsets;
+		switch (D.Type)
+		{
+		case EShipType::Brigantine: Offsets = { -2.f }; break;
+		case EShipType::Frigate: Offsets = { -2.15f }; break;
+		case EShipType::Galleon: Offsets = { -2.25f, -4.3f }; break;
+		default: break;
+		}
+		float Below = D.Depth;
+		for (float Offset : Offsets)
+		{
+			if (D.Depth + Offset - I.FloorH > 1.7f && Below - (D.Depth + Offset) > 1.6f)
+			{
+				I.DeckOffsets.Add(Offset);
+				Below = D.Depth + Offset;
+			}
+		}
+		I.Masts = ShipRig::MastStations(L);
+		// Hatches: between the masts and before the foremast; the one nearest midships open, with ladders down.
+		const float Scale = FMath::Clamp(D.Beam / 8.f, 0.7f, 1.3f);
+		TArray<float> Xs;
+		if (I.Masts.Num() >= 2)
+		{
+			for (int32 M = 0; M + 1 < I.Masts.Num(); ++M)
+			{
+				Xs.Add(0.5f * (I.Masts[M].X + I.Masts[M + 1].X));
+			}
+		}
+		else if (I.Masts.Num() == 1)
+		{
+			Xs.Add(I.Masts[0].X - 2.8f * Scale);
+			Xs.Add(I.Masts[0].X - 6.5f * Scale);
+		}
+		if (I.Masts.Num() > 0)
+		{
+			Xs.Add(I.Masts[0].X + 2.6f * Scale);
+		}
+		for (float X : Xs)
+		{
+			FShipHatch H;
+			H.X = X;
+			H.HalfLength = FMath::Max(0.85f * Scale, 0.9f);
+			H.HalfWidth = 0.7f * Scale;
+			const float Hd = L.MainDeck(X);
+			bool bOk = FMath::Abs(X) < L.HalfLength * 0.8f && L.HalfBreadth(X, Hd) - L.FrameThickness > H.HalfWidth + 0.6f;
+			// Not across a break of the decks, clear of the masts.
+			bOk &= L.RaisedAt(X - H.HalfLength - 0.3f) == L.RaisedAt(X + H.HalfLength + 0.3f);
+			for (const FVector2f& M : I.Masts)
+			{
+				bOk &= FMath::Abs(M.X - X) > H.HalfLength + M.Y + 0.5f;
+			}
+			if (bOk)
+			{
+				I.Hatches.Add(H);
+			}
+		}
+		if (I.Hatches.Num() > 0)
+		{
+			int32 Best = 0;
+			for (int32 H = 1; H < I.Hatches.Num(); ++H)
+			{
+				Best = FMath::Abs(I.Hatches[H].X) < FMath::Abs(I.Hatches[Best].X) ? H : Best;
+			}
+			I.Hatches[Best].bOpen = true;
+			const float X = I.Hatches[Best].X - I.Hatches[Best].HalfLength - 2.f;
+			I.Boarding = FVector3f(X, 0.f, L.Z(L.DeckAt(X)));
+		}
+	}
+
+	void FHullBuild::DeckFloor(float XA, float XB, TFunctionRef<float(float)> Hd, int32 Region, bool bBeams, bool bHoles)
 	{
 		const float FT = L.FrameThickness;
-		// Deck regions: between the edges of the raised decks.
-		TArray<float> Edges = { -L.HalfLength, L.HalfLength };
-		for (const FShipDeckLevel& Level : D.RaisedDecks)
-		{
-			Edges.Add(-L.HalfLength + Level.From * D.Length);
-			Edges.Add(-L.HalfLength + Level.To * D.Length);
-		}
-		SortUnique(Edges);
 		const float Lane = FMath::Clamp(D.PlankWidth * 0.85f, 0.16f, 0.26f);
 		const float DeckThick = 0.07f;
-		int32 Region = 0;
-		for (int32 E = 0; E + 1 < Edges.Num(); ++E, ++Region)
+		auto Inner = [&](float X)
 		{
-			const float XA = Edges[E], XB = Edges[E + 1];
-			if (XB - XA < 0.2f)
+			if (X < L.XStern(Hd(X)) + FT)
 			{
-				continue;
+				return 0.f;
 			}
-			const float Raise = L.RaisedAt(0.5f * (XA + XB));
-			auto Hd = [&](float X) { return L.MainDeck(X) + Raise; };
-			auto Inner = [&](float X)
+			return FMath::Max(L.HalfBreadth(X, Hd(X)) - FT, 0.f);
+		};
+		// Holes: the open hatches through every deck, the grated ones through the weather deck only; the masts.
+		const bool bWeather = Hd(0.5f * (XA + XB)) >= L.MainDeck(0.5f * (XA + XB)) - 0.01f;
+		auto InHole = [&](float X, float Y0, float Y1)
+		{
+			if (!bHoles || !Interior)
 			{
-				if (X < L.XStern(Hd(X)) + FT)
+				return false;
+			}
+			for (const FShipHatch& H : Interior->Hatches)
+			{
+				if ((H.bOpen || bWeather) && FMath::Abs(X - H.X) < H.HalfLength && Y1 > -H.HalfWidth && Y0 < H.HalfWidth)
 				{
-					return 0.f;
+					return true;
 				}
-				return FMath::Max(L.HalfBreadth(X, Hd(X)) - FT, 0.f);
+			}
+			for (const FVector2f& M : Interior->Masts)
+			{
+				const float R = M.Y + 0.04f;
+				if (FMath::Abs(X - M.X) < R && Y1 > -R && Y0 < R)
+				{
+					return true;
+				}
+			}
+			return false;
+		};
+		const FLinearColor Seam(D.DeckColor.R * 0.12f, D.DeckColor.G * 0.12f, D.DeckColor.B * 0.12f, 1.f);
+		// Planks: straight lanes parallel to the centreline over pitch seams, butts staggered, ending where the hull
+		// closes in or at a hole.
+		const int32 Lanes = FMath::CeilToInt(L.HalfBeam / Lane) + 1;
+		for (int32 J = -Lanes; J <= Lanes; ++J)
+		{
+			const float Y = J * Lane;
+			const float Need = FMath::Abs(Y) + Lane * 0.5f + 0.18f; // a margin for the waterway
+			float RunStart = TNumericLimits<float>::Max();
+			const float Step = 0.08f;
+			const float Butt = D.PlankLength * 0.8f;
+			const float Offset = Hash(J, Region, D.Seed) * Butt;
+			auto EmitRun = [&](float R0, float R1)
+			{
+				if (R1 - R0 < 0.15f)
+				{
+					return;
+				}
+				float P0 = R0;
+				int32 Piece = 0;
+				while (P0 < R1 - 0.05f)
+				{
+					float P1 = FMath::Min(R1, XA + Offset + Butt * (FMath::FloorToFloat((P0 - XA - Offset) / Butt) + 1.f));
+					if (P1 - P0 < 0.05f)
+					{
+						P1 = FMath::Min(R1, P1 + Butt);
+					}
+					TArray<FVector3f> Path, Under;
+					const int32 Count = FMath::Max(1, FMath::CeilToInt((P1 - P0) / 0.6f));
+					for (int32 I = 0; I <= Count; ++I)
+					{
+						const float X = FMath::Lerp(P0 + 0.004f, P1 - 0.004f, float(I) / Count);
+						Path.Add(FVector3f(X, Y, L.Z(Hd(X)) - DeckThick * 0.5f));
+						Under.Add(FVector3f(X, Y, L.Z(Hd(X)) - DeckThick + 0.006f));
+					}
+					FLinearColor C = Jitter(D.DeckColor, 0.16f, J * 13 + Piece, Region, D.Seed);
+					C.A = 1.f;
+					B.Beam(Wood, Path, FVector3f::UpVector, Lane - 0.008f, DeckThick, C);
+					B.Beam(Wood, Under, FVector3f::UpVector, Lane + 0.002f, 0.01f, Seam);
+					P0 = P1;
+					++Piece;
+				}
 			};
-			// Pitch-black seams: a dark floor under the planks.
+			for (float X = XA + 0.02f; X <= XB - 0.02f + 1e-4f; X += Step)
 			{
-				auto Floor = [&](float U, float V)
+				const bool bIn = Inner(X) >= Need && !InHole(X, Y - Lane * 0.5f, Y + Lane * 0.5f);
+				if (bIn && RunStart == TNumericLimits<float>::Max())
 				{
-					const float X = FMath::Lerp(XA, XB, U);
-					const float Hb = FMath::Max(Inner(X), 0.02f);
-					return FVector3f(X, FMath::Lerp(-Hb, Hb, V), L.Z(Hd(X)) - DeckThick + 0.005f);
-				};
-				const int32 NU = FMath::Max(4, FMath::CeilToInt((XB - XA) / 0.4f));
-				B.Grid(Wood, NU, 6, Floor, Caulk);
-			}
-			// Planks: straight lanes parallel to the centreline, butts staggered, ending where the hull closes in.
-			const int32 Lanes = FMath::CeilToInt(L.HalfBeam / Lane) + 1;
-			for (int32 J = -Lanes; J <= Lanes; ++J)
-			{
-				const float Y = J * Lane;
-				const float Need = FMath::Abs(Y) + Lane * 0.5f + 0.18f; // a margin for the waterway
-				float RunStart = TNumericLimits<float>::Max();
-				const float Step = 0.08f;
-				const float Butt = D.PlankLength * 0.8f;
-				const float Offset = Hash(J, Region, D.Seed) * Butt;
-				auto EmitRun = [&](float R0, float R1)
-				{
-					if (R1 - R0 < 0.3f)
-					{
-						return;
-					}
-					float P0 = R0;
-					int32 Piece = 0;
-					while (P0 < R1 - 0.05f)
-					{
-						float P1 = FMath::Min(R1, XA + Offset + Butt * (FMath::FloorToFloat((P0 - XA - Offset) / Butt) + 1.f));
-						if (P1 - P0 < 0.05f)
-						{
-							P1 = FMath::Min(R1, P1 + Butt);
-						}
-						TArray<FVector3f> Path;
-						const int32 Count = FMath::Max(1, FMath::CeilToInt((P1 - P0) / 0.6f));
-						for (int32 I = 0; I <= Count; ++I)
-						{
-							const float X = FMath::Lerp(P0 + 0.004f, P1 - 0.004f, float(I) / Count);
-							Path.Add(FVector3f(X, Y, L.Z(Hd(X)) - DeckThick * 0.5f));
-						}
-						FLinearColor C = Jitter(D.DeckColor, 0.16f, J * 13 + Piece, Region, D.Seed);
-						C.A = 1.f;
-						B.Beam(Wood, Path, FVector3f::UpVector, Lane - 0.008f, DeckThick, C);
-						P0 = P1;
-						++Piece;
-					}
-				};
-				for (float X = XA + 0.02f; X <= XB - 0.02f + 1e-4f; X += Step)
-				{
-					const bool bIn = Inner(X) >= Need;
-					if (bIn && RunStart == TNumericLimits<float>::Max())
-					{
-						RunStart = X;
-					}
-					if ((!bIn || X + Step > XB - 0.02f) && RunStart != TNumericLimits<float>::Max())
-					{
-						EmitRun(RunStart, bIn ? XB - 0.02f : X - Step);
-						RunStart = TNumericLimits<float>::Max();
-					}
+					RunStart = X;
 				}
-			}
-			// Waterways along the sides, covering the plank ends.
-			for (float Side : { 1.f, -1.f })
-			{
-				TArray<FVector3f> Path;
-				for (float X = XA; X <= XB + 1e-3f; X += 0.25f)
+				if ((!bIn || X + Step > XB - 0.02f) && RunStart != TNumericLimits<float>::Max())
 				{
-					const float Hb = Inner(X);
-					if (Hb < 0.3f)
-					{
-						if (Path.Num() > 1)
-						{
-							B.Beam(Wood, Path, FVector3f::UpVector, 0.36f, 0.09f, Jitter(D.DeckColor * 0.7f, 0.05f, Region, int32(Side)));
-						}
-						Path.Reset();
-						continue;
-					}
-					Path.Add(FVector3f(X, Side * (Hb - 0.16f), L.Z(Hd(X)) - 0.01f));
-				}
-				if (Path.Num() > 1)
-				{
-					B.Beam(Wood, Path, FVector3f::UpVector, 0.36f, 0.09f, Jitter(D.DeckColor * 0.7f, 0.05f, Region, int32(Side)));
+					EmitRun(RunStart, bIn ? XB - 0.02f : X - Step);
+					RunStart = TNumericLimits<float>::Max();
 				}
 			}
 		}
+		// Waterways along the sides, covering the plank ends.
+		for (float Side : { 1.f, -1.f })
+		{
+			TArray<FVector3f> Path;
+			for (float X = XA; X <= XB + 1e-3f; X += 0.25f)
+			{
+				const float Hb = Inner(X);
+				if (Hb < 0.3f)
+				{
+					if (Path.Num() > 1)
+					{
+						B.Beam(Wood, Path, FVector3f::UpVector, 0.36f, 0.09f, Jitter(D.DeckColor * 0.7f, 0.05f, Region, int32(Side)));
+					}
+					Path.Reset();
+					continue;
+				}
+				Path.Add(FVector3f(X, Side * (Hb - 0.16f), L.Z(Hd(X)) - 0.01f));
+			}
+			if (Path.Num() > 1)
+			{
+				B.Beam(Wood, Path, FVector3f::UpVector, 0.36f, 0.09f, Jitter(D.DeckColor * 0.7f, 0.05f, Region, int32(Side)));
+			}
+		}
+		// Beams across under the deck every 1.15 m (none through a hatch or a mast); carlings along the hatches.
+		const FLinearColor BeamColor(0.17f, 0.12f, 0.07f, 1.f);
+		if (bBeams)
+		{
+			for (float X = XA + 0.6f; X < XB - 0.3f; X += 1.15f)
+			{
+				const float Hb = Inner(X);
+				bool bClear = Hb > 0.4f;
+				if (Interior)
+				{
+					for (const FShipHatch& H : Interior->Hatches)
+					{
+						bClear &= FMath::Abs(X - H.X) > H.HalfLength + 0.15f;
+					}
+					for (const FVector2f& M : Interior->Masts)
+					{
+						bClear &= FMath::Abs(X - M.X) > M.Y + 0.25f;
+					}
+				}
+				if (!bClear)
+				{
+					continue;
+				}
+				FShipFrame F;
+				F.O = FVector3f(X, 0.f, L.Z(Hd(X)) - DeckThick - 0.1f);
+				B.Box(Wood, F, FVector3f(0.1f, Hb, 0.1f), Jitter(BeamColor, 0.1f, int32(X * 10.f), Region));
+			}
+			if (Interior)
+			{
+				for (const FShipHatch& H : Interior->Hatches)
+				{
+					if (H.X < XA || H.X > XB || !(H.bOpen || bWeather))
+					{
+						continue;
+					}
+					for (float Side : { -1.f, 1.f })
+					{
+						FShipFrame F;
+						F.O = FVector3f(H.X, Side * (H.HalfWidth + 0.08f), L.Z(Hd(H.X)) - DeckThick - 0.1f);
+						B.Box(Wood, F, FVector3f(H.HalfLength + 0.6f, 0.08f, 0.1f), BeamColor);
+					}
+				}
+			}
+		}
+		// Collision: the floor in strips 25 cm long, cut round the holes; strips alike merged.
+		if (Interior)
+		{
+			struct FStrip
+			{
+				float X0, X1;
+				TArray<FVector2f> Spans;
+			};
+			TArray<FStrip> Strips;
+			for (float X = XA; X < XB - 0.01f; X += 0.25f)
+			{
+				const float X1 = FMath::Min(X + 0.25f, XB), Xm = 0.5f * (X + X1);
+				const float Hb = Inner(Xm);
+				FStrip S{ X, X1, {} };
+				if (Hb > 0.25f)
+				{
+					TArray<float> Cut = { -Hb };
+					auto Hole = [&](float Y0, float Y1)
+					{
+						Cut.Add(Y0);
+						Cut.Add(Y1);
+					};
+					if (bHoles)
+					{
+						for (const FShipHatch& H : Interior->Hatches)
+						{
+							if ((H.bOpen || bWeather) && FMath::Abs(Xm - H.X) < H.HalfLength)
+							{
+								Hole(-H.HalfWidth, H.HalfWidth);
+							}
+						}
+						for (const FVector2f& M : Interior->Masts)
+						{
+							if (FMath::Abs(Xm - M.X) < M.Y + 0.04f)
+							{
+								Hole(-M.Y - 0.04f, M.Y + 0.04f);
+							}
+						}
+					}
+					Cut.Add(Hb);
+					Cut.Sort();
+					for (int32 I = 0; I + 1 < Cut.Num(); I += 2)
+					{
+						if (Cut[I + 1] - Cut[I] > 0.05f)
+						{
+							S.Spans.Add(FVector2f(Cut[I], Cut[I + 1]));
+						}
+					}
+				}
+				auto Same = [](const FStrip& A, const FStrip& Bs)
+				{
+					if (A.Spans.Num() != Bs.Spans.Num())
+					{
+						return false;
+					}
+					for (int32 I = 0; I < A.Spans.Num(); ++I)
+					{
+						if (!A.Spans[I].Equals(Bs.Spans[I], 0.12f))
+						{
+							return false;
+						}
+					}
+					return true;
+				};
+				if (Strips.Num() > 0 && Same(Strips.Last(), S) && S.X1 - Strips.Last().X0 < 2.f)
+				{
+					Strips.Last().X1 = S.X1;
+				}
+				else
+				{
+					Strips.Add(S);
+				}
+			}
+			for (const FStrip& S : Strips)
+			{
+				const float Xm = 0.5f * (S.X0 + S.X1);
+				const float Z = L.Z(Hd(Xm));
+				const float Slope = (L.Z(Hd(S.X1)) - L.Z(Hd(S.X0))) / FMath::Max(S.X1 - S.X0, 0.01f);
+				const FVector3f Along = FVector3f(1.f, 0.f, Slope).GetSafeNormal();
+				for (const FVector2f& Span : S.Spans)
+				{
+					AddBlock(FVector3f(Xm, 0.5f * (Span.X + Span.Y), Z - 0.06f), FVector3f(0.5f * (S.X1 - S.X0) / Along.X, 0.5f * (Span.Y - Span.X), 0.06f), Along);
+				}
+			}
+		}
+	}
+
+	void FHullBuild::Ladder(const FShipHatch& Hatch, float Upper, float Lower)
+	{
+		// A steep ship's ladder (58 degrees): two stringers, treads every 24 cm, landing under the hatch's forward edge.
+		const float Rise = Upper - Lower;
+		const float Angle = FMath::DegreesToRadians(58.f);
+		const float Run = Rise / FMath::Tan(Angle);
+		const FVector3f Top(Hatch.X + Hatch.HalfLength - 0.12f, 0.f, L.Z(Upper) - 0.02f);
+		const FVector3f Foot(Top.X - Run, 0.f, L.Z(Lower));
+		const FVector3f Dir = (Top - Foot).GetSafeNormal();
+		const FLinearColor Wood1(0.24f, 0.17f, 0.1f, 1.f);
+		const float Half = FMath::Min(0.38f, Hatch.HalfWidth - 0.1f);
+		for (float Side : { -1.f, 1.f })
+		{
+			TArray<FVector3f> Path = { Foot + FVector3f(0.f, Side * Half, 0.f), Top + FVector3f(0.f, Side * Half, 0.f) };
+			B.Beam(Wood, Path, FVector3f(-Dir.Z, 0.f, Dir.X), 0.06f, 0.22f, Wood1);
+		}
+		const int32 Treads = FMath::Max(2, FMath::FloorToInt(Rise / 0.24f));
+		for (int32 I = 1; I < Treads; ++I)
+		{
+			FShipFrame F;
+			F.O = FMath::Lerp(Foot, Top, float(I) / Treads) + FVector3f(0.04f, 0.f, 0.f);
+			B.Box(Wood, F, FVector3f(0.11f, Half - 0.03f, 0.022f), Jitter(Wood1, 0.08f, I));
+		}
+		// Collision: a ramp under the treads (the visitor walks up it).
+		const FVector3f Normal(-Dir.Z, 0.f, Dir.X);
+		AddBlock((Foot + Top) * 0.5f - Normal * 0.03f, FVector3f((Top - Foot).Size() * 0.5f, Half, 0.03f), Dir, Normal);
+	}
+
+	void FHullBuild::InteriorWalls()
+	{
+		// The ship's sides seen from inside: boxes along the ceiling, 50 cm long, 60 cm high, from the hold to the rail.
+		const float FT = L.FrameThickness;
+		for (float X = -L.HalfLength + 0.25f; X < L.HalfLength; X += 0.5f)
+		{
+			for (float H = Interior->FloorH; H < L.RailAt(X); H += 0.6f)
+			{
+				const float Hm = H + 0.3f;
+				const float Outside = L.HalfBreadth(X, Hm);
+				if (Outside <= 0.f)
+				{
+					continue;
+				}
+				const float Inner = FMath::Max(Outside - FT, 0.1f);
+				for (float Side : { -1.f, 1.f })
+				{
+					AddBlock(FVector3f(X, Side * (Inner + 0.15f), L.Z(Hm)), FVector3f(0.26f, 0.15f, 0.31f));
+				}
+			}
+		}
+		// The transom, inside.
+		const float Top = L.RailAt(-L.HalfLength);
+		for (float H = Interior->FloorH; H < Top; H += 0.6f)
+		{
+			const float Hm = H + 0.3f;
+			const float Half = L.PointSH(-1.f, Hm).Y;
+			AddBlock(FVector3f(L.XStern(Hm) + FT - 0.15f, 0.f, L.Z(Hm)), FVector3f(0.15f, Half, 0.31f));
+		}
+		// The masts.
+		for (const FVector2f& M : Interior->Masts)
+		{
+			const float H0 = Interior->FloorH, H1 = L.DeckAt(M.X) + 3.f;
+			AddBlock(FVector3f(M.X, 0.f, L.Z(0.5f * (H0 + H1))), FVector3f(M.Y, M.Y, 0.5f * (H1 - H0)));
+		}
+	}
+
+	void FHullBuild::Decks()
+	{
+		// Every floor: the main deck the whole length, each raised deck over its extent (a poop on the quarterdeck), the
+		// decks inside the hull, the hold's floor.
+		struct FFloor
+		{
+			float XA, XB, Above;
+			bool bBeams, bHoles, bFlat;
+		};
+		TArray<FFloor> Floors;
+		Floors.Add({ -L.HalfLength, L.HalfLength, 0.f, true, true, false });
+		for (int32 I = 0; I < D.RaisedDecks.Num(); ++I)
+		{
+			const FShipDeckLevel& Level = D.RaisedDecks[I];
+			const float XA = -L.HalfLength + Level.From * D.Length, XB = -L.HalfLength + Level.To * D.Length;
+			const float Mid = 0.5f * (XA + XB);
+			float Above = 0.f;
+			for (int32 K = 0; K <= I; ++K)
+			{
+				const FShipDeckLevel& Under = D.RaisedDecks[K];
+				if (Mid >= -L.HalfLength + Under.From * D.Length && Mid <= -L.HalfLength + Under.To * D.Length)
+				{
+					Above += Under.Height;
+				}
+			}
+			Floors.Add({ XA, XB, Above, true, true, false });
+		}
+		if (Interior)
+		{
+			for (float Offset : Interior->DeckOffsets)
+			{
+				Floors.Add({ -L.HalfLength, L.HalfLength, Offset, true, true, false });
+			}
+			Floors.Add({ -L.HalfLength, L.HalfLength, Interior->FloorH, false, false, true });
+		}
+		int32 Region = 0;
+		for (const FFloor& F : Floors)
+		{
+			const float Above = F.Above;
+			const bool bFlat = F.bFlat;
+			DeckFloor(F.XA, F.XB, [this, Above, bFlat](float X) { return bFlat ? Above : L.MainDeck(X) + Above; }, Region++, F.bBeams, F.bHoles);
+		}
+		Breaks();
+		if (!Interior)
+		{
+			return;
+		}
+		// Ladders under the open hatches, from each floor to the one below.
+		for (const FShipHatch& H : Interior->Hatches)
+		{
+			if (!H.bOpen)
+			{
+				// A grating to walk on over the hole in the weather deck.
+				AddBlock(FVector3f(H.X, 0.f, L.Z(L.DeckAt(H.X)) + 0.3f), FVector3f(H.HalfLength, H.HalfWidth, 0.03f));
+				continue;
+			}
+			TArray<float> Heights;
+			for (const FFloor& F : Floors)
+			{
+				if (H.X >= F.XA && H.X <= F.XB)
+				{
+					Heights.Add(F.bFlat ? F.Above : L.MainDeck(H.X) + F.Above);
+				}
+			}
+			Heights.Sort([](float A, float Bv) { return A > Bv; });
+			for (int32 I = 0; I + 1 < Heights.Num(); ++I)
+			{
+				Ladder(H, Heights[I], Heights[I + 1]);
+			}
+		}
+		InteriorWalls();
+	}
+
+	void FHullBuild::Breaks()
+	{
+		const float FT = L.FrameThickness;
 		// Breaks of the raised decks: a planked bulkhead from the deck below, a beam on its edge, a balustrade on top.
 		for (const FShipDeckLevel& Level : D.RaisedDecks)
 		{
@@ -1078,28 +1506,66 @@ namespace
 				const float Hb = FMath::Max(L.HalfBreadth(X, Below) - FT, 0.3f);
 				const int32 Boards = FMath::CeilToInt(Hb * 2.f / 0.28f);
 				const float Pitch = Hb * 2.f / Boards;
+				// Two doors into the spaces under it, where there is standing room.
+				const bool bDoors = Top - Below > 1.75f;
+				const float DoorY = FMath::Min(1.3f, Hb * 0.5f), DoorHalf = 0.4f, DoorTop = Below + 1.78f;
+				auto InDoor = [&](float Y) { return bDoors && FMath::Abs(FMath::Abs(Y) - DoorY) < DoorHalf; };
 				for (int32 I = 0; I < Boards; ++I)
 				{
+					const float Yc = -Hb + Pitch * (I + 0.5f);
+					const float H0 = InDoor(Yc) ? DoorTop : Below;
 					FShipFrame F;
 					F.X = FVector3f(Outward, 0.f, 0.f);
 					F.Y = FVector3f::RightVector;
 					F.Z = FVector3f::UpVector;
-					F.O = FVector3f(X + Outward * 0.03f, -Hb + Pitch * (I + 0.5f), L.Z(0.5f * (Top + Below)));
+					F.O = FVector3f(X + Outward * 0.03f, Yc, L.Z(0.5f * (Top + H0)));
 					FLinearColor C = Jitter(D.TopsideColor * 1.5f, 0.12f, I, int32(X * 10.f), D.Seed);
 					C.A = 1.f;
-					B.Box(Wood, F, FVector3f(0.03f, Pitch * 0.5f - 0.004f, (Top - Below) * 0.5f), C);
+					B.Box(Wood, F, FVector3f(0.03f, Pitch * 0.5f - 0.004f, (Top - H0) * 0.5f), C);
 				}
-				// Doors to the cabins under it (only under a quarterdeck or poop: facing forward).
-				if (Outward > 0.f && Top - Below > 1.7f)
+				// Collision: the bulkhead but its doorways.
 				{
-					for (float Yd : { -1.f, 1.f })
+					TArray<float> Cuts1 = { -Hb };
+					if (bDoors)
 					{
+						Cuts1.Append({ -DoorY - DoorHalf, -DoorY + DoorHalf, DoorY - DoorHalf, DoorY + DoorHalf });
+					}
+					Cuts1.Add(Hb);
+					for (int32 I = 0; I + 1 < Cuts1.Num(); I += 2)
+					{
+						AddBlock(FVector3f(X + Outward * 0.03f, 0.5f * (Cuts1[I] + Cuts1[I + 1]), L.Z(0.5f * (Top + Below))),
+							FVector3f(0.06f, 0.5f * (Cuts1[I + 1] - Cuts1[I]), (Top - Below) * 0.5f));
+					}
+					if (bDoors)
+					{
+						for (float Yd : { -DoorY, DoorY })
+						{
+							AddBlock(FVector3f(X + Outward * 0.03f, Yd, L.Z(0.5f * (Top + DoorTop))), FVector3f(0.06f, DoorHalf, (Top - DoorTop) * 0.5f));
+						}
+					}
+					// The balustrade on the edge above: nobody walks off the raised deck.
+					AddBlock(FVector3f(X - Outward * 0.08f, 0.f, L.Z(Top) + 0.5f), FVector3f(0.06f, Hb, 0.5f));
+				}
+				if (bDoors)
+				{
+					for (float Yd : { -DoorY, DoorY })
+					{
+						// The leaf, hinged at the outboard jamb, standing open into the space behind.
+						const float Hinge = Yd + FMath::Sign(Yd) * DoorHalf;
 						FShipFrame F;
-						F.X = FVector3f(1.f, 0.f, 0.f);
+						F.X = FVector3f(-Outward, 0.f, 0.f);
 						F.Y = FVector3f::RightVector;
 						F.Z = FVector3f::UpVector;
-						F.O = FVector3f(X + 0.07f, Yd * FMath::Min(1.3f, Hb * 0.5f), L.Z(Below + 0.85f));
-						B.Box(Wood, F, FVector3f(0.02f, 0.38f, 0.85f), FLinearColor(0.07f, 0.045f, 0.025f, 1.f));
+						F.O = FVector3f(X - Outward * 0.39f, Hinge - FMath::Sign(Yd) * 0.03f, L.Z(Below + 0.89f));
+						B.Box(Wood, F, FVector3f(DoorHalf - 0.03f, 0.025f, 0.87f), FLinearColor(0.09f, 0.055f, 0.03f, 1.f));
+						AddBlock(F.O, FVector3f(DoorHalf - 0.03f, 0.03f, 0.87f));
+						// Jambs and lintel.
+						for (float J : { -1.f, 1.f })
+						{
+							FShipFrame Jamb = F;
+							Jamb.O = FVector3f(X + Outward * 0.03f, Yd + J * DoorHalf, L.Z(Below + 0.89f));
+							B.Box(Wood, Jamb, FVector3f(0.07f, 0.05f, 0.89f), FLinearColor(0.07f, 0.045f, 0.025f, 1.f));
+						}
 					}
 				}
 				// Edge beam and balustrade.
@@ -1124,9 +1590,11 @@ namespace
 	}
 }
 
-void ShipHull::Build(FBuilder& B, const FHullLines& L, TArray<FShipGunPort>& OutPorts)
+void ShipHull::Build(FBuilder& B, const FHullLines& L, TArray<FShipGunPort>& OutPorts, FShipInterior& OutInterior)
 {
 	FHullBuild Build{ B, L, L.D, OutPorts };
+	Build.Interior = &OutInterior;
+	Build.PlanInterior();
 	const FShipDesign& D = L.D;
 	Build.Strakes = FMath::Max(10, FMath::RoundToInt(L.Girth(0.f) / D.PlankWidth));
 	for (float Wale : D.Wales)
@@ -1156,6 +1624,7 @@ void ShipHull::Build(FBuilder& B, const FHullLines& L, TArray<FShipGunPort>& Out
 			Parts[Index] = FOceanMeshData(B.Data.Sections.Num());
 			FBuilder Local(Parts[Index]);
 			FHullBuild Strake{ Local, L, D, OutPorts };
+			Strake.Interior = &OutInterior; // read only here
 			Strake.Cuts = Build.Cuts;
 			Strake.Strakes = Build.Strakes;
 			Strake.WaleStrakes = Build.WaleStrakes;

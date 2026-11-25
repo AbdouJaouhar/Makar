@@ -23,6 +23,9 @@ namespace ShipRig
 	 */
 	void Build(ShipMesh::FBuilder& B, const FHullLines& Lines, TArray<FShipMastInfo>& OutMasts);
 
+	/** Where the masts stand: X (m) and the lower mast's radius at the deck (holes in the decks, hatches clear of them). */
+	TArray<FVector2f> MastStations(const FHullLines& Lines);
+
 	/** The same, the sails set given as cloth (OutSails) rather than drawn in the mesh in their cut shape. */
 	void Build(ShipMesh::FBuilder& B, const FHullLines& Lines, TArray<FShipMastInfo>& OutMasts, TArray<FShipSail>* OutSails);
 }

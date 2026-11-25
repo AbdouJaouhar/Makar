@@ -460,7 +460,9 @@ namespace
 			const FMast& M = Masts[I];
 			// Lower mast: through the deck, its head (the doubling) blackened; woolding bands.
 			{
-				const FVector3f Points[3] = { M.Foot - M.Dir * 0.6f, M.LowerAt(M.Lower - M.Doubling), M.LowerHead() };
+				// Stepped on the keelson: down through every deck to the hold's floor.
+				const float Below = FMath::Max((M.Foot.Z - L.Z(FMath::Clamp(0.12f * D.Depth, 0.45f, 0.9f))) / M.Dir.Z, 0.6f);
+				const FVector3f Points[3] = { M.Foot - M.Dir * Below, M.LowerAt(M.Lower - M.Doubling), M.LowerHead() };
 				const float Radii[3] = { M.RLower, M.RLower * 0.86f, M.RLower * 0.8f };
 				B.Tube(Wood, TConstArrayView<FVector3f>(Points, 2), TConstArrayView<float>(Radii, 2), 14, MastWood, false);
 				B.Tube(Wood, TConstArrayView<FVector3f>(Points + 1, 2), TConstArrayView<float>(Radii + 1, 2), 14, Tarred, true);
@@ -904,6 +906,20 @@ namespace
 			}
 		}
 	}
+}
+
+TArray<FVector2f> ShipRig::MastStations(const FHullLines& L)
+{
+	FOceanMeshData Scratch(1);
+	FBuilder B(Scratch);
+	FRigBuild Rig{ B, L, L.D };
+	Rig.Layout();
+	TArray<FVector2f> Out;
+	for (const FMast& M : Rig.Masts)
+	{
+		Out.Add(FVector2f(M.Foot.X, M.RLower));
+	}
+	return Out;
 }
 
 void ShipRig::Build(FBuilder& B, const FHullLines& L, TArray<FShipMastInfo>& OutMasts)
