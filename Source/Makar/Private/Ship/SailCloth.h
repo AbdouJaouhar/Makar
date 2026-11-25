@@ -130,6 +130,8 @@ struct FShipSail
 	/** The same sail with its belly gone (the wind out of it), and the share of the way to it each point may go. */
 	TArray<FVector3f> Flat;
 	TArray<float> Slack;
+	/** How far each point may flog about its empty shape (the room there, up to a metre): an empty sail beats about. */
+	TArray<float> FlogAmplitude;
 	/** The sail with its belly drawn twice as deep (a hard wind on its back), and the share of the way to it. */
 	TArray<FVector3f> Deep;
 	TArray<float> DeepShare;

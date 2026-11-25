@@ -1015,9 +1015,14 @@ ShipSails::FFitReport ShipSails::Fit(TArray<FShipSail>& Sails, const TArray<FShi
 
 	// The share of the way from each point's fitted place to Target it may go while it still clears everything by Keep
 	// plus its movement, and another sail by its movement plus SailExtra (how far that one may itself come).
-	auto Share = [&](int32 S, const TArray<FVector3f>& Target, TArray<float>& Out, TFunctionRef<float(int32)> SailExtra)
+	auto Share = [&](int32 S, const TArray<FVector3f>& Target, TArray<float>& Out, TFunctionRef<float(int32)> SailExtra, const TArray<float>* TargetAmp = nullptr)
 	{
 		FShipSail& Spec = Sails[S];
+		// The movement each point may make K of the way to Target.
+		auto AmpAt = [&](int32 V, float K)
+		{
+			return TargetAmp ? FMath::Lerp(Spec.Amplitude[V], FMath::Max((*TargetAmp)[V], Spec.Amplitude[V]), K) : Spec.Amplitude[V];
+		};
 		const int32 Count = Spec.Rest.Num();
 		Out.Init(0.f, Count);
 		ParallelFor(Count, [&](int32 V)
@@ -1036,7 +1041,7 @@ ShipSails::FFitReport ShipSails::Fit(TArray<FShipSail>& Sails, const TArray<FShi
 			for (const float K : { 0.125f, 0.25f, 0.375f, 0.5f, 0.625f, 0.75f, 0.875f, 1.f })
 			{
 				const FNear Near = Measure(S, Spec.Rest[V] + Way * K, MostSwing * 2.f + Keep + 0.5f, true);
-				const float Need = Keep + Spec.Amplitude[V];
+				const float Need = Keep + AmpAt(V, K);
 				if (Near.Solid < Need || Near.Sail < Need + Near.OtherSwing + 0.1f + SailExtra(Near.OtherSail))
 				{
 					break;
@@ -1053,14 +1058,14 @@ ShipSails::FFitReport ShipSails::Fit(TArray<FShipSail>& Sails, const TArray<FShi
 			{
 				int32 C[4];
 				FacetCorners(Spec, F, C);
-				float NeedA = 0.f;
-				for (const int32 V : C)
-				{
-					NeedA = FMath::Max(NeedA, Spec.Amplitude[V]);
-				}
 				float Allowed = 0.f;
 				for (const float K : { 0.125f, 0.25f, 0.375f, 0.5f, 0.625f, 0.75f, 0.875f, 1.f })
 				{
+					float NeedA = 0.f;
+					for (const int32 V : C)
+					{
+						NeedA = FMath::Max(NeedA, AmpAt(V, K));
+					}
 					FVector3f Q[4];
 					for (int32 Corner = 0; Corner < 4; ++Corner)
 					{
@@ -1163,9 +1168,51 @@ ShipSails::FFitReport ShipSails::Fit(TArray<FShipSail>& Sails, const TArray<FShi
 				const float U = float(I) / Spec.NU, W = float(J) / Spec.NV;
 				const FVector3f OnPlane = FMath::Lerp(FMath::Lerp(C00, C10, U), FMath::Lerp(C01, C11, U), W);
 				Spec.Flat[V] = Spec.Rest[V] - B * FVector3f::DotProduct(Spec.Rest[V] - OnPlane, B);
+				// With no wind in it, the canvas hangs: it sags under its weight, the more the further from what holds it.
+				Spec.Flat[V].Z -= FMath::Min(0.12f * ToHeld(Spec, Spec.Rest[V]), 1.2f);
 			}
 		}
-		Share(S, Spec.Flat, Spec.Slack, [](int32) { return 0.f; });
+		// How far each point may flog about its empty shape: the room there (half of it towards another sail, which may
+		// flog too), up to a metre, little near what holds it, varying smoothly over the canvas.
+		Spec.FlogAmplitude.Init(0.f, Count);
+		ParallelFor(Count, [&](int32 V)
+		{
+			if (Spec.Pinned[V])
+			{
+				return;
+			}
+			const FNear Near = Measure(S, Spec.Flat[V], 2.5f, true);
+			const float Room = FMath::Min(Near.Solid - Keep, 0.5f * (Near.Sail - Keep - Near.OtherSwing));
+			Spec.FlogAmplitude[V] = FMath::Clamp(Room, 0.f, 1.f * FMath::SmoothStep(0.f, 2.5f, ToHeld(Spec, Spec.Rest[V])));
+		});
+		for (int32 Iteration = 0; Iteration < Spec.NU + Spec.NV; ++Iteration)
+		{
+			bool bChanged = false;
+			for (int32 V = 0; V < Count; ++V)
+			{
+				const int32 I = V % (Spec.NU + 1), J = V / (Spec.NU + 1);
+				const int32 Nb[4][2] = { { I - 1, J }, { I + 1, J }, { I, J - 1 }, { I, J + 1 } };
+				for (const auto& A : Nb)
+				{
+					if (A[0] < 0 || A[1] < 0 || A[0] > Spec.NU || A[1] > Spec.NV)
+					{
+						continue;
+					}
+					const int32 W = Spec.Index(A[0], A[1]);
+					const float Limit = Spec.FlogAmplitude[W] + 0.15f * (Spec.Rest[V] - Spec.Rest[W]).Size();
+					if (Spec.FlogAmplitude[V] > Limit + 1e-4f)
+					{
+						Spec.FlogAmplitude[V] = Limit;
+						bChanged = true;
+					}
+				}
+			}
+			if (!bChanged)
+			{
+				break;
+			}
+		}
+		Share(S, Spec.Flat, Spec.Slack, [](int32) { return 0.f; }, &Spec.FlogAmplitude);
 		for (int32 V = 0; V < Count; ++V)
 		{
 			if (!Spec.Pinned[V] && (Spec.Flat[V] - Spec.Rest[V]).Size() >= 0.02f)
@@ -1485,7 +1532,9 @@ void FSailAnimation::Evaluate(float Time, float Strength, const FVector3f& WindD
 			const float Lead = S.Luff * (1.f - FMath::SmoothStep(0.f, 0.3f * S.Width, FromLead));
 			// A full sail is taut: it ripples; an empty one flogs, and a lifting leading edge shivers (its whole movement).
 			const float Flog = (0.45f - 0.2f * S.Deepen) + (0.55f + 0.2f * S.Deepen) * FMath::Max(Shaken, Lead);
-			const float A = Spec.Amplitude[V] * FMath::Max(Strength, 0.35f) * Flog;
+			// Its movement grows with how far it has emptied, towards the room it has to flog in there.
+			const float Reach = Spec.FlogAmplitude.Num() == S.X.Num() ? FMath::Lerp(Spec.Amplitude[V], FMath::Max(Spec.FlogAmplitude[V], Spec.Amplitude[V]), Shaken * Spec.Slack[V]) : Spec.Amplitude[V];
+			const float A = Reach * FMath::Max(Strength, 0.35f) * Flog;
 			if (A <= 0.f)
 			{
 				S.X[V] = Shape;
