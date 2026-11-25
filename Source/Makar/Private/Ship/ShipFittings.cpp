@@ -119,7 +119,6 @@ namespace
 		void MastFeet();
 		void Lanterns();
 		void Anchors();
-		void Boat(const FVector3f& At, float Length);
 		void Bell();
 	};
 
@@ -464,42 +463,6 @@ namespace
 		}
 	}
 
-	void FFitBuild::Boat(const FVector3f& At, float Length)
-	{
-		const float Half = Length * 0.5f;
-		const float Beam = Length * 0.3f;
-		const float Depth = Beam * 0.42f;
-		auto Hull = [&](float U, float V, float Inset)
-		{
-			const float X = (U * 2.f - 1.f) * Half;
-			const float W = FMath::Pow(FMath::Max(1.f - FMath::Pow(FMath::Abs(U * 2.f - 1.f), 2.2f), 0.f), 1.f / 2.2f) * (Beam * 0.5f - Inset) + 0.02f;
-			const float A = V * UE_PI;
-			const float Sheer = 0.12f * FMath::Square(U * 2.f - 1.f);
-			return At + FVector3f(X, -W * FMath::Cos(A), -(Depth - Inset) * FMath::Pow(FMath::Max(FMath::Sin(A), 0.f), 0.7f) + Sheer);
-		};
-		const FLinearColor Outer = Jitter(FLinearColor(0.32f, 0.27f, 0.2f, 1.f), 0.1f, D.Seed);
-		B.Grid(Wood, 20, 10, [&](float U, float V) { return Hull(U, V, 0.f); }, Outer, false);
-		B.Grid(Wood, 20, 10, [&](float U, float V) { return Hull(U, V, 0.035f); }, Outer * 0.8f, true);
-		// Gunwale, thwarts.
-		for (float Side : { -1.f, 1.f })
-		{
-			TArray<FVector3f> Path;
-			for (int32 I = 0; I <= 20; ++I)
-			{
-				Path.Add(Hull(I / 20.f, Side < 0.f ? 0.f : 1.f, 0.f) + FVector3f(0.f, 0.f, 0.02f));
-			}
-			B.Beam(Wood, Path, FVector3f::UpVector, 0.06f, 0.05f, DarkWood);
-		}
-		for (float U : { 0.3f, 0.5f, 0.7f })
-		{
-			const FVector3f C = Hull(U, 0.5f, 0.f);
-			const float W = (Hull(U, 0.f, 0.f) - Hull(U, 1.f, 0.f)).Size() * 0.5f;
-			FShipFrame F;
-			F.O = FVector3f(C.X, At.Y, At.Z - Depth * 0.35f);
-			B.Box(Wood, F, FVector3f(0.1f, W - 0.05f, 0.025f), Oak);
-		}
-	}
-
 	void FFitBuild::Bell()
 	{
 		// Belfry at the break of the forecastle (or before the foremast).
@@ -549,26 +512,6 @@ void ShipFittings::Build(FBuilder& B, const FHullLines& L, const TArray<FShipGun
 	if (D.Type == EShipType::Frigate || D.Type == EShipType::Galleon)
 	{
 		Fit.Bell();
-		// The ship's boat on skids over the waist, between the fore and main masts.
-		if (Masts.Num() >= 2)
-		{
-			const float X = FMath::Lerp(Masts[0].Foot.X, Masts[1].Foot.X, 0.5f);
-			const float Z = Fit.DeckZ(X);
-			const float Length = D.Length * 0.2f;
-			for (float Dx : { -Length * 0.3f, Length * 0.3f })
-			{
-				FShipFrame Skid;
-				Skid.O = FVector3f(X + Dx, 0.f, Z + 0.7f);
-				B.Box(Wood, Skid, FVector3f(0.1f, Fit.InnerHalf(X + Dx) * 0.9f, 0.08f), DarkWood);
-				for (float Side : { -1.f, 1.f })
-				{
-					FShipFrame Post;
-					Post.O = FVector3f(X + Dx, Side * Fit.InnerHalf(X + Dx) * 0.8f, Z + 0.35f);
-					B.Box(Wood, Post, FVector3f(0.08f, 0.08f, 0.35f), DarkWood);
-				}
-			}
-			Fit.Boat(FVector3f(X, 0.f, Z + 0.78f + Length * 0.3f * 0.42f), Length);
-		}
 	}
 }
 

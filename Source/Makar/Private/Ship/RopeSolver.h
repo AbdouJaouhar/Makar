@@ -15,16 +15,6 @@ struct FShipRope
 	FLinearColor Color = FLinearColor::Black;
 };
 
-/** A solid block of the rig (top, cap, crosstrees...): an oriented box. */
-struct FShipBlock
-{
-	FVector3f O = FVector3f::ZeroVector;
-	FVector3f X = FVector3f::ForwardVector;
-	FVector3f Y = FVector3f::RightVector;
-	FVector3f Z = FVector3f::UpVector;
-	FVector3f Half = FVector3f::ZeroVector;
-};
-
 namespace ShipRopes
 {
 	/**

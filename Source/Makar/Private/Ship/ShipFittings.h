@@ -13,7 +13,7 @@ namespace ShipFittings
 	/**
 	 * Guns on truck carriages behind the ports (iron; bronze on galleons) and swivel guns on the rail of sloops; hatches
 	 * with gratings, capstan or windlass, wheel or tiller, binnacle, bitts and fife rails with belaying pins, pin rails
-	 * at the shrouds, a bell, stern lanterns, catheads with their anchors, hawse holes, a ship's boat on skids.
+	 * at the shrouds, a bell, stern lanterns, catheads with their anchors, hawse holes.
 	 */
 	void Build(ShipMesh::FBuilder& B, const FHullLines& Lines, const TArray<FShipGunPort>& Ports, const TArray<FShipMastInfo>& Masts,
 		const FShipInterior& Interior);

@@ -364,6 +364,8 @@ namespace
 		/** One floor: planks over pitch, waterways, beams below; holes for hatches and masts; its collision. */
 		void DeckFloor(float XA, float XB, TFunctionRef<float(float)> Height, int32 Region, bool bBeams, bool bHoles);
 		void Ladder(const FShipHatch& Hatch, float Upper, float Lower);
+		/** A steep ladder from Foot up to Top (ship space), Half wide: stringers, treads, a walkable ramp. */
+		void Stair(const FVector3f& Foot, const FVector3f& Top, float Half);
 		void InteriorWalls();
 		void Breaks();
 		void AddBlock(const FVector3f& Center, const FVector3f& Half, const FVector3f& X = FVector3f::ForwardVector, const FVector3f& Z = FVector3f::UpVector);
@@ -1352,54 +1354,68 @@ namespace
 		const float Run = Rise / FMath::Tan(Angle);
 		const FVector3f Top(Hatch.X + Hatch.HalfLength - 0.12f, 0.f, L.Z(Upper) - 0.02f);
 		const FVector3f Foot(Top.X - Run, 0.f, L.Z(Lower));
+		Stair(Foot, Top, FMath::Min(0.38f, Hatch.HalfWidth - 0.1f));
+	}
+
+	void FHullBuild::Stair(const FVector3f& Foot, const FVector3f& Top, float Half)
+	{
 		const FVector3f Dir = (Top - Foot).GetSafeNormal();
+		const FVector3f Normal = (FVector3f::UpVector - Dir * Dir.Z).GetSafeNormal();
+		const FVector3f Ahead = FVector3f(Dir.X, Dir.Y, 0.f).GetSafeNormal();
+		const FVector3f Across = FVector3f::CrossProduct(FVector3f::UpVector, Ahead).GetSafeNormal();
 		const FLinearColor Wood1(0.24f, 0.17f, 0.1f, 1.f);
-		const float Half = FMath::Min(0.38f, Hatch.HalfWidth - 0.1f);
 		for (float Side : { -1.f, 1.f })
 		{
-			TArray<FVector3f> Path = { Foot + FVector3f(0.f, Side * Half, 0.f), Top + FVector3f(0.f, Side * Half, 0.f) };
-			B.Beam(Wood, Path, FVector3f(-Dir.Z, 0.f, Dir.X), 0.06f, 0.22f, Wood1);
+			TArray<FVector3f> Path = { Foot + Across * (Side * Half), Top + Across * (Side * Half) };
+			B.Beam(Wood, Path, Normal, 0.06f, 0.22f, Wood1);
 		}
-		const int32 Treads = FMath::Max(2, FMath::FloorToInt(Rise / 0.24f));
+		const int32 Treads = FMath::Max(2, FMath::FloorToInt((Top.Z - Foot.Z) / 0.24f));
 		for (int32 I = 1; I < Treads; ++I)
 		{
 			FShipFrame F;
-			F.O = FMath::Lerp(Foot, Top, float(I) / Treads) + FVector3f(0.04f, 0.f, 0.f);
-			B.Box(Wood, F, FVector3f(0.11f, Half - 0.03f, 0.022f), Jitter(Wood1, 0.08f, I));
+			F.X = Ahead;
+			F.Y = Across;
+			F.Z = FVector3f::UpVector;
+			F.O = FMath::Lerp(Foot, Top, float(I) / Treads) + Ahead * 0.04f;
+			B.Box(Wood, F, FVector3f(0.11f, Half - 0.03f, 0.022f), Jitter(Wood1, 0.08f, I, int32(Foot.X * 10.f)));
 		}
 		// Collision: a ramp under the treads (the visitor walks up it).
-		const FVector3f Normal(-Dir.Z, 0.f, Dir.X);
 		AddBlock((Foot + Top) * 0.5f - Normal * 0.03f, FVector3f((Top - Foot).Size() * 0.5f, Half, 0.03f), Dir, Normal);
 	}
 
 	void FHullBuild::InteriorWalls()
 	{
-		// The ship's sides seen from inside: boxes along the ceiling, 50 cm long, 60 cm high, from the hold to the rail.
+		// The ship's sides: boxes 50 cm long, 60 cm high, from the ceiling inside to the planking outside, from the hold
+		// up to the rail and no higher (nothing invisible above the rail).
 		const float FT = L.FrameThickness;
 		for (float X = -L.HalfLength + 0.25f; X < L.HalfLength; X += 0.5f)
 		{
-			for (float H = Interior->FloorH; H < L.RailAt(X); H += 0.6f)
+			const float Rail = L.RailAt(X);
+			for (float H = Interior->FloorH; H < Rail - 0.02f; H += 0.6f)
 			{
-				const float Hm = H + 0.3f;
+				const float H1 = FMath::Min(H + 0.6f, Rail);
+				const float Hm = 0.5f * (H + H1);
 				const float Outside = L.HalfBreadth(X, Hm);
 				if (Outside <= 0.f)
 				{
 					continue;
 				}
 				const float Inner = FMath::Max(Outside - FT, 0.1f);
+				const float Outer = Outside + D.PlankThickness + 0.02f;
 				for (float Side : { -1.f, 1.f })
 				{
-					AddBlock(FVector3f(X, Side * (Inner + 0.15f), L.Z(Hm)), FVector3f(0.26f, 0.15f, 0.31f));
+					AddBlock(FVector3f(X, Side * 0.5f * (Inner + Outer), L.Z(Hm)), FVector3f(0.26f, 0.5f * (Outer - Inner), 0.5f * (H1 - H) + 0.01f));
 				}
 			}
 		}
-		// The transom, inside.
+		// The transom, to its rail.
 		const float Top = L.RailAt(-L.HalfLength);
-		for (float H = Interior->FloorH; H < Top; H += 0.6f)
+		for (float H = Interior->FloorH; H < Top - 0.02f; H += 0.6f)
 		{
-			const float Hm = H + 0.3f;
+			const float H1 = FMath::Min(H + 0.6f, Top);
+			const float Hm = 0.5f * (H + H1);
 			const float Half = L.PointSH(-1.f, Hm).Y;
-			AddBlock(FVector3f(L.XStern(Hm) + FT - 0.15f, 0.f, L.Z(Hm)), FVector3f(0.15f, Half, 0.31f));
+			AddBlock(FVector3f(L.XStern(Hm) + FT - 0.15f, 0.f, L.Z(Hm)), FVector3f(0.15f, Half, 0.5f * (H1 - H) + 0.01f));
 		}
 		// The masts.
 		for (const FVector2f& M : Interior->Masts)
@@ -1509,6 +1525,20 @@ namespace
 				// Two doors into the spaces under it, where there is standing room.
 				const bool bDoors = Top - Below > 1.75f;
 				const float DoorY = FMath::Min(1.3f, Hb * 0.5f), DoorHalf = 0.4f, DoorTop = Below + 1.78f;
+				// Two ladders up to it, port and starboard, outboard of the doors and inboard of the guns.
+				const float StairHalf = 0.34f;
+				const float StairY = FMath::Min(bDoors ? DoorY + DoorHalf + 0.15f + StairHalf : Hb * 0.45f, Hb - StairHalf - 0.2f);
+				{
+					const float Rise = Top - Below;
+					const float Run = Rise / FMath::Tan(FMath::DegreesToRadians(56.f));
+					for (float Side : { -1.f, 1.f })
+					{
+						const FVector3f StairTop(X + Outward * 0.07f, Side * StairY, L.Z(Top) - 0.02f);
+						const FVector3f StairFoot(X + Outward * (0.07f + Run), Side * StairY, L.Z(Below));
+						Stair(StairFoot, StairTop, StairHalf);
+					}
+				}
+				auto InStair = [&](float Y) { return FMath::Abs(FMath::Abs(Y) - StairY) < StairHalf + 0.06f; };
 				auto InDoor = [&](float Y) { return bDoors && FMath::Abs(FMath::Abs(Y) - DoorY) < DoorHalf; };
 				for (int32 I = 0; I < Boards; ++I)
 				{
@@ -1543,8 +1573,16 @@ namespace
 							AddBlock(FVector3f(X + Outward * 0.03f, Yd, L.Z(0.5f * (Top + DoorTop))), FVector3f(0.06f, DoorHalf, (Top - DoorTop) * 0.5f));
 						}
 					}
-					// The balustrade on the edge above: nobody walks off the raised deck.
-					AddBlock(FVector3f(X - Outward * 0.08f, 0.f, L.Z(Top) + 0.5f), FVector3f(0.06f, Hb, 0.5f));
+					// The balustrade on the edge above: nobody walks off the raised deck, but where the ladders come up.
+					const float Gap = StairHalf + 0.06f;
+					const float Pieces[][2] = { { -Hb, -StairY - Gap }, { -StairY + Gap, StairY - Gap }, { StairY + Gap, Hb } };
+					for (const auto& Piece : Pieces)
+					{
+						if (Piece[1] - Piece[0] > 0.02f)
+						{
+							AddBlock(FVector3f(X - Outward * 0.08f, 0.5f * (Piece[0] + Piece[1]), L.Z(Top) + 0.5f), FVector3f(0.06f, 0.5f * (Piece[1] - Piece[0]), 0.5f));
+						}
+					}
 				}
 				if (bDoors)
 				{
@@ -1573,8 +1611,16 @@ namespace
 				{
 					TArray<FVector3f> Path = { FVector3f(X + Outward * 0.04f, -HbTop, L.Z(Top) - 0.06f), FVector3f(X + Outward * 0.04f, HbTop, L.Z(Top) - 0.06f) };
 					B.Beam(Wood, Path, FVector3f::UpVector, 0.16f, 0.16f, FLinearColor(D.WaleColor.R * 1.5f, D.WaleColor.G * 1.5f, D.WaleColor.B * 1.5f, 1.f));
-					TArray<FVector3f> Rail = { FVector3f(X - Outward * 0.08f, -HbTop, L.Z(Top) + 0.95f), FVector3f(X - Outward * 0.08f, HbTop, L.Z(Top) + 0.95f) };
-					B.Beam(Wood, Rail, FVector3f::UpVector, 0.12f, 0.09f, FLinearColor(D.WaleColor.R * 1.5f, D.WaleColor.G * 1.5f, D.WaleColor.B * 1.5f, 1.f));
+					const float Gap = StairHalf + 0.06f;
+					const float Pieces[][2] = { { -HbTop, -StairY - Gap }, { -StairY + Gap, StairY - Gap }, { StairY + Gap, HbTop } };
+					for (const auto& Piece : Pieces)
+					{
+						if (Piece[1] - Piece[0] > 0.05f)
+						{
+							TArray<FVector3f> Rail = { FVector3f(X - Outward * 0.08f, Piece[0], L.Z(Top) + 0.95f), FVector3f(X - Outward * 0.08f, Piece[1], L.Z(Top) + 0.95f) };
+							B.Beam(Wood, Rail, FVector3f::UpVector, 0.12f, 0.09f, FLinearColor(D.WaleColor.R * 1.5f, D.WaleColor.G * 1.5f, D.WaleColor.B * 1.5f, 1.f));
+						}
+					}
 				}
 				const FVector2f Baluster[] = { { 0.f, 0.035f }, { 0.08f, 0.035f }, { 0.12f, 0.05f }, { 0.35f, 0.04f }, { 0.55f, 0.028f },
 					{ 0.75f, 0.032f }, { 0.85f, 0.03f }, { 0.9f, 0.035f } };
@@ -1582,6 +1628,10 @@ namespace
 				for (int32 I = 0; I <= Count; ++I)
 				{
 					const float Y = -HbTop + HbTop * 2.f * I / FMath::Max(Count, 1);
+					if (InStair(Y))
+					{
+						continue;
+					}
 					B.Lathe(Wood, FVector3f(X - Outward * 0.08f, Y, L.Z(Top)), FVector3f::UpVector, Baluster, 6,
 						FLinearColor(D.TopsideColor.R * 1.8f, D.TopsideColor.G * 1.8f, D.TopsideColor.B * 1.8f, 1.f));
 				}

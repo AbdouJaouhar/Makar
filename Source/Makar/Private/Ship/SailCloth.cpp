@@ -20,9 +20,27 @@ namespace
 		const float T = Length2 > 1e-8f ? FMath::Clamp(FVector3f::DotProduct(P - A, AB) / Length2, 0.f, 1.f) : 0.f;
 		return A + AB * T;
 	}
+
+	/** Closest points of segments P0-P1 and A-B: the parameters along each. */
+	void ClothSegments(const FVector3f& P0, const FVector3f& P1, const FVector3f& A, const FVector3f& B, float& OutS, float& OutT)
+	{
+		const FVector3f D1 = P1 - P0, D2 = B - A, R = P0 - A;
+		const float AA = D1.SizeSquared(), EE = D2.SizeSquared(), F = FVector3f::DotProduct(D2, R);
+		const float C = FVector3f::DotProduct(D1, R), Bd = FVector3f::DotProduct(D1, D2);
+		const float Denominator = AA * EE - Bd * Bd;
+		float S = Denominator > 1e-9f ? FMath::Clamp((Bd * F - C * EE) / Denominator, 0.f, 1.f) : 0.f;
+		float T = EE > 1e-9f ? (Bd * S + F) / EE : 0.f;
+		if (T < 0.f || T > 1.f)
+		{
+			T = FMath::Clamp(T, 0.f, 1.f);
+			S = AA > 1e-9f ? FMath::Clamp((Bd * T - C) / AA, 0.f, 1.f) : 0.f;
+		}
+		OutS = S;
+		OutT = T;
+	}
 }
 
-void FSailSimulation::Init(TArray<FShipSail> InSails, const TArray<FShipCapsule>& Colliders)
+void FSailSimulation::Init(TArray<FShipSail> InSails, const TArray<FShipCapsule>& Colliders, const TArray<FShipBlock>& Solids)
 {
 	Sails.Reset();
 	Accumulator = 0.f;
@@ -97,6 +115,15 @@ void FSailSimulation::Init(TArray<FShipSail> InSails, const TArray<FShipCapsule>
 				S.Near.Add(Capsule);
 			}
 		}
+		for (const FShipBlock& Solid : Solids)
+		{
+			const FVector3f Reach = (Solid.X * Solid.Half.X).GetAbs() + (Solid.Y * Solid.Half.Y).GetAbs() + (Solid.Z * Solid.Half.Z).GetAbs();
+			if (FBox3f(Solid.O - Reach, Solid.O + Reach).Intersect(Box))
+			{
+				S.NearSolids.Add(Solid);
+			}
+		}
+		S.FrameStart = S.X;
 		S.Spec = MoveTemp(Spec);
 		UpdateNormals(S);
 	}
@@ -219,6 +246,111 @@ void FSailSimulation::Substep(FSailState& S, float H, const FVector3f& Wind, flo
 	}
 }
 
+void FSailSimulation::CollideSolids(FSailState& S) const
+{
+	// The canvas rests on the decks, rails, bulwarks and tops instead of passing into them: a point inside a solid
+	// goes back out through the face it came in by (the side it was on when the frame began), and stops there.
+	for (int32 V = 0; V < S.X.Num(); ++V)
+	{
+		if (S.InvMass[V] <= 0.f)
+		{
+			continue;
+		}
+		FVector3f& P = S.X[V];
+		for (const FShipBlock& K : S.NearSolids)
+		{
+			const FVector3f D = P - K.O;
+			const FVector3f Q(FVector3f::DotProduct(D, K.X), FVector3f::DotProduct(D, K.Y), FVector3f::DotProduct(D, K.Z));
+			const FVector3f Keep = K.Half + FVector3f(Clearance);
+			if (FMath::Abs(Q.X) >= Keep.X || FMath::Abs(Q.Y) >= Keep.Y || FMath::Abs(Q.Z) >= Keep.Z)
+			{
+				continue;
+			}
+			const FVector3f D0 = S.FrameStart[V] - K.O;
+			const FVector3f Q0(FVector3f::DotProduct(D0, K.X), FVector3f::DotProduct(D0, K.Y), FVector3f::DotProduct(D0, K.Z));
+			int32 Axis = INDEX_NONE;
+			float Sign = 1.f, Best = 1e9f;
+			bool bFromOutside = false;
+			for (int32 A = 0; A < 3; ++A)
+			{
+				const bool bOutside = FMath::Abs(Q0[A]) >= Keep[A] - 1e-4f;
+				if (bFromOutside && !bOutside)
+				{
+					continue;
+				}
+				const float S0 = bOutside ? FMath::Sign(Q0[A]) : (Q[A] >= 0.f ? 1.f : -1.f);
+				const float Depth = Keep[A] - S0 * Q[A];
+				if ((bOutside && !bFromOutside) || Depth < Best)
+				{
+					Best = Depth;
+					Axis = A;
+					Sign = S0;
+					bFromOutside = bFromOutside || bOutside;
+				}
+			}
+			const FVector3f Normal = Axis == 0 ? K.X : Axis == 1 ? K.Y : K.Z;
+			P += Normal * (Sign * Best);
+			S.Prev[V] = P; // it stops against the solid
+		}
+	}
+	// The ropes between two points of the canvas: each edge of the cloth kept clear of the ropes and spars near it (the
+	// points alone would let a stay slip through the panel between them).
+	const FShipSail& Spec = S.Spec;
+	auto Edge = [&](int32 E0, int32 E1)
+	{
+		const float W0 = S.InvMass[E0] > 0.f ? 1.f : 0.f, W1 = S.InvMass[E1] > 0.f ? 1.f : 0.f;
+		if (W0 == 0.f || W1 == 0.f)
+		{
+			return; // an edge on a spar or a stay is held by it
+		}
+		for (const FShipCapsule& Capsule : S.Near)
+		{
+			float U, T;
+			ClothSegments(S.X[E0], S.X[E1], Capsule.A, Capsule.B, U, T);
+			if (U < 0.05f || U > 0.95f)
+			{
+				continue; // the points' own test handles it
+			}
+			const FVector3f OnEdge = FMath::Lerp(S.X[E0], S.X[E1], U);
+			const FVector3f OnRope = FMath::Lerp(Capsule.A, Capsule.B, T);
+			const FVector3f Away = OnEdge - OnRope;
+			const float Distance = Away.Size();
+			const float Keep = Capsule.Radius + Clearance;
+			if (Distance >= Keep)
+			{
+				continue;
+			}
+			// Back to the side the edge was on when the frame began.
+			const FVector3f Before = FMath::Lerp(S.FrameStart[E0], S.FrameStart[E1], U) - OnRope;
+			FVector3f Side = Distance > 1e-4f ? Away / Distance : Before.GetSafeNormal();
+			if (FVector3f::DotProduct(Side, Before) < 0.f && Before.SizeSquared() > 1e-8f)
+			{
+				// It crossed during the frame: it goes back.
+				Side = (Before - FVector3f::DotProduct(Before, (Capsule.B - Capsule.A).GetSafeNormal()) * (Capsule.B - Capsule.A).GetSafeNormal()).GetSafeNormal();
+			}
+			const FVector3f Delta = OnRope + Side * Keep - OnEdge;
+			const float A0 = 1.f - U, A1 = U, Scale = 1.f / (A0 * A0 + A1 * A1);
+			S.X[E0] += Delta * (A0 * Scale);
+			S.X[E1] += Delta * (A1 * Scale);
+		}
+	};
+	for (int32 J = 0; J <= Spec.NV; ++J)
+	{
+		for (int32 I = 0; I <= Spec.NU; ++I)
+		{
+			if (I < Spec.NU)
+			{
+				Edge(Spec.Index(I, J), Spec.Index(I + 1, J));
+			}
+			if (J < Spec.NV)
+			{
+				Edge(Spec.Index(I, J), Spec.Index(I, J + 1));
+			}
+		}
+	}
+	S.FrameStart = S.X;
+}
+
 void FSailSimulation::CollideSails()
 {
 	// A spatial hash of every point; points of different sails closer than SailSpacing are pushed apart.
@@ -298,6 +430,7 @@ void FSailSimulation::Step(float DeltaTime, const FVector3f& Wind, float Time)
 		{
 			Substep(Sails[Index], SubstepTime, Wind, Time + Step * SubstepTime);
 		}
+		CollideSolids(Sails[Index]);
 	});
 	CollideSails();
 	ParallelFor(Sails.Num(), [&](int32 Index) { UpdateNormals(Sails[Index]); });

@@ -20,6 +20,8 @@ struct FShipBuildResult
 	TArray<FProcMeshSection> Sections;
 	TArray<FShipSail> Sails;
 	TArray<FShipCapsule> Colliders;
+	/** What the sails rest on: the hull's walking solids and the rig's blocks. */
+	TArray<FShipBlock> Solids;
 	FShipInterior Interior;
 	float Ground = 0.f;
 	int32 Triangles = 0;
@@ -103,6 +105,8 @@ namespace
 			Stage(TEXT("cradle"), [&]() { Result.Ground = ShipFittings::Cradle(Builder, Lines, CradleHeight); });
 		}
 		Result.Guns = 2 * Ports.Num();
+		Result.Solids = Result.Interior.Collision;
+		Result.Solids.Append(Blocks);
 
 		// Mesh sections: each material's triangles with their own vertices. The vertex colour is stored as it is (the
 		// vertex factory reads the bytes without decoding): the materials get the linear albedo they were given.
@@ -261,7 +265,7 @@ void AProceduralShip::ApplyResult(FShipBuildResult& Result)
 	Mesh->UpdateBounds();
 	// The sails: cloth simulated each frame, in their own sections (canvas, and the sheets holding their clews).
 	Sails = MakeShared<FSailSimulation>();
-	Sails->Init(MoveTemp(Result.Sails), Result.Colliders);
+	Sails->Init(MoveTemp(Result.Sails), Result.Colliders, Result.Solids);
 	SimulationTime = 0.f;
 	if (!Sails->IsEmpty())
 	{

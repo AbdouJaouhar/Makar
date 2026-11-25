@@ -26,7 +26,7 @@ namespace
 	const FLinearColor Panel(0.012f, 0.013f, 0.016f, 0.86f);
 	const FLinearColor Accent(0.85f, 0.62f, 0.28f, 1.f);
 	const FLinearColor TextColour(0.86f, 0.85f, 0.82f, 1.f);
-	const FLinearColor Dim(0.55f, 0.55f, 0.55f, 1.f);
+	const FLinearColor MenuDim(0.55f, 0.55f, 0.55f, 1.f);
 
 	FText TypeName(EShipType Type)
 	{
@@ -90,11 +90,11 @@ void SShipMenu::Construct(const FArguments& InArgs)
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 10.f, 0.f, 0.f)
 				[
-					SNew(STextBlock).Text_Lambda([this]() { return Status; }).Font(Font(9)).ColorAndOpacity(Dim).AutoWrapText(true)
+					SNew(STextBlock).Text_Lambda([this]() { return Status; }).Font(Font(9)).ColorAndOpacity(MenuDim).AutoWrapText(true)
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 4.f, 0.f, 0.f)
 				[
-					SNew(STextBlock).Text(LOCTEXT("Help", "Glisser : tourner autour   ·   Molette : zoom")).Font(Font(9)).ColorAndOpacity(Dim)
+					SNew(STextBlock).Text(LOCTEXT("Help", "Glisser : tourner autour   ·   Molette : zoom")).Font(Font(9)).ColorAndOpacity(MenuDim)
 				]
 			]
 		]
@@ -336,7 +336,7 @@ TSharedRef<SWidget> SShipMenu::TypeTab()
 	];
 	Box->AddSlot().AutoHeight().Padding(0.f, 10.f, 0.f, 0.f)
 	[
-		SNew(STextBlock).AutoWrapText(true).Font(Font(9)).ColorAndOpacity(Dim)
+		SNew(STextBlock).AutoWrapText(true).Font(Font(9)).ColorAndOpacity(MenuDim)
 		.Text(LOCTEXT("TypeHelp", "Changer de type ou de graine tire un nouveau navire : les réglages des autres onglets repartent de ses valeurs."))
 	];
 	return Box;
@@ -460,7 +460,7 @@ TSharedRef<SWidget> SShipMenu::WindTab()
 	AddShipFloat(Box, LOCTEXT("WindSpeed", "Force (m/s)"), &AProceduralShip::WindSpeed, 0.f, 25.f, 0.1f);
 	Box->AddSlot().AutoHeight().Padding(0.f, 10.f, 0.f, 0.f)
 	[
-		SNew(STextBlock).AutoWrapText(true).Font(Font(9)).ColorAndOpacity(Dim)
+		SNew(STextBlock).AutoWrapText(true).Font(Font(9)).ColorAndOpacity(MenuDim)
 		.Text(LOCTEXT("WindHelp", "0° : vent debout, 90° : de tribord, 180° : vent arrière, 270° : de bâbord. Les voiles sont de la toile simulée : "
 			"elles se gonflent, faseyent ou sont masquées selon le vent, et s'appuient sur les cordages et les mâts. 7 m/s : jolie brise (force 4)."))
 	];

@@ -12,6 +12,16 @@ struct FShipCapsule
 	bool bSpar = false;
 };
 
+/** A solid of the ship (deck, side, bulwark, rail, top, cap...): an oriented box. */
+struct FShipBlock
+{
+	FVector3f O = FVector3f::ZeroVector;
+	FVector3f X = FVector3f::ForwardVector;
+	FVector3f Y = FVector3f::RightVector;
+	FVector3f Z = FVector3f::UpVector;
+	FVector3f Half = FVector3f::ZeroVector;
+};
+
 /**
  * A sail as the generator cuts it: a grid of (NU + 1) x (NV + 1) points in its cut shape (the canvas' built-in
  * camber: the rest lengths of the cloth), the points bent to the spars and stays (pinned), the clews held by sheets.
@@ -46,7 +56,7 @@ struct FShipSail
 class FSailSimulation
 {
 public:
-	void Init(TArray<FShipSail> InSails, const TArray<FShipCapsule>& Colliders);
+	void Init(TArray<FShipSail> InSails, const TArray<FShipCapsule>& Colliders, const TArray<FShipBlock>& Solids);
 	bool IsEmpty() const { return Sails.Num() == 0; }
 
 	/** Advances by DeltaTime under Wind (m/s, ship space: where the air goes). Time: for the gusts. */
@@ -72,11 +82,15 @@ private:
 		TArray<float> InvMass;
 		TArray<FConstraint> Constraints;
 		TArray<FShipCapsule> Near;
+		/** The hull's and the rig's solids this sail can reach, and where its points were when the frame began. */
+		TArray<FShipBlock> NearSolids;
+		TArray<FVector3f> FrameStart;
 	};
 
 	void Substep(FSailState& S, float H, const FVector3f& Wind, float Time) const;
 	void UpdateNormals(FSailState& S) const;
 	void CollideSails();
+	void CollideSolids(FSailState& S) const;
 
 	TArray<FSailState> Sails;
 	float Accumulator = 0.f;
