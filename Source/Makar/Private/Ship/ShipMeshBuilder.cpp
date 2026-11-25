@@ -105,6 +105,10 @@ namespace ShipMesh
 
 	void FBuilder::Box(int32 Section, const FShipFrame& F, const FVector3f& H, const FLinearColor& Color)
 	{
+		if (Blocks && Section == Wood && H.GetMax() >= 0.12f)
+		{
+			Blocks->Add({ F.O, F.X, F.Y, F.Z, H });
+		}
 		auto P = [&](float SX, float SY, float SZ) { return F.At(SX * H.X, SY * H.Y, SZ * H.Z); };
 		// +X / -X ends, +Y / -Y sides, +Z top, -Z bottom.
 		FlatQuad(Section, P(1, -1, -1), P(1, 1, -1), P(1, 1, 1), P(1, -1, 1), Color, F.X);
@@ -142,7 +146,7 @@ namespace ShipMesh
 		{
 			for (int32 I = 0; I + 1 < Count; ++I)
 			{
-				Colliders->Add({ Points[I], Points[I + 1], FMath::Max(Radii[I], Radii[I + 1]) });
+				Colliders->Add({ Points[I], Points[I + 1], FMath::Max(Radii[I], Radii[I + 1]), Section == Wood });
 			}
 		}
 		// Tangents, and a frame carried along by the smallest rotation from one to the next.
@@ -208,6 +212,11 @@ namespace ShipMesh
 
 	void FBuilder::Line(const FVector3f& A, const FVector3f& B, float Radius, float Sag, const FLinearColor& Color)
 	{
+		if (Ropes)
+		{
+			Ropes->Add({ A, B, Radius, Sag, Color });
+			return;
+		}
 		const int32 Sides = Radius > 0.025f ? 6 : 4;
 		if (Sag <= 0.001f)
 		{

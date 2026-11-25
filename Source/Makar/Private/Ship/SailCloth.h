@@ -8,6 +8,8 @@ struct FShipCapsule
 	FVector3f A = FVector3f::ZeroVector;
 	FVector3f B = FVector3f::ZeroVector;
 	float Radius = 0.f;
+	/** A spar (mast, yard, boom...), not a rope. */
+	bool bSpar = false;
 };
 
 /**

@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Ocean/OceanFlora.h"
+#include "RopeSolver.h"
 #include "SailCloth.h"
 
 /**
@@ -43,6 +44,10 @@ namespace ShipMesh
 		FOceanMeshData& Data;
 		/** If set, the ropes and spars (tubes of the Rope and Wood sections) are recorded here: the sails rest on them. */
 		TArray<FShipCapsule>* Colliders = nullptr;
+		/** If set, Line() records the ropes here instead of drawing them (ShipRopes::Lay lays and draws them). */
+		TArray<FShipRope>* Ropes = nullptr;
+		/** If set, the large wooden boxes (tops, caps, crosstrees) are recorded here: the ropes go round them. */
+		TArray<FShipBlock>* Blocks = nullptr;
 
 		int32 Vertex(const FVector3f& Position, const FVector3f& Normal, const FVector2f& UV, const FLinearColor& Color);
 		/** Wound so that its front faces the average of its vertices' normals. */

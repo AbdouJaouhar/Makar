@@ -65,14 +65,37 @@ namespace
 			}
 		};
 		Stage(TEXT("hull"), [&]() { ShipHull::Build(Builder, Lines, Ports); });
+		TArray<FShipRope> Ropes;
+		TArray<FShipBlock> Blocks;
 		Stage(TEXT("rig"), [&]()
 		{
-			// The ropes and spars recorded as the sails' obstacles; the sails set come out as cloth.
+			// The spars and blocks recorded as obstacles, the ropes kept to be laid; the sails set come out as cloth.
 			Builder.Colliders = &Result.Colliders;
+			Builder.Ropes = &Ropes;
+			Builder.Blocks = &Blocks;
 			ShipRig::Build(Builder, Lines, Masts, &Result.Sails);
 			Builder.Colliders = nullptr;
+			Builder.Blocks = nullptr;
 		});
 		Stage(TEXT("fittings"), [&]() { ShipFittings::Build(Builder, Lines, Ports, Masts); });
+		int32 Crossing = 0;
+		Stage(TEXT("ropes"), [&]()
+		{
+			// Every rope laid round the spars and blocks; laid, they are obstacles for the sails too.
+			Builder.Ropes = nullptr;
+			TArray<FShipCapsule> Spars;
+			for (const FShipCapsule& C : Result.Colliders)
+			{
+				if (C.bSpar && C.Radius >= 0.04f)
+				{
+					Spars.Add(C);
+				}
+			}
+			Builder.Colliders = &Result.Colliders;
+			Crossing = ShipRopes::Lay(Builder, Ropes, Spars, Blocks);
+			Builder.Colliders = nullptr;
+		});
+		Result.Times += FString::Printf(TEXT(", %d ropes, %d rope points still inside a solid"), Ropes.Num(), Crossing);
 		if (bCradle)
 		{
 			Stage(TEXT("cradle"), [&]() { Result.Ground = ShipFittings::Cradle(Builder, Lines, CradleHeight); });
