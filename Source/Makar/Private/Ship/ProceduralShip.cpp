@@ -7,6 +7,7 @@
 #include "ShipFittings.h"
 #include "ShipHull.h"
 #include "ShipMeshBuilder.h"
+#include "SailCloth.h"
 #include "ShipRig.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogShip, Log, All);
@@ -16,6 +17,8 @@ struct FShipBuildResult
 {
 	FShipDesign Design;
 	TArray<FProcMeshSection> Sections;
+	TArray<FShipSail> Sails;
+	TArray<FShipCapsule> Colliders;
 	float Ground = 0.f;
 	int32 Triangles = 0;
 	int32 Guns = 0;
@@ -62,7 +65,13 @@ namespace
 			}
 		};
 		Stage(TEXT("hull"), [&]() { ShipHull::Build(Builder, Lines, Ports); });
-		Stage(TEXT("rig"), [&]() { ShipRig::Build(Builder, Lines, Masts); });
+		Stage(TEXT("rig"), [&]()
+		{
+			// The ropes and spars recorded as the sails' obstacles; the sails set come out as cloth.
+			Builder.Colliders = &Result.Colliders;
+			ShipRig::Build(Builder, Lines, Masts, &Result.Sails);
+			Builder.Colliders = nullptr;
+		});
 		Stage(TEXT("fittings"), [&]() { ShipFittings::Build(Builder, Lines, Ports, Masts); });
 		if (bCradle)
 		{
@@ -115,7 +124,7 @@ namespace
 
 AProceduralShip::AProceduralShip()
 {
-	PrimaryActorTick.bCanEverTick = false;
+	PrimaryActorTick.bCanEverTick = true;
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 }
 
@@ -225,6 +234,24 @@ void AProceduralShip::ApplyResult(FShipBuildResult& Result)
 	// The ground (or the keel) at the actor's origin.
 	Mesh->SetRelativeLocation(FVector(0.0, 0.0, bOnCradle ? -Result.Ground * 100.0 : 0.0));
 	Mesh->UpdateBounds();
+	// The sails: cloth simulated each frame, in their own sections (canvas, and the sheets holding their clews).
+	Sails = MakeShared<FSailSimulation>();
+	Sails->Init(MoveTemp(Result.Sails), Result.Colliders);
+	SimulationTime = 0.f;
+	if (!Sails->IsEmpty())
+	{
+		TArray<int32> SailTriangles;
+		TArray<FVector2D> UV;
+		TArray<FColor> Colors;
+		Sails->GetTopology(SailTriangles, UV, Colors);
+		TArray<FVector> Positions, Normals;
+		Sails->GetSurface(Positions, Normals);
+		Mesh->CreateMeshSection(ShipMesh::NumSections, Positions, SailTriangles, Normals, UV, Colors, {}, false);
+		Mesh->SetMaterial(ShipMesh::NumSections, LoadObject<UMaterialInterface>(nullptr, Paths[ShipMesh::Sail]));
+		Mesh->SetMaterial(ShipMesh::NumSections + 1, LoadObject<UMaterialInterface>(nullptr, Paths[ShipMesh::Rope]));
+		Result.Triangles += SailTriangles.Num() / 3;
+		UpdateSails();
+	}
 	Triangles = Result.Triangles;
 	bBuilt = true;
 	BuiltKey = Key();
@@ -232,4 +259,68 @@ void AProceduralShip::ApplyResult(FShipBuildResult& Result)
 	LastBuildMs = float(Result.GeometryMs + MeshMs);
 	UE_LOG(LogShip, Display, TEXT("ProceduralShip: %s seed %d, %.1f x %.1f m, %d guns, %d triangles, %.0f ms (%s, mesh %.0f ms)"),
 		*UEnum::GetValueAsString(Type), Seed, Design.Length, Design.Beam, Result.Guns, Triangles, LastBuildMs, *Result.Times, MeshMs);
+}
+
+void AProceduralShip::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+	if (!Sails.IsValid() || Sails->IsEmpty() || !Mesh)
+	{
+		return;
+	}
+	SimulationTime += DeltaSeconds;
+	// The true wind in ship space: where the air goes (the ship does not move yet: true wind = apparent wind).
+	const float From = FMath::DegreesToRadians(WindFrom);
+	const FVector3f Wind = -FVector3f(FMath::Cos(From), FMath::Sin(From), 0.f) * WindSpeed;
+	Sails->Step(FMath::Min(DeltaSeconds, 0.05f), Wind, SimulationTime);
+	UpdateSails();
+}
+
+void AProceduralShip::UpdateSails()
+{
+	TArray<FVector> Positions, Normals;
+	Sails->GetSurface(Positions, Normals);
+	Mesh->UpdateMeshSection(ShipMesh::NumSections, Positions, Normals, {}, {}, {});
+	// The sheets: thin square ropes from each clew to its block, rebuilt each frame.
+	TArray<TPair<FVector3f, FVector3f>> Sheets;
+	Sails->GetSheets(Sheets);
+	if (Sheets.Num() == 0)
+	{
+		return;
+	}
+	TArray<FVector> Vertices, SheetNormals;
+	TArray<int32> Indices;
+	const float Radius = 1.6f; // cm
+	for (const TPair<FVector3f, FVector3f>& Sheet : Sheets)
+	{
+		const FVector A(Sheet.Key * 100.f), B(Sheet.Value * 100.f);
+		const FVector Axis = (B - A).GetSafeNormal();
+		const FVector X = FVector::CrossProduct(Axis, FMath::Abs(Axis.Z) < 0.9 ? FVector::UpVector : FVector::ForwardVector).GetSafeNormal();
+		const FVector Y = FVector::CrossProduct(Axis, X);
+		const int32 First = Vertices.Num();
+		for (int32 Side = 0; Side < 4; ++Side)
+		{
+			const double Angle = UE_HALF_PI * Side;
+			const FVector Out = X * FMath::Cos(Angle) + Y * FMath::Sin(Angle);
+			Vertices.Add(A + Out * Radius);
+			Vertices.Add(B + Out * Radius);
+			SheetNormals.Add(Out);
+			SheetNormals.Add(Out);
+		}
+		for (int32 Side = 0; Side < 4; ++Side)
+		{
+			const int32 A0 = First + Side * 2, B0 = A0 + 1, A1 = First + ((Side + 1) % 4) * 2, B1 = A1 + 1;
+			Indices.Append({ A0, A1, B0, A1, B1, B0 });
+		}
+	}
+	if (Mesh->GetNumSections() > ShipMesh::NumSections + 1 && Mesh->GetProcMeshSection(ShipMesh::NumSections + 1)->ProcVertexBuffer.Num() == Vertices.Num())
+	{
+		Mesh->UpdateMeshSection(ShipMesh::NumSections + 1, Vertices, SheetNormals, {}, {}, {});
+	}
+	else
+	{
+		TArray<FColor> Colors;
+		Colors.Init(FColor(48, 38, 26), Vertices.Num());
+		Mesh->CreateMeshSection(ShipMesh::NumSections + 1, Vertices, Indices, SheetNormals, {}, Colors, {}, false);
+	}
 }

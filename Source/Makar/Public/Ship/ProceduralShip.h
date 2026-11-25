@@ -60,6 +60,17 @@ public:
 	/** Milliseconds the last generation took (geometry, then mesh update), for the menu. */
 	float LastBuildMs = 0.f;
 
+	/** The true wind: the direction it comes from (degrees from the bow, clockwise: 90 from starboard, 180 from astern)
+	 *  and its speed (m/s). The sails are cloth it fills. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind", meta = (ClampMin = "0", ClampMax = "360"))
+	float WindFrom = 210.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind", meta = (ClampMin = "0", ClampMax = "25"))
+	float WindSpeed = 7.f;
+
+	virtual void Tick(float DeltaSeconds) override;
+	virtual bool ShouldTickIfViewportsOnly() const override { return true; }
+
 	/** The generated ship's bounds (world space). */
 	FBox GetShipBounds() const;
 
@@ -73,6 +84,9 @@ private:
 	UProceduralMeshComponent* GetOrCreateMesh();
 
 	bool bBuilt = false;
+	TSharedPtr<class FSailSimulation> Sails;
+	float SimulationTime = 0.f;
+	void UpdateSails();
 	int32 Ticket = 0;
 	void ApplyResult(struct FShipBuildResult& Result);
 

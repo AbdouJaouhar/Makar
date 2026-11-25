@@ -51,7 +51,7 @@ void SShipMenu::Construct(const FArguments& InArgs)
 	.Padding(16.f)
 	[
 		SNew(SBox)
-		.WidthOverride(390.f)
+		.WidthOverride(430.f)
 		[
 			SNew(SBorder)
 			.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
@@ -71,6 +71,7 @@ void SShipMenu::Construct(const FArguments& InArgs)
 					+ SHorizontalBox::Slot().FillWidth(1.f).Padding(1.f)[TabButton(LOCTEXT("TabDecks", "Ponts"), 2)]
 					+ SHorizontalBox::Slot().FillWidth(1.f).Padding(1.f)[TabButton(LOCTEXT("TabRig", "Gréement"), 3)]
 					+ SHorizontalBox::Slot().FillWidth(1.f).Padding(1.f)[TabButton(LOCTEXT("TabColours", "Couleurs"), 4)]
+					+ SHorizontalBox::Slot().FillWidth(1.f).Padding(1.f)[TabButton(LOCTEXT("TabWind", "Vent"), 5)]
 				]
 				+ SVerticalBox::Slot().FillHeight(1.f)
 				[
@@ -84,6 +85,7 @@ void SShipMenu::Construct(const FArguments& InArgs)
 						+ SWidgetSwitcher::Slot()[DecksTab()]
 						+ SWidgetSwitcher::Slot()[RigTab()]
 						+ SWidgetSwitcher::Slot()[ColoursTab()]
+						+ SWidgetSwitcher::Slot()[WindTab()]
 					]
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 10.f, 0.f, 0.f)
@@ -415,6 +417,43 @@ TSharedRef<SWidget> SShipMenu::ColoursTab()
 	AddColour(Box, LOCTEXT("Bottom", "Carène"), &FShipDesign::BottomColor);
 	AddColour(Box, LOCTEXT("DeckColour", "Pont"), &FShipDesign::DeckColor);
 	AddColour(Box, LOCTEXT("SailColour", "Voiles"), &FShipDesign::SailColor);
+	return Box;
+}
+
+void SShipMenu::AddShipFloat(const TSharedRef<SVerticalBox>& Box, const FText& Label, float AProceduralShip::* Field, float Min, float Max, float Step)
+{
+	auto Ship = [this]() -> AProceduralShip* { AShipViewerController* PC = Controller.Get(); return PC ? PC->GetShip() : nullptr; };
+	Box->AddSlot().AutoHeight().Padding(0.f, 3.f)
+	[
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot().FillWidth(0.55f).VAlign(VAlign_Center)
+		[
+			SNew(STextBlock).Text(Label).Font(Font(10)).ColorAndOpacity(TextColour)
+		]
+		+ SHorizontalBox::Slot().FillWidth(0.45f)
+		[
+			SNew(SSpinBox<float>)
+			.MinValue(Min).MaxValue(Max).Delta(Step).MinFractionalDigits(0).MaxFractionalDigits(1)
+			.Font(Font(10))
+			.Value_Lambda([Ship, Field]() { AProceduralShip* S = Ship(); return S ? S->*Field : 0.f; })
+			.OnValueChanged_Lambda([Ship, Field](float Value) { if (AProceduralShip* S = Ship()) { S->*Field = Value; } })
+			.OnValueCommitted_Lambda([Ship, Field](float Value, ETextCommit::Type) { if (AProceduralShip* S = Ship()) { S->*Field = Value; } })
+		]
+	];
+}
+
+TSharedRef<SWidget> SShipMenu::WindTab()
+{
+	TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
+	Box->AddSlot().AutoHeight().Padding(0.f, 0.f, 0.f, 6.f)[Heading(LOCTEXT("Wind", "Vent"))];
+	AddShipFloat(Box, LOCTEXT("WindFrom", "D'où il vient (° depuis l'étrave)"), &AProceduralShip::WindFrom, 0.f, 360.f, 1.f);
+	AddShipFloat(Box, LOCTEXT("WindSpeed", "Force (m/s)"), &AProceduralShip::WindSpeed, 0.f, 25.f, 0.1f);
+	Box->AddSlot().AutoHeight().Padding(0.f, 10.f, 0.f, 0.f)
+	[
+		SNew(STextBlock).AutoWrapText(true).Font(Font(9)).ColorAndOpacity(Dim)
+		.Text(LOCTEXT("WindHelp", "0° : vent debout, 90° : de tribord, 180° : vent arrière, 270° : de bâbord. Les voiles sont de la toile simulée : "
+			"elles se gonflent, faseyent ou sont masquées selon le vent, et s'appuient sur les cordages et les mâts. 7 m/s : jolie brise (force 4)."))
+	];
 	return Box;
 }
 

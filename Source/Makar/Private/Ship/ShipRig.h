@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 
 class FHullLines;
+struct FShipSail;
 namespace ShipMesh { class FBuilder; }
 
 /** Where a mast stands, for the deck fittings around its foot (bitts, fife rails). */
@@ -21,4 +22,7 @@ namespace ShipRig
 	 * running rigging (lifts, braces, sheets, halyards, footropes), by type.
 	 */
 	void Build(ShipMesh::FBuilder& B, const FHullLines& Lines, TArray<FShipMastInfo>& OutMasts);
+
+	/** The same, the sails set given as cloth (OutSails) rather than drawn in the mesh in their cut shape. */
+	void Build(ShipMesh::FBuilder& B, const FHullLines& Lines, TArray<FShipMastInfo>& OutMasts, TArray<FShipSail>* OutSails);
 }

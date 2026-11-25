@@ -4,6 +4,7 @@
 #include "Ship/ShipDesign.h"
 #include "Widgets/SCompoundWidget.h"
 
+class AProceduralShip;
 class AShipViewerController;
 class SVerticalBox;
 class SWidgetSwitcher;
@@ -34,6 +35,9 @@ private:
 	TSharedRef<SWidget> DecksTab();
 	TSharedRef<SWidget> RigTab();
 	TSharedRef<SWidget> ColoursTab();
+	TSharedRef<SWidget> WindTab();
+	/** A setting of the ship actor itself (the wind): changes at once, no new ship. */
+	void AddShipFloat(const TSharedRef<SVerticalBox>& Box, const FText& Label, float AProceduralShip::* Field, float Min, float Max, float Step);
 
 	void AddFloat(const TSharedRef<SVerticalBox>& Box, const FText& Label, float FShipDesign::* Field, float Min, float Max, float Step);
 	void AddInt(const TSharedRef<SVerticalBox>& Box, const FText& Label, int32 FShipDesign::* Field, int32 Min, int32 Max);

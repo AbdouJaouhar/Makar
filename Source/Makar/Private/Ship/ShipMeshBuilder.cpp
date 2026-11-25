@@ -138,6 +138,13 @@ namespace ShipMesh
 		{
 			return;
 		}
+		if (Colliders && (Section == Rope || Section == Wood))
+		{
+			for (int32 I = 0; I + 1 < Count; ++I)
+			{
+				Colliders->Add({ Points[I], Points[I + 1], FMath::Max(Radii[I], Radii[I + 1]) });
+			}
+		}
 		// Tangents, and a frame carried along by the smallest rotation from one to the next.
 		TArray<FVector3f> Tangents;
 		Tangents.SetNum(Count);

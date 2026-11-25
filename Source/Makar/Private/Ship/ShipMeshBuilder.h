@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Ocean/OceanFlora.h"
+#include "SailCloth.h"
 
 /**
  * Geometry helpers of the ship generator: everything in metres in ship space (X forward, Y starboard, Z up), stored in
@@ -40,6 +41,8 @@ namespace ShipMesh
 		explicit FBuilder(FOceanMeshData& InData) : Data(InData) {}
 
 		FOceanMeshData& Data;
+		/** If set, the ropes and spars (tubes of the Rope and Wood sections) are recorded here: the sails rest on them. */
+		TArray<FShipCapsule>* Colliders = nullptr;
 
 		int32 Vertex(const FVector3f& Position, const FVector3f& Normal, const FVector2f& UV, const FLinearColor& Color);
 		/** Wound so that its front faces the average of its vertices' normals. */

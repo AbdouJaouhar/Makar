@@ -140,10 +140,7 @@ void AShipViewerController::ApplyDesign(const FShipDesign& Design, TFunction<voi
 		{
 			return;
 		}
-		if (AShipViewerPawn* Viewer = Cast<AShipViewerPawn>(PC->GetPawn()))
-		{
-			Viewer->Frame(PC->Ship->GetShipBounds());
-		}
+		// The camera stays where it is: framed once at the start, then only moved by the player.
 		if (OnDone)
 		{
 			OnDone();
